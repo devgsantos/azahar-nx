@@ -27,20 +27,25 @@ constexpr const char* JitLogPath =
 
 void AppendJitLog(const char* format, ...) {
     FILE* file = std::fopen(JitLogPath, "a");
-    if (file == nullptr) {
-        return;
-    }
-
-    std::fputs("[Switch.JIT] ", file);
-
     va_list arguments;
     va_start(arguments, format);
-    std::vfprintf(file, format, arguments);
-    va_end(arguments);
+    va_list file_arguments;
+    va_copy(file_arguments, arguments);
 
-    std::fputc('\n', file);
-    std::fflush(file);
-    std::fclose(file);
+    std::fputs("[Switch.JIT] ", stderr);
+    std::vfprintf(stderr, format, arguments);
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
+
+    if (file != nullptr) {
+        std::fputs("[Switch.JIT] ", file);
+        std::vfprintf(file, format, file_arguments);
+        std::fputc('\n', file);
+        std::fflush(file);
+        std::fclose(file);
+    }
+    va_end(file_arguments);
+    va_end(arguments);
 }
 
 bool LogResultFailure(const char* operation, Result result) {
@@ -52,6 +57,7 @@ bool LogResultFailure(const char* operation, Result result) {
 } // namespace
 
 bool RunJitSelfTest() {
+    AppendJitLog("diagnostics_version=2");
     AppendJitLog("Switch JIT self-test enter");
 
     Jit jit{};

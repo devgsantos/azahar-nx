@@ -7,6 +7,7 @@
 #include <switch.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -18,31 +19,62 @@ namespace {
 
 constexpr const char* LogPath = "sdmc:/switch/azahar/logs/azahar-switch-early.log";
 constexpr std::size_t MaxRegisteredJitRanges = 64;
+constexpr const char* DefaultOwner = "Dynarmic.CodeBlock";
 
 struct SwitchDynarmicJit {
     Jit jit{};
     std::uint32_t id = 0;
 };
 
-struct RegisteredJitRange {
+enum class JitAddressClass : std::uint32_t {
+    Outside,
+    RW,
+    RX,
+};
+
+enum class JitExecutionPhase : std::uint32_t {
+    None,
+    BeforeBlock,
+    BeforeCallback,
+    InsideCallback,
+    AfterCallback,
+    BeforeDispatcherReturn,
+};
+
+struct JitRange {
     std::uintptr_t rw = 0;
     std::uintptr_t rx = 0;
     std::size_t size = 0;
+    const char* owner = nullptr;
     std::uint32_t id = 0;
 };
 
-struct JitBreadcrumb {
-    std::uint32_t phase = 0;
-    std::uint32_t svc = 0;
-    std::uintptr_t sp = 0;
-    std::uintptr_t lr = 0;
-    std::uintptr_t x16 = 0;
-    std::uintptr_t x17 = 0;
+struct JitAddressInfo {
+    JitAddressClass address_class = JitAddressClass::Outside;
+    const char* owner = nullptr;
+    std::uint32_t id = 0;
+    std::size_t offset = 0;
+    std::uintptr_t other_alias = 0;
 };
 
-RegisteredJitRange registered_ranges[MaxRegisteredJitRanges]{};
-JitBreadcrumb breadcrumb{};
+struct JitExecutionBreadcrumb {
+    std::atomic<std::uint32_t> phase{static_cast<std::uint32_t>(JitExecutionPhase::None)};
+    std::uintptr_t block_entry = 0;
+    std::uintptr_t callback_target = 0;
+    std::uintptr_t continuation = 0;
+    std::uintptr_t dispatcher_target = 0;
+    std::uintptr_t host_lr = 0;
+    std::uintptr_t host_sp = 0;
+    std::uintptr_t host_x16 = 0;
+    std::uintptr_t host_x17 = 0;
+    std::uint32_t guest_pc = 0;
+    std::uint32_t svc = 0;
+};
+
+JitRange registered_ranges[MaxRegisteredJitRanges]{};
+JitExecutionBreadcrumb breadcrumb{};
 std::uint32_t next_jit_id = 1;
+std::uintptr_t last_dispatcher_target = 0;
 
 void Log(const char* format, ...) noexcept {
     std::FILE* file = std::fopen(LogPath, "a");
@@ -68,7 +100,7 @@ void Log(const char* format, ...) noexcept {
 }
 
 void RegisterRange(SwitchDynarmicJit& handle, std::uint32_t* rw,
-                   std::uint32_t* rx) noexcept {
+                   std::uint32_t* rx, const char* owner) noexcept {
     handle.id = next_jit_id++;
     if (handle.id == 0) {
         handle.id = next_jit_id++;
@@ -80,6 +112,7 @@ void RegisterRange(SwitchDynarmicJit& handle, std::uint32_t* rw,
                 reinterpret_cast<std::uintptr_t>(rw),
                 reinterpret_cast<std::uintptr_t>(rx),
                 handle.jit.size,
+                owner != nullptr ? owner : DefaultOwner,
                 handle.id,
             };
             return;
@@ -99,12 +132,7 @@ void UnregisterRange(const SwitchDynarmicJit& handle) noexcept {
     }
 }
 
-const char* DescribeAddress(std::uintptr_t address, char* buffer,
-                            std::size_t buffer_size) noexcept {
-    if (buffer == nullptr || buffer_size == 0) {
-        return "";
-    }
-
+JitAddressInfo ClassifyAddress(std::uintptr_t address) noexcept {
     for (const auto& range : registered_ranges) {
         if (range.size == 0) {
             continue;
@@ -114,22 +142,55 @@ const char* DescribeAddress(std::uintptr_t address, char* buffer,
         const auto rx_end = range.rx + range.size;
         if (address >= range.rw && address < rw_end) {
             const auto offset = address - range.rw;
-            std::snprintf(buffer, buffer_size,
-                          "RW alias id=%u offset=0x%zx rw=0x%016llx rx=0x%016llx size=0x%zx",
-                          range.id, static_cast<std::size_t>(offset),
-                          static_cast<unsigned long long>(range.rw),
-                          static_cast<unsigned long long>(range.rx), range.size);
-            return buffer;
+            return {
+                JitAddressClass::RW,
+                range.owner,
+                range.id,
+                static_cast<std::size_t>(offset),
+                range.rx + offset,
+            };
         }
         if (address >= range.rx && address < rx_end) {
             const auto offset = address - range.rx;
-            std::snprintf(buffer, buffer_size,
-                          "RX alias id=%u offset=0x%zx rw=0x%016llx rx=0x%016llx size=0x%zx",
-                          range.id, static_cast<std::size_t>(offset),
-                          static_cast<unsigned long long>(range.rw),
-                          static_cast<unsigned long long>(range.rx), range.size);
-            return buffer;
+            return {
+                JitAddressClass::RX,
+                range.owner,
+                range.id,
+                static_cast<std::size_t>(offset),
+                range.rw + offset,
+            };
         }
+    }
+
+    return {};
+}
+
+const char* ClassName(JitAddressClass address_class) noexcept {
+    switch (address_class) {
+    case JitAddressClass::RW:
+        return "RW";
+    case JitAddressClass::RX:
+        return "RX";
+    case JitAddressClass::Outside:
+    default:
+        return "Outside";
+    }
+}
+
+const char* DescribeAddress(std::uintptr_t address, char* buffer,
+                            std::size_t buffer_size) noexcept {
+    if (buffer == nullptr || buffer_size == 0) {
+        return "";
+    }
+
+    const JitAddressInfo info = ClassifyAddress(address);
+    if (info.address_class != JitAddressClass::Outside) {
+        std::snprintf(buffer, buffer_size,
+                      "%s owner=%s id=%u offset=0x%zx other_alias=0x%016llx",
+                      ClassName(info.address_class),
+                      info.owner != nullptr ? info.owner : "unknown", info.id, info.offset,
+                      static_cast<unsigned long long>(info.other_alias));
+        return buffer;
     }
 
     std::snprintf(buffer, buffer_size, "outside registered Dynarmic JIT ranges");
@@ -173,10 +234,10 @@ extern "C" void* azahar_switch_dynarmic_jit_create(std::size_t size,
         return nullptr;
     }
 
-    Log("created type=%d requested_size=%zu actual_size=%zu rw=%p rx=%p",
-        static_cast<int>(handle->jit.type), size, handle->jit.size,
-        static_cast<void*>(*rw), static_cast<void*>(*rx));
-    RegisterRange(*handle, *rw, *rx);
+    RegisterRange(*handle, *rw, *rx, DefaultOwner);
+    Log("owner=%s id=%u type=%d requested_size=%zu actual_size=%zu rw=%p rx=%p",
+        DefaultOwner, handle->id, static_cast<int>(handle->jit.type), size,
+        handle->jit.size, static_cast<void*>(*rw), static_cast<void*>(*rx));
     return handle;
 }
 
@@ -257,26 +318,50 @@ extern "C" const char* azahar_switch_dynarmic_jit_describe_address(
     return DescribeAddress(address, buffer, buffer_size);
 }
 
-extern "C" void azahar_switch_dynarmic_jit_svc_phase(
-    std::uint32_t phase, std::uint32_t svc, std::uintptr_t lr,
-    std::uintptr_t x16, std::uintptr_t x17) noexcept {
-    std::uintptr_t sp = 0;
-#if defined(__aarch64__)
-    __asm__ volatile("mov %0, sp" : "=r"(sp));
-#endif
-    breadcrumb = {
-        phase,
-        svc,
-        sp,
-        lr,
-        x16,
-        x17,
-    };
+extern "C" void azahar_switch_dynarmic_jit_classify_address(
+    std::uintptr_t address, JitAddressInfo* out) noexcept {
+    if (out != nullptr) {
+        *out = ClassifyAddress(address);
+    }
+}
+
+extern "C" void azahar_switch_dynarmic_jit_set_dispatcher_target(
+    std::uintptr_t dispatcher_target) noexcept {
+    last_dispatcher_target = dispatcher_target;
+}
+
+extern "C" void azahar_switch_dynarmic_jit_update_breadcrumb(
+    std::uint32_t phase, std::uintptr_t block_entry, std::uintptr_t callback_target,
+    std::uintptr_t continuation, std::uintptr_t dispatcher_target, std::uint32_t guest_pc,
+    std::uint32_t svc, std::uintptr_t host_lr, std::uintptr_t host_sp,
+    std::uintptr_t host_x16, std::uintptr_t host_x17) noexcept {
+    breadcrumb.block_entry = block_entry;
+    breadcrumb.callback_target = callback_target;
+    breadcrumb.continuation = continuation;
+    breadcrumb.dispatcher_target = dispatcher_target != 0 ? dispatcher_target : last_dispatcher_target;
+    breadcrumb.host_lr = host_lr;
+    breadcrumb.host_sp = host_sp;
+    breadcrumb.host_x16 = host_x16;
+    breadcrumb.host_x17 = host_x17;
+    breadcrumb.guest_pc = guest_pc;
+    breadcrumb.svc = svc;
+    breadcrumb.phase.store(phase, std::memory_order_release);
 }
 
 extern "C" void azahar_switch_dynarmic_jit_get_breadcrumb(
-    JitBreadcrumb* out) noexcept {
+    JitExecutionBreadcrumb* out) noexcept {
     if (out != nullptr) {
-        std::memcpy(out, &breadcrumb, sizeof(*out));
+        out->phase.store(breadcrumb.phase.load(std::memory_order_acquire),
+                         std::memory_order_relaxed);
+        out->block_entry = breadcrumb.block_entry;
+        out->callback_target = breadcrumb.callback_target;
+        out->continuation = breadcrumb.continuation;
+        out->dispatcher_target = breadcrumb.dispatcher_target;
+        out->host_lr = breadcrumb.host_lr;
+        out->host_sp = breadcrumb.host_sp;
+        out->host_x16 = breadcrumb.host_x16;
+        out->host_x17 = breadcrumb.host_x17;
+        out->guest_pc = breadcrumb.guest_pc;
+        out->svc = breadcrumb.svc;
     }
 }
