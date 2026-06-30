@@ -126,6 +126,7 @@ cmake -S . -B build-switch \
 Build:
 
 ```bash
+cmake -S . -B build-switch
 cmake --build build-switch --target azahar_switch -- -j2
 ```
 

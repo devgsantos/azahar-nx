@@ -7,7 +7,9 @@
 #include <cstdio>
 #include <unistd.h>
 
+extern "C" {
 #include <switch/runtime/nxlink.h>
+}
 
 namespace Azahar::Switch::NxLink {
 namespace {
