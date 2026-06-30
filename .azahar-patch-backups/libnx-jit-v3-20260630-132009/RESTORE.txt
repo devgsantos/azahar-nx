@@ -1,4 +1,0 @@
-Restore backed-up files with:
-  cp -a '/home/gilson/Documentos/Repos/azahar/.azahar-patch-backups/libnx-jit-v3-20260630-132009/.' '/home/gilson/Documentos/Repos/azahar/'
-
-The newly added src/switch/switch_dynarmic_jit_bridge.cpp may need to be removed manually if it did not exist before.

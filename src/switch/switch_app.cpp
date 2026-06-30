@@ -17,6 +17,7 @@
 #include "switch_input.h"
 #include "switch_jit.h"
 #include "switch_libnx.h"
+#include "switch_nxlink.h"
 #include "switch_paths.h"
 #include "switch_rom_browser.h"
 
@@ -140,6 +141,14 @@ bool SwitchApp::InitializePlatform() {
     SWITCH_EARLY_LOG("Network::Init start");
     const bool network_ok = Network::Init();
     SWITCH_EARLY_LOGF("Network::Init end result=%s", network_ok ? "true" : "false");
+    SWITCH_EARLY_LOG("nxlink live stderr initialization start");
+    const bool nxlink_ok = NxLink::Initialize();
+    SWITCH_EARLY_LOGF("nxlink live stderr initialization result=%s",
+                      nxlink_ok ? "connected" : "unavailable");
+    if (nxlink_ok) {
+        Common::Log::SetColorConsoleBackendEnabled(true);
+        SWITCH_EARLY_LOG("nxlink live logging connected");
+    }
 
     SWITCH_EARLY_LOG("audio.Initialize start");
     const bool audio_ok = audio.Initialize();
@@ -185,6 +194,8 @@ int SwitchApp::Run() {
 
     SWITCH_EARLY_LOG("Frontend shutting down");
     audio.Shutdown();
+    SWITCH_EARLY_LOG("nxlink live logging shutdown");
+    NxLink::Shutdown();
     Network::Shutdown();
     LibNx::RomfsExit();
     if (console_active) {

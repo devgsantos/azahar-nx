@@ -2,6 +2,7 @@
 // Licensed under GPLv2 or any later version
 
 #include "switch_debug_log.h"
+#include "switch_nxlink.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -23,6 +24,7 @@ void EnsureLogDir() {
 }
 
 void AppendRaw(const char* line) {
+    NxLink::WriteLine(line);
     EnsureLogDir();
     FILE* file = std::fopen(LogPath, "a");
     if (!file) {

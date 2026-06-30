@@ -20,7 +20,9 @@ add_executable(azahar_switch
     switch_rom_browser.h
     switch_window.cpp
     switch_window.h
-)
+
+    switch_nxlink.cpp
+    switch_nxlink.h)
 
 create_target_directory_groups(azahar_switch)
 
