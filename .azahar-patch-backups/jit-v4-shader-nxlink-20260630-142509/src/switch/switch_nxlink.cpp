@@ -7,13 +7,14 @@
 #include <cstdio>
 #include <unistd.h>
 
-#include <switch.h>
+extern "C" {
+#include <switch/runtime/nxlink.h>
+}
 
 namespace Azahar::Switch::NxLink {
 namespace {
 
 std::atomic_int socket_fd{-1};
-std::atomic_bool socket_service_owned{false};
 
 } // namespace
 
@@ -22,16 +23,8 @@ bool Initialize() {
         return true;
     }
 
-    const Result socket_result = socketInitializeDefault();
-    if (R_FAILED(socket_result)) {
-        return false;
-    }
-    socket_service_owned.store(true, std::memory_order_release);
-
     const int fd = nxlinkStdioForDebug();
     if (fd < 0) {
-        socket_service_owned.store(false, std::memory_order_release);
-        socketExit();
         return false;
     }
 
@@ -57,14 +50,12 @@ void WriteLine(const char* message) {
 
 void Shutdown() {
     const int fd = socket_fd.exchange(-1, std::memory_order_acq_rel);
-    if (fd >= 0) {
-        std::fflush(stderr);
-        close(fd);
+    if (fd < 0) {
+        return;
     }
 
-    if (socket_service_owned.exchange(false, std::memory_order_acq_rel)) {
-        socketExit();
-    }
+    std::fflush(stderr);
+    close(fd);
 }
 
 } // namespace Azahar::Switch::NxLink

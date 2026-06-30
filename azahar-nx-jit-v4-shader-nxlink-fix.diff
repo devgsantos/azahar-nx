@@ -1,0 +1,87 @@
+--- a/src/video_core/shader/shader_jit_a64_compiler.cpp
++++ b/src/video_core/shader/shader_jit_a64_compiler.cpp
+@@ -1016,15 +1016,15 @@
+     code_mem = std::make_unique<oaknut::CodeBlock>(code_size);
+     code_mem->unprotect();
+ 
+-    program = reinterpret_cast<CompiledShader*>(reinterpret_cast<std::byte*>(code_mem->ptr()) +
++    program = reinterpret_cast<CompiledShader*>(reinterpret_cast<std::byte*>(code_mem->xptr()) +
+                                                 program_offset);
+ 
+     // Copy to executable memory
+-    std::memcpy(code_mem->ptr(), code_vec.data(), code_vec.size() * sizeof(u32));
++    std::memcpy(code_mem->wptr(), code_vec.data(), code_vec.size() * sizeof(u32));
+ 
+     // Memory is ready to execute
++    code_mem->invalidate_all();
+     code_mem->protect();
+-    code_mem->invalidate_all();
+ 
+     // code_vec is no longer needed
+     code_vec.clear();
+--- a/src/video_core/shader/shader_jit_a64_compiler.h
++++ b/src/video_core/shader/shader_jit_a64_compiler.h
+@@ -40,7 +40,7 @@
+ 
+     void Run(const ShaderSetup& setup, ShaderUnit& state, u32 offset) const {
+         program(&setup.uniforms, &state,
+-                reinterpret_cast<const std::byte*>(code_mem->ptr()) +
++                reinterpret_cast<const std::byte*>(code_mem->xptr()) +
+                     instruction_labels[offset].offset());
+     }
+ 
+--- a/src/switch/switch_nxlink.cpp
++++ b/src/switch/switch_nxlink.cpp
+@@ -7,14 +7,13 @@
+ #include <cstdio>
+ #include <unistd.h>
+ 
+-extern "C" {
+-#include <switch/runtime/nxlink.h>
+-}
++#include <switch.h>
+ 
+ namespace Azahar::Switch::NxLink {
+ namespace {
+ 
+ std::atomic_int socket_fd{-1};
++std::atomic_bool socket_service_owned{false};
+ 
+ } // namespace
+ 
+@@ -23,8 +22,16 @@
+         return true;
+     }
+ 
++    const Result socket_result = socketInitializeDefault();
++    if (R_FAILED(socket_result)) {
++        return false;
++    }
++    socket_service_owned.store(true, std::memory_order_release);
++
+     const int fd = nxlinkStdioForDebug();
+     if (fd < 0) {
++        socket_service_owned.store(false, std::memory_order_release);
++        socketExit();
+         return false;
+     }
+ 
+@@ -50,12 +57,14 @@
+ 
+ void Shutdown() {
+     const int fd = socket_fd.exchange(-1, std::memory_order_acq_rel);
+-    if (fd < 0) {
+-        return;
++    if (fd >= 0) {
++        std::fflush(stderr);
++        close(fd);
+     }
+ 
+-    std::fflush(stderr);
+-    close(fd);
++    if (socket_service_owned.exchange(false, std::memory_order_acq_rel)) {
++        socketExit();
++    }
+ }
+ 
+ } // namespace Azahar::Switch::NxLink

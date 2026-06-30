@@ -1,0 +1,2 @@
+Restore with:
+  cp -a '/home/gilson/Documentos/Repos/azahar/.azahar-patch-backups/jit-v4-shader-nxlink-20260630-142509/.' '/home/gilson/Documentos/Repos/azahar/'

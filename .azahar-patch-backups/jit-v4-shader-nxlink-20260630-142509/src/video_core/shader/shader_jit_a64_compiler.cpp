@@ -1016,15 +1016,15 @@ void JitShader::Compile(const std::array<u32, MAX_PROGRAM_CODE_LENGTH>* program_
     code_mem = std::make_unique<oaknut::CodeBlock>(code_size);
     code_mem->unprotect();
 
-    program = reinterpret_cast<CompiledShader*>(reinterpret_cast<std::byte*>(code_mem->xptr()) +
+    program = reinterpret_cast<CompiledShader*>(reinterpret_cast<std::byte*>(code_mem->ptr()) +
                                                 program_offset);
 
     // Copy to executable memory
-    std::memcpy(code_mem->wptr(), code_vec.data(), code_vec.size() * sizeof(u32));
+    std::memcpy(code_mem->ptr(), code_vec.data(), code_vec.size() * sizeof(u32));
 
     // Memory is ready to execute
-    code_mem->invalidate_all();
     code_mem->protect();
+    code_mem->invalidate_all();
 
     // code_vec is no longer needed
     code_vec.clear();
