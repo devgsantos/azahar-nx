@@ -57,7 +57,7 @@ bool LogResultFailure(const char* operation, Result result) {
 } // namespace
 
 bool RunJitSelfTest() {
-    AppendJitLog("diagnostics_version=3");
+    AppendJitLog("diagnostics_version=5 post_host_callback_force_exit=enabled");
     AppendJitLog("Switch JIT self-test enter");
 
     Jit jit{};

@@ -3,6 +3,8 @@
 // Refer to the license.txt file included.
 
 #include "common/arch.h"
+#include <cstdio>
+
 #include "video_core/shader/shader_interpreter.h"
 #if CITRA_ARCH(x86_64) || CITRA_ARCH(arm64)
 #include "video_core/shader/shader_jit.h"
@@ -12,6 +14,18 @@
 namespace Pica {
 
 std::unique_ptr<ShaderEngine> CreateEngine(bool use_jit) {
+#if defined(__SWITCH__)
+    if (use_jit) {
+        static bool logged_shader_jit_fallback = false;
+        if (!logged_shader_jit_fallback) {
+            std::fprintf(stderr,
+                         "[Switch.PICA] native A64 shader JIT disabled; using interpreter\n");
+            std::fflush(stderr);
+            logged_shader_jit_fallback = true;
+        }
+    }
+    return std::make_unique<Shader::InterpreterEngine>();
+#else
 #if CITRA_ARCH(x86_64) || CITRA_ARCH(arm64)
     if (use_jit) {
         return std::make_unique<Shader::JitEngine>();
@@ -19,6 +33,7 @@ std::unique_ptr<ShaderEngine> CreateEngine(bool use_jit) {
 #endif
 
     return std::make_unique<Shader::InterpreterEngine>();
+#endif
 }
 
 } // namespace Pica

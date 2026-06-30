@@ -129,6 +129,11 @@ Build:
 cmake -S . -B build-switch
 cmake --build build-switch --target azahar_switch -- -j2
 ```
+or
+
+```bash
+cmake --build build-switch --target azahar_switch --clean-first -- -j2
+```
 
 Live debugging with nxlink:
 
