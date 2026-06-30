@@ -25,20 +25,26 @@ void EnsureLogDir() {
 
 void AppendTraceLine(const char* module, const char* scope, const char* event,
                      const char* detail) {
-#ifdef AZAHAR_SWITCH
+#if defined(AZAHAR_SWITCH) || defined(__SWITCH__)
     EnsureLogDir();
+    char line[1536]{};
     FILE* file = std::fopen(LogPath, "a");
+
+    const auto id = ++sequence;
+    std::snprintf(line, sizeof(line), "TRACE #%06llu module=%s scope=%s event=%s", id,
+                  module ? module : "<null>", scope ? scope : "<null>", event ? event : "<null>");
+    if (detail && std::strlen(detail) > 0) {
+        const std::size_t used = std::strlen(line);
+        std::snprintf(line + used, sizeof(line) - used, " detail=%s", detail);
+    }
+
+    std::fprintf(stderr, "%s\n", line);
+    std::fflush(stderr);
+
     if (!file) {
         return;
     }
-
-    const auto id = ++sequence;
-    std::fprintf(file, "TRACE #%06llu module=%s scope=%s event=%s", id,
-                 module ? module : "<null>", scope ? scope : "<null>", event ? event : "<null>");
-    if (detail && std::strlen(detail) > 0) {
-        std::fprintf(file, " detail=%s", detail);
-    }
-    std::fputc('\n', file);
+    std::fprintf(file, "%s\n", line);
     std::fflush(file);
     std::fclose(file);
 #else

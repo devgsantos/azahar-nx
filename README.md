@@ -130,6 +130,14 @@ cmake -S . -B build-switch
 cmake --build build-switch --target azahar_switch -- -j2
 ```
 
+Live debugging with nxlink:
+
+```bash
+/opt/devkitpro/tools/bin/nxlink \
+  -a SWITCH_IP \
+  -s build-switch/bin/Release/azahar.nro
+```
+
 Output:
 
 ```text
