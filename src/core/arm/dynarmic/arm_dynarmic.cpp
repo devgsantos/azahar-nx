@@ -8,6 +8,7 @@
 #include <dynarmic/interface/optimization_flags.h>
 #include "common/assert.h"
 #include "common/microprofile.h"
+#include "common/switch_trace.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
 #include "core/arm/dynarmic/arm_dynarmic_cp15.h"
 #include "core/arm/dynarmic/arm_exclusive_monitor.h"
@@ -181,21 +182,63 @@ ARM_Dynarmic::~ARM_Dynarmic() = default;
 MICROPROFILE_DEFINE(ARM_Jit, "ARM JIT", "ARM JIT", MP_RGB(255, 64, 64));
 
 void ARM_Dynarmic::Run() {
+    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "ARM_Dynarmic::Run enter");
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "core id", "core=%u", GetID());
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "page table pointer", "page_table=%p",
+                        static_cast<const void*>(current_page_table.get()));
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "JIT pointer", "jit=%p",
+                        static_cast<const void*>(jit));
+    if (jit) {
+        SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "guest PC", "pc=0x%08x", GetPC());
+    }
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "ticks/downcount",
+                        "ticks=%llu downcount=%lld",
+                        static_cast<unsigned long long>(GetTimer().GetTicks()),
+                        static_cast<long long>(GetTimer().GetDowncount()));
     ASSERT(memory.GetCurrentPageTable() == current_page_table);
     MICROPROFILE_SCOPE(ARM_Jit);
     if (break_flag) [[unlikely]] {
+        SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "break flag set");
+        SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "ARM_Dynarmic::Run leave");
         return;
     }
 
+    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "before jit->Run or jit->Step");
     jit->Run();
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "after jit->Run or jit->Step",
+                        "pc=0x%08x ticks=%llu downcount=%lld", GetPC(),
+                        static_cast<unsigned long long>(GetTimer().GetTicks()),
+                        static_cast<long long>(GetTimer().GetDowncount()));
+    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "ARM_Dynarmic::Run leave");
 }
 
 void ARM_Dynarmic::Step() {
+    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "ARM_Dynarmic::Step enter");
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "core id", "core=%u", GetID());
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "page table pointer", "page_table=%p",
+                        static_cast<const void*>(current_page_table.get()));
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "JIT pointer", "jit=%p",
+                        static_cast<const void*>(jit));
+    if (jit) {
+        SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "guest PC", "pc=0x%08x", GetPC());
+    }
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "ticks/downcount",
+                        "ticks=%llu downcount=%lld",
+                        static_cast<unsigned long long>(GetTimer().GetTicks()),
+                        static_cast<long long>(GetTimer().GetDowncount()));
     if (break_flag) [[unlikely]] {
+        SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "break flag set");
+        SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "ARM_Dynarmic::Step leave");
         return;
     }
 
+    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "before jit->Run or jit->Step");
     jit->Step();
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "after jit->Run or jit->Step",
+                        "pc=0x%08x ticks=%llu downcount=%lld", GetPC(),
+                        static_cast<unsigned long long>(GetTimer().GetTicks()),
+                        static_cast<long long>(GetTimer().GetDowncount()));
+    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "ARM_Dynarmic::Step leave");
 }
 
 void ARM_Dynarmic::SetPC(u32 pc) {

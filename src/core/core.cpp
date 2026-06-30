@@ -99,10 +99,14 @@ System::System() : movie{*this}, cheat_engine{*this} {}
 System::~System() = default;
 
 System::ResultStatus System::RunLoop(bool tight_loop) {
+    SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "System::RunLoop enter", "tight_loop=%s",
+                        tight_loop ? "true" : "false");
     status = ResultStatus::Success;
     if (!IsPoweredOn()) {
+        SWITCH_TRACE_EVENT("Core", "System::RunLoop", "powered-on validation failed");
         return ResultStatus::ErrorNotInitialized;
     }
+    SWITCH_TRACE_EVENT("Core", "System::RunLoop", "powered-on validation passed");
 
 #ifdef ENABLE_GDBSTUB
     if (GDBStub::IsServerEnabled()) {
@@ -116,6 +120,7 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
     }
 #endif
 
+    SWITCH_TRACE_EVENT("Core", "System::RunLoop", "signal processing enter");
     Signal signal{Signal::None};
     u32 param{};
     {
@@ -128,19 +133,25 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
     }
     switch (signal) {
     case Signal::Reset: {
+        SWITCH_TRACE_EVENT("Core", "System::RunLoop", "signal reset");
         if (app_loader && app_loader->DoingInitialSetup()) {
             // Treat reset as shutdown if we are doing the initial setup
+            SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
             return ResultStatus::ShutdownRequested;
         }
         Reset();
+        SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
         return ResultStatus::Success;
     }
     case Signal::Shutdown:
+        SWITCH_TRACE_EVENT("Core", "System::RunLoop", "signal shutdown");
+        SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
         return ResultStatus::ShutdownRequested;
     case Signal::Load: {
         if (save_state_request_status != SaveStateStatus::NONE) {
             LOG_ERROR(Core, "A pending save state operation has not finished yet");
             status_details = "A pending save state operation has not finished yet";
+            SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
             return ResultStatus::ErrorSavestate;
         }
         save_state_slot = param;
@@ -152,6 +163,7 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         if (save_state_request_status != SaveStateStatus::NONE) {
             LOG_ERROR(Core, "A pending save state operation has not finished yet");
             status_details = "A pending save state operation has not finished yet";
+            SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
             return ResultStatus::ErrorSavestate;
         }
         save_state_slot = param;
@@ -162,7 +174,10 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
     default:
         break;
     }
+    SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "signal processing passed", "signal=%d",
+                        static_cast<int>(signal));
 
+    SWITCH_TRACE_EVENT("Core", "System::RunLoop", "save-state processing enter");
     if (save_state_request_status == SaveStateStatus::LOADING && kernel.get() &&
         !kernel->AreAsyncOperationsPending()) {
         const u32 slot = save_state_slot;
@@ -174,9 +189,11 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         } catch (const std::exception& e) {
             LOG_ERROR(Core, "Error loading: {}", e.what());
             status_details = e.what();
+            SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
             return ResultStatus::ErrorSavestate;
         }
         frame_limiter.WaitOnce();
+        SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
         return ResultStatus::Success;
     } else if (save_state_request_status == SaveStateStatus::SAVING && kernel.get() &&
                !kernel->AreAsyncOperationsPending()) {
@@ -189,9 +206,11 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         } catch (const std::exception& e) {
             LOG_ERROR(Core, "Error saving: {}", e.what());
             status_details = e.what();
+            SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
             return ResultStatus::ErrorSavestate;
         }
         frame_limiter.WaitOnce();
+        SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
         return ResultStatus::Success;
     } else if (save_state_request_status != SaveStateStatus::NONE &&
                (std::chrono::steady_clock::now() - save_state_request_time) >
@@ -199,23 +218,50 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         save_state_request_status = SaveStateStatus::NONE;
         LOG_ERROR(Core, "Cannot perform save state operation due to pending async operations");
         status_details = "Cannot perform save state operation due to pending async operations";
+        SWITCH_TRACE_EVENT("Core", "System::RunLoop", "System::RunLoop leave");
         return ResultStatus::ErrorSavestate;
     }
+    SWITCH_TRACE_EVENT("Core", "System::RunLoop", "save-state processing passed");
 
     // All cores should have executed the same amount of ticks. If this is not the case an event was
     // scheduled with a cycles_into_future smaller then the current downcount.
     // So we have to get those cores to the same global time first
+    SWITCH_TRACE_EVENT("Core", "System::RunLoop", "GetGlobalTicks enter");
     u64 global_ticks = timing->GetGlobalTicks();
+    SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "GetGlobalTicks leave", "ticks=%llu",
+                        static_cast<unsigned long long>(global_ticks));
     s64 max_delay = 0;
     ARM_Interface* current_core_to_execute = nullptr;
+    SWITCH_TRACE_EVENT("Core", "System::RunLoop", "core synchronization enter");
     for (auto& cpu_core : cpu_cores) {
+        SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "core synchronization inspect",
+                            "core=%u ticks=%llu downcount=%lld", cpu_core->GetID(),
+                            static_cast<unsigned long long>(cpu_core->GetTimer().GetTicks()),
+                            static_cast<long long>(cpu_core->GetTimer().GetDowncount()));
         if (cpu_core->GetTimer().GetTicks() < global_ticks) {
             s64 delay = global_ticks - cpu_core->GetTimer().GetTicks();
             running_core = cpu_core.get();
             kernel->SetRunningCPU(running_core);
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "timer Advance enter",
+                                "core=%u delay=%lld", cpu_core->GetID(),
+                                static_cast<long long>(delay));
             cpu_core->GetTimer().Advance();
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "timer Advance leave",
+                                "core=%u ticks=%llu downcount=%lld", cpu_core->GetID(),
+                                static_cast<unsigned long long>(cpu_core->GetTimer().GetTicks()),
+                                static_cast<long long>(cpu_core->GetTimer().GetDowncount()));
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "PrepareReschedule enter", "core=%u",
+                                cpu_core->GetID());
             cpu_core->PrepareReschedule();
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "PrepareReschedule leave", "core=%u",
+                                cpu_core->GetID());
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop",
+                                "ThreadManager::Reschedule enter", "core=%u",
+                                cpu_core->GetID());
             kernel->GetThreadManager(cpu_core->GetID()).Reschedule();
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop",
+                                "ThreadManager::Reschedule leave", "core=%u",
+                                cpu_core->GetID());
             cpu_core->GetTimer().SetNextSlice(delay);
             if (max_delay < delay) {
                 max_delay = delay;
@@ -223,6 +269,10 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
             }
         }
     }
+    SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "core synchronization leave",
+                        "max_delay=%lld selected_core=%d", static_cast<long long>(max_delay),
+                        current_core_to_execute ? static_cast<int>(current_core_to_execute->GetID())
+                                                : -1);
 
     // jit sometimes overshoot by a few ticks which might lead to a minimal desync in the cores.
     // This small difference shouldn't make it necessary to sync the cores and would only cost
@@ -236,16 +286,39 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
             running_core = current_core_to_execute;
             kernel->SetRunningCPU(running_core);
         }
+        SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "current thread lookup enter", "core=%u",
+                            current_core_to_execute->GetID());
         if (kernel->GetCurrentThreadManager().GetCurrentThread() == nullptr) {
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "current thread lookup leave",
+                                "core=%u has_thread=false",
+                                current_core_to_execute->GetID());
             LOG_TRACE(Core_ARM11, "Core {} idling", current_core_to_execute->GetID());
             current_core_to_execute->GetTimer().Idle();
+            SWITCH_TRACE_EVENT("Core", "System::RunLoop", "before Reschedule");
             PrepareReschedule();
+            SWITCH_TRACE_EVENT("Core", "System::RunLoop", "after Reschedule");
         } else {
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "current thread lookup leave",
+                                "core=%u has_thread=true",
+                                current_core_to_execute->GetID());
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "before cpu_core->Run or Step",
+                                "core=%u mode=%s pc=0x%08x downcount=%lld",
+                                current_core_to_execute->GetID(),
+                                tight_loop ? "Run" : "Step", current_core_to_execute->GetPC(),
+                                static_cast<long long>(
+                                    current_core_to_execute->GetTimer().GetDowncount()));
             if (tight_loop) {
                 current_core_to_execute->Run();
             } else {
                 current_core_to_execute->Step();
             }
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "after cpu_core->Run or Step",
+                                "core=%u pc=0x%08x ticks=%llu downcount=%lld",
+                                current_core_to_execute->GetID(), current_core_to_execute->GetPC(),
+                                static_cast<unsigned long long>(
+                                    current_core_to_execute->GetTimer().GetTicks()),
+                                static_cast<long long>(
+                                    current_core_to_execute->GetTimer().GetDowncount()));
         }
     } else {
         // Now all cores are at the same global time. So we will run them one after the other
@@ -255,9 +328,25 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         for (const auto& cpu_core : cpu_cores) {
             running_core = cpu_core.get();
             kernel->SetRunningCPU(running_core);
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "timer Advance enter", "core=%u",
+                                cpu_core->GetID());
             cpu_core->GetTimer().Advance();
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "timer Advance leave",
+                                "core=%u ticks=%llu downcount=%lld", cpu_core->GetID(),
+                                static_cast<unsigned long long>(cpu_core->GetTimer().GetTicks()),
+                                static_cast<long long>(cpu_core->GetTimer().GetDowncount()));
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "PrepareReschedule enter", "core=%u",
+                                cpu_core->GetID());
             cpu_core->PrepareReschedule();
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "PrepareReschedule leave", "core=%u",
+                                cpu_core->GetID());
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop",
+                                "ThreadManager::Reschedule enter", "core=%u",
+                                cpu_core->GetID());
             kernel->GetThreadManager(cpu_core->GetID()).Reschedule();
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop",
+                                "ThreadManager::Reschedule leave", "core=%u",
+                                cpu_core->GetID());
             max_slice = std::min(max_slice, cpu_core->GetTimer().GetMaxSliceLength());
         }
         for (auto& cpu_core : cpu_cores) {
@@ -269,25 +358,48 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
             kernel->SetRunningCPU(running_core);
             // If we don't have a currently active thread then don't execute instructions,
             // instead advance to the next event and try to yield to the next thread
+            SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "current thread lookup enter",
+                                "core=%u", cpu_core->GetID());
             if (kernel->GetCurrentThreadManager().GetCurrentThread() == nullptr) {
+                SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "current thread lookup leave",
+                                    "core=%u has_thread=false", cpu_core->GetID());
                 LOG_TRACE(Core_ARM11, "Core {} idling", cpu_core->GetID());
                 cpu_core->GetTimer().Idle();
+                SWITCH_TRACE_EVENT("Core", "System::RunLoop", "before Reschedule");
                 PrepareReschedule();
+                SWITCH_TRACE_EVENT("Core", "System::RunLoop", "after Reschedule");
             } else {
+                SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "current thread lookup leave",
+                                    "core=%u has_thread=true", cpu_core->GetID());
                 // In the rare case the break flag is set (due to exception thrown)
                 // there is probably no need to adjust the timer accordingly.
+                SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "before cpu_core->Run or Step",
+                                    "core=%u mode=%s pc=0x%08x downcount=%lld",
+                                    cpu_core->GetID(), tight_loop ? "Run" : "Step",
+                                    cpu_core->GetPC(),
+                                    static_cast<long long>(cpu_core->GetTimer().GetDowncount()));
                 if (tight_loop) {
                     cpu_core->Run();
                 } else {
                     cpu_core->Step();
                 }
+                SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "after cpu_core->Run or Step",
+                                    "core=%u pc=0x%08x ticks=%llu downcount=%lld",
+                                    cpu_core->GetID(), cpu_core->GetPC(),
+                                    static_cast<unsigned long long>(
+                                        cpu_core->GetTimer().GetTicks()),
+                                    static_cast<long long>(cpu_core->GetTimer().GetDowncount()));
             }
             max_slice = cpu_core->GetTimer().GetTicks() - start_ticks;
         }
     }
 
+    SWITCH_TRACE_EVENT("Core", "System::RunLoop", "before Reschedule");
     Reschedule();
+    SWITCH_TRACE_EVENT("Core", "System::RunLoop", "after Reschedule");
 
+    SWITCH_TRACE_EVENTF("Core", "System::RunLoop", "System::RunLoop leave", "status=%d",
+                        static_cast<int>(status));
     return status;
 }
 
