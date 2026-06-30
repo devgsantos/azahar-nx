@@ -44,12 +44,13 @@ void azahar_switch_dynarmic_jit_classify_address(
     std::uintptr_t address, AzaharJitAddressInfo* out);
 void azahar_switch_dynarmic_jit_get_breadcrumb(
     AzaharDynarmicJitBreadcrumb* out);
+std::uintptr_t azahar_switch_dynarmic_jit_get_run_entry();
 
 alignas(16) u8 __nx_exception_stack[0x4000];
 u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
 
 static constexpr const char* RequiredJitDumpFields =
-    "pc_jit_class lr_jit_class far_jit_class x16_jit_class x17_jit_class";
+    "pc_jit_class lr_jit_class far_jit_class x16_jit_class x17_jit_class run_entry_jit_class";
 
 static const char* JitClassName(AzaharJitAddressClass address_class) {
     switch (address_class) {
@@ -117,6 +118,10 @@ void __libnx_exception_handler(ThreadExceptionDump* context) {
                    static_cast<std::uintptr_t>(context->cpu_gprs[16].x));
     DumpJitAddress(file, "x17",
                    static_cast<std::uintptr_t>(context->cpu_gprs[17].x));
+    const std::uintptr_t run_entry = azahar_switch_dynarmic_jit_get_run_entry();
+    std::fprintf(file, "run_entry=0x%016llx\n",
+                 static_cast<unsigned long long>(run_entry));
+    DumpJitAddress(file, "run_entry", run_entry);
 
     AzaharDynarmicJitBreadcrumb breadcrumb{};
     azahar_switch_dynarmic_jit_get_breadcrumb(&breadcrumb);

@@ -39,6 +39,8 @@ enum class JitExecutionPhase : std::uint32_t {
     InsideCallback,
     AfterCallback,
     BeforeDispatcherReturn,
+    BeforeGeneratedRun,
+    AfterGeneratedRun,
 };
 
 struct JitRange {
@@ -75,6 +77,7 @@ JitRange registered_ranges[MaxRegisteredJitRanges]{};
 JitExecutionBreadcrumb breadcrumb{};
 std::uint32_t next_jit_id = 1;
 std::uintptr_t last_dispatcher_target = 0;
+std::uintptr_t last_run_entry = 0;
 
 void Log(const char* format, ...) noexcept {
     std::FILE* file = std::fopen(LogPath, "a");
@@ -195,6 +198,17 @@ const char* DescribeAddress(std::uintptr_t address, char* buffer,
 
     std::snprintf(buffer, buffer_size, "outside registered Dynarmic JIT ranges");
     return buffer;
+}
+
+void LogAddressFields(const char* name, std::uintptr_t address) noexcept {
+    const JitAddressInfo info = ClassifyAddress(address);
+    Log("%s=0x%016llx", name, static_cast<unsigned long long>(address));
+    Log("%s_class=%s", name, ClassName(info.address_class));
+    Log("%s_owner=%s", name, info.owner != nullptr ? info.owner : "none");
+    Log("%s_id=%u", name, info.id);
+    Log("%s_offset=0x%zx", name, info.offset);
+    Log("%s_corresponding_alias=0x%016llx", name,
+        static_cast<unsigned long long>(info.other_alias));
 }
 
 }  // namespace
@@ -328,6 +342,36 @@ extern "C" void azahar_switch_dynarmic_jit_classify_address(
 extern "C" void azahar_switch_dynarmic_jit_set_dispatcher_target(
     std::uintptr_t dispatcher_target) noexcept {
     last_dispatcher_target = dispatcher_target;
+}
+
+extern "C" bool azahar_switch_dynarmic_jit_is_rx_address(
+    std::uintptr_t address) noexcept {
+    return ClassifyAddress(address).address_class == JitAddressClass::RX;
+}
+
+extern "C" void azahar_switch_dynarmic_jit_log_run_entry(
+    std::uintptr_t run_entry) noexcept {
+    last_run_entry = run_entry;
+    LogAddressFields("run_entry", run_entry);
+}
+
+extern "C" std::uintptr_t azahar_switch_dynarmic_jit_get_run_entry() noexcept {
+    return last_run_entry;
+}
+
+extern "C" void azahar_switch_dynarmic_jit_set_breadcrumb_phase(
+    std::uint32_t phase, std::uintptr_t block_entry, std::uint32_t guest_pc) noexcept {
+    breadcrumb.block_entry = block_entry;
+    breadcrumb.callback_target = 0;
+    breadcrumb.continuation = 0;
+    breadcrumb.dispatcher_target = last_dispatcher_target;
+    breadcrumb.host_lr = 0;
+    breadcrumb.host_sp = 0;
+    breadcrumb.host_x16 = 0;
+    breadcrumb.host_x17 = 0;
+    breadcrumb.guest_pc = guest_pc;
+    breadcrumb.svc = 0;
+    breadcrumb.phase.store(phase, std::memory_order_release);
 }
 
 extern "C" void azahar_switch_dynarmic_jit_update_breadcrumb(

@@ -57,7 +57,7 @@ bool LogResultFailure(const char* operation, Result result) {
 } // namespace
 
 bool RunJitSelfTest() {
-    AppendJitLog("diagnostics_version=2");
+    AppendJitLog("diagnostics_version=3");
     AppendJitLog("Switch JIT self-test enter");
 
     Jit jit{};
