@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <functional>
+#include <string>
 #include "common/common_types.h"
 
 namespace Pica {

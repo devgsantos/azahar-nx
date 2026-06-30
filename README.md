@@ -139,3 +139,6 @@ You can find these at https://github.com/azahar-emu/azahar/milestones.
 We have a community Discord server where you can chat about the project, keep up to date with the latest announcements, or coordinate emulator development.
 
 Join at https://discord.gg/4ZjMpAp3M6
+
+
+cmake --build build-switch --target azahar_switch -- -j2

@@ -5,8 +5,11 @@
 
 #pragma once
 
+#include <stdexcept>
+
 #include "common/archives.h"
 #include "common/microprofile.h"
+#include "common/switch_trace.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/service/gsp/gsp_gpu.h"
@@ -39,10 +42,30 @@ struct GPU::Impl {
     explicit Impl(Core::System& system, Frontend::EmuWindow& emu_window,
                   Frontend::EmuWindow* secondary_window)
         : timing{system.CoreTiming()}, system{system}, memory{system.Memory()},
-          debug_context{Pica::g_debug_context}, pica{memory, debug_context},
-          renderer{VideoCore::CreateRenderer(emu_window, secondary_window, pica, system)},
-          rasterizer{renderer->Rasterizer()},
-          sw_blitter{std::make_unique<SwRenderer::SwBlitter>(memory, rasterizer)} {}
+          debug_context{Pica::g_debug_context}, pica{memory, debug_context} {
+        SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl", "VideoCore creation");
+        SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl.Renderer", "enter");
+        renderer = VideoCore::CreateRenderer(emu_window, secondary_window, pica, system);
+        if (!renderer) {
+            SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl.Renderer", "failed_null_renderer");
+            throw std::runtime_error("Deko3D renderer initialization failed");
+        }
+        SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl.Renderer", "VideoCore renderer created");
+
+        SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl.Rasterizer", "enter");
+        rasterizer = renderer->Rasterizer();
+        if (!rasterizer) {
+            SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl.Rasterizer", "failed_null_rasterizer");
+            throw std::runtime_error("Deko3D renderer initialization failed");
+        }
+        SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl.Rasterizer", "Rasterizer creation");
+        SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl.Rasterizer", "leave");
+
+        SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl.Blitter", "enter");
+        sw_blitter = std::make_unique<SwRenderer::SwBlitter>(memory, rasterizer);
+        SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl.Blitter", "leave");
+        SWITCH_TRACE_EVENT("VideoCore.GPU", "Impl", "leave");
+    }
     ~Impl() = default;
 };
 } // namespace VideoCore

@@ -86,6 +86,8 @@ add_library(citra_common STATIC EXCLUDE_FROM_ALL
     string_util.cpp
     string_util.h
     swap.h
+    switch_trace.cpp
+    switch_trace.h
     texture.cpp
     texture.h
     thread.cpp

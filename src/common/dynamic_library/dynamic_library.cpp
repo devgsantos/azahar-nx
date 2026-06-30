@@ -5,7 +5,7 @@
 #include <fmt/format.h>
 #if defined(_WIN32)
 #include <windows.h>
-#else
+#elif !defined(__SWITCH__)
 #include <dlfcn.h>
 #endif
 #include "dynamic_library.h"
@@ -25,6 +25,8 @@ DynamicLibrary::~DynamicLibrary() {
     if (handle) {
 #if defined(_WIN32)
         FreeLibrary(reinterpret_cast<HMODULE>(handle));
+#elif defined(__SWITCH__)
+        // Horizon homebrew does not provide a POSIX dynamic loader.
 #else
         dlclose(handle);
 #endif // defined(_WIN32)
@@ -47,6 +49,9 @@ bool DynamicLibrary::Load(std::string_view filename) {
         load_error = message;
         return false;
     }
+#elif defined(__SWITCH__)
+    load_error = "Dynamic library loading is not supported on Nintendo Switch";
+    return false;
 #else
     handle = dlopen(filename.data(), RTLD_LAZY);
     if (!handle) {
@@ -60,6 +65,8 @@ bool DynamicLibrary::Load(std::string_view filename) {
 void* DynamicLibrary::GetRawSymbol(std::string_view name) const {
 #if defined(_WIN32)
     return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(handle), name.data()));
+#elif defined(__SWITCH__)
+    return nullptr;
 #else
     return dlsym(handle, name.data());
 #endif // defined(_WIN32)
@@ -83,6 +90,8 @@ std::string DynamicLibrary::GetLibraryName(std::string_view name, int major, int
     } else {
         return fmt::format("{}{}.dylib", prefix, name);
     }
+#elif defined(__SWITCH__)
+    return std::string{name};
 #else
     auto prefix = name.starts_with("lib") ? "" : "lib";
     if (major >= 0 && minor >= 0) {

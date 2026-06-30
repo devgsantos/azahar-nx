@@ -18,7 +18,9 @@
 #include <boost/serialization/unordered_map.hpp>
 #include <boost/serialization/vector.hpp>
 #include <boost/serialization/weak_ptr.hpp>
+#ifndef __SWITCH__
 #include <httplib.h>
+#endif
 #include "common/thread.h"
 #include "core/hle/ipc_helpers.h"
 #include "core/hle/kernel/shared_memory.h"
@@ -33,6 +35,37 @@ class RequestParser;
 }
 
 namespace Service::HTTP {
+
+#ifdef __SWITCH__
+
+struct SessionData : public Kernel::SessionRequestHandler::SessionDataBase {
+private:
+    template <class Archive>
+    void serialize(Archive& ar, const unsigned int) {
+        ar& boost::serialization::base_object<Kernel::SessionRequestHandler::SessionDataBase>(
+            *this);
+    }
+    friend class boost::serialization::access;
+};
+
+class HTTP_C final : public ServiceFramework<HTTP_C, SessionData> {
+public:
+    HTTP_C();
+
+private:
+    template <class Archive>
+    void serialize(Archive& ar, const unsigned int) {
+        DEBUG_SERIALIZATION_POINT;
+        ar& boost::serialization::base_object<Kernel::SessionRequestHandler>(*this);
+    }
+    friend class boost::serialization::access;
+};
+
+std::shared_ptr<HTTP_C> GetService(Core::System& system);
+
+void InstallInterfaces(Core::System& system);
+
+#else
 
 enum class RequestMethod : u8 {
     None = 0x0,
@@ -953,6 +986,8 @@ private:
 std::shared_ptr<HTTP_C> GetService(Core::System& system);
 
 void InstallInterfaces(Core::System& system);
+
+#endif
 
 } // namespace Service::HTTP
 

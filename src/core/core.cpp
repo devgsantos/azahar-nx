@@ -2,6 +2,8 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstdarg>
+#include <cstdio>
 #include <stdexcept>
 #include <utility>
 #include <boost/serialization/array.hpp>
@@ -11,6 +13,7 @@
 #include "common/arch.h"
 #include "common/logging/log.h"
 #include "common/settings.h"
+#include "common/switch_trace.h"
 #include "core/arm/arm_interface.h"
 #include "core/arm/exclusive_monitor.h"
 #include "core/hle/service/cam/cam.h"
@@ -57,6 +60,22 @@
 #include "video_core/renderer_base.h"
 
 namespace Core {
+namespace {
+
+void SwitchCoreEarlyLog(const char* message) {
+    Common::SwitchTrace::Write("Core", "System", message);
+}
+
+void SwitchCoreEarlyLogFormat(const char* fmt, ...) {
+    char buffer[1024]{};
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    Common::SwitchTrace::WriteFormat("Core", "System", "step", "%s", buffer);
+}
+
+} // namespace
 
 /*static*/ System System::s_instance;
 
@@ -289,20 +308,33 @@ System::ResultStatus System::SingleStep() {
 
 System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::string& filepath,
                                   Frontend::EmuWindow* secondary_window) {
+    SwitchCoreEarlyLogFormat("Core::System::Load entered filepath=%s", filepath.c_str());
+    SwitchCoreEarlyLog("Core::System::Load ResetTemporaryFrameLimit enter");
     Settings::ResetTemporaryFrameLimit();
+    SwitchCoreEarlyLog("Core::System::Load ResetTemporaryFrameLimit leave");
+    SwitchCoreEarlyLog("Core::System::Load SetCurrentRomPath enter");
     FileUtil::SetCurrentRomPath(filepath);
+    SwitchCoreEarlyLog("Core::System::Load SetCurrentRomPath leave");
     if (early_app_loader) {
+        SwitchCoreEarlyLog("Core::System::Load using early_app_loader");
         app_loader = std::move(early_app_loader);
     } else {
+        SwitchCoreEarlyLog("Core::System::Load GetLoader enter");
         app_loader = Loader::GetLoader(filepath);
+        SwitchCoreEarlyLogFormat("Core::System::Load GetLoader leave loader=%s",
+                                 app_loader ? "true" : "false");
     }
     if (!app_loader) {
         LOG_CRITICAL(Core, "Failed to obtain loader for {}", filepath);
+        SwitchCoreEarlyLog("Core::System::Load failed no loader");
         return ResultStatus::ErrorGetLoader;
     }
 
     u64_le program_id = 0;
+    SwitchCoreEarlyLog("Core::System::Load ReadProgramId enter");
     app_loader->ReadProgramId(program_id);
+    SwitchCoreEarlyLogFormat("Core::System::Load ReadProgramId leave program_id=0x%llx",
+                             static_cast<unsigned long long>(program_id));
     if (restore_plugin_context.has_value() && restore_plugin_context->is_enabled &&
         restore_plugin_context->use_user_load_parameters) {
         if (restore_plugin_context->user_load_parameters.low_title_Id ==
@@ -319,10 +351,12 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
     Kernel::New3dsHwCapabilities app_n3ds_hw_capabilities;
 
     if (m_mem_mode) {
+        SwitchCoreEarlyLog("Core::System::Load using FIRM memory mode override");
         // Use memory mode set by the FIRM launch parameters
         system_mem_mode = static_cast<Kernel::MemoryMode>(m_mem_mode.value());
         m_mem_mode = {};
     } else {
+        SwitchCoreEarlyLog("Core::System::Load using default memory mode");
         // Use default memory mode based on the n3ds setting
         system_mem_mode = Settings::values.is_new_3ds.GetValue() ? Kernel::MemoryMode::NewProd
                                                                  : Kernel::MemoryMode::Prod;
@@ -330,7 +364,11 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
     }
 
     {
+        SwitchCoreEarlyLog("Core::System::Load LoadKernelMemoryMode enter");
         auto memory_mode = app_loader->LoadKernelMemoryMode();
+        SwitchCoreEarlyLogFormat("Core::System::Load LoadKernelMemoryMode leave status=%d has=%s",
+                                 static_cast<int>(memory_mode.second),
+                                 memory_mode.first ? "true" : "false");
         if (memory_mode.second != Loader::ResultStatus::Success) {
             LOG_CRITICAL(Core, "Failed to determine system mode (Error {})!",
                          static_cast<int>(memory_mode.second));
@@ -353,13 +391,20 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
         app_mem_mode = memory_mode.first.value();
     }
 
+    SwitchCoreEarlyLog("Core::System::Load LoadNew3dsHwCapabilities enter");
     auto n3ds_hw_caps = app_loader->LoadNew3dsHwCapabilities();
+    SwitchCoreEarlyLogFormat("Core::System::Load LoadNew3dsHwCapabilities leave status=%d has=%s",
+                             static_cast<int>(n3ds_hw_caps.second),
+                             n3ds_hw_caps.first ? "true" : "false");
     ASSERT(n3ds_hw_caps.first);
     app_n3ds_hw_capabilities = n3ds_hw_caps.first.value();
 
+    SwitchCoreEarlyLog("Core::System::Load IsN3DSExclusive enter");
     if (!Settings::values.is_new_3ds.GetValue() && app_loader->IsN3DSExclusive()) {
+        SwitchCoreEarlyLog("Core::System::Load IsN3DSExclusive rejected");
         return ResultStatus::ErrorN3DSApplication;
     }
+    SwitchCoreEarlyLog("Core::System::Load IsN3DSExclusive leave");
 
     // If the default mem mode has been used, we do not come from a FIRM launch. On real HW
     // however, the home menu is in charge or setting the proper memory mode when launching
@@ -387,7 +432,13 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
     if (Settings::values.is_new_3ds) {
         num_cores = 4;
     }
+    SwitchCoreEarlyLogFormat("Core::System::Load Init enter system_mem_mode=%d app_mem_mode=%d "
+                             "num_cores=%u",
+                             static_cast<int>(system_mem_mode), static_cast<int>(app_mem_mode),
+                             num_cores);
     ResultStatus init_result{Init(emu_window, secondary_window, system_mem_mode, num_cores)};
+    SwitchCoreEarlyLogFormat("Core::System::Load Init leave status=%d",
+                             static_cast<int>(init_result));
     if (init_result != ResultStatus::Success) {
         LOG_CRITICAL(Core, "Failed to initialize system (Error {})!",
                      static_cast<u32>(init_result));
@@ -395,7 +446,9 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
         return init_result;
     }
 
+    SwitchCoreEarlyLog("Core::System::Load UpdateCPUAndMemoryState enter");
     kernel->UpdateCPUAndMemoryState(program_id, app_mem_mode, app_n3ds_hw_capabilities);
+    SwitchCoreEarlyLog("Core::System::Load UpdateCPUAndMemoryState leave");
 
     // Restore any parameters that should be carried through a reset.
     if (auto apt = Service::APT::GetModule(*this)) {
@@ -422,7 +475,10 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
     }
 
     std::shared_ptr<Kernel::Process> process;
+    SwitchCoreEarlyLog("Core::System::Load app_loader->Load enter");
     const Loader::ResultStatus load_result{app_loader->Load(process)};
+    SwitchCoreEarlyLogFormat("Core::System::Load app_loader->Load leave status=%d process=%s",
+                             static_cast<int>(load_result), process ? "true" : "false");
     if (Loader::ResultStatus::Success != load_result) {
         LOG_CRITICAL(Core, "Failed to load ROM (Error {})!", load_result);
         System::Shutdown();
@@ -444,23 +500,36 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
             return ResultStatus::ErrorLoader;
         }
     }
+    SwitchCoreEarlyLog("Core::System::Load SetCurrentProcess enter");
     kernel->SetCurrentProcess(process);
+    SwitchCoreEarlyLog("Core::System::Load SetCurrentProcess leave");
     title_id = 0;
+    SwitchCoreEarlyLog("Core::System::Load ReadProgramId final enter");
     if (app_loader->ReadProgramId(title_id) != Loader::ResultStatus::Success) {
         LOG_ERROR(Core, "Failed to find title id for ROM (Error {})",
                   static_cast<u32>(load_result));
     }
+    SwitchCoreEarlyLogFormat("Core::System::Load ReadProgramId final leave title_id=0x%llx",
+                             static_cast<unsigned long long>(title_id));
 
+    SwitchCoreEarlyLog("Core::System::Load CheatEngine enter");
     cheat_engine.LoadCheatFile(title_id);
     cheat_engine.Connect(process->process_id);
+    SwitchCoreEarlyLog("Core::System::Load CheatEngine leave");
 
+    SwitchCoreEarlyLog("Core::System::Load PerfStats enter");
     perf_stats = std::make_unique<PerfStats>(title_id);
+    SwitchCoreEarlyLog("Core::System::Load PerfStats leave");
 
     if (Settings::values.dump_textures) {
+        SwitchCoreEarlyLog("Core::System::Load PrepareDumping enter");
         custom_tex_manager->PrepareDumping(title_id);
+        SwitchCoreEarlyLog("Core::System::Load PrepareDumping leave");
     }
     if (Settings::values.custom_textures) {
+        SwitchCoreEarlyLog("Core::System::Load FindCustomTextures enter");
         custom_tex_manager->FindCustomTextures();
+        SwitchCoreEarlyLog("Core::System::Load FindCustomTextures leave");
     }
 
     status = ResultStatus::Success;
@@ -469,8 +538,11 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
     m_filepath = filepath;
 
     // Reset counters and set time origin to current frame
+    SwitchCoreEarlyLog("Core::System::Load BeginSystemFrame enter");
     [[maybe_unused]] const PerfStats::Results result = GetAndResetPerfStats();
     perf_stats->BeginSystemFrame();
+    SwitchCoreEarlyLog("Core::System::Load BeginSystemFrame leave");
+    SwitchCoreEarlyLog("Core::System::Load leave success");
     return status;
 }
 
@@ -507,54 +579,83 @@ void System::Reschedule() {
 System::ResultStatus System::Init(Frontend::EmuWindow& emu_window,
                                   Frontend::EmuWindow* secondary_window,
                                   Kernel::MemoryMode memory_mode, u32 num_cores) {
+    SWITCH_TRACE_EVENTF("Core", "System::Init", "enter", "memory_mode=%d num_cores=%u",
+                        static_cast<int>(memory_mode), num_cores);
     LOG_DEBUG(HW_Memory, "initialized OK");
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.MemorySystem", "enter");
     memory = std::make_unique<Memory::MemorySystem>(*this);
+    SWITCH_TRACE_EVENT("Core", "System::Init.MemorySystem", "leave");
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.Timing", "enter");
     timing = std::make_unique<Timing>(num_cores, Settings::values.cpu_clock_percentage.GetValue(),
                                       movie.GetOverrideBaseTicks());
+    SWITCH_TRACE_EVENT("Core", "System::Init.Timing", "leave");
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.KernelSystem", "enter");
     kernel = std::make_unique<Kernel::KernelSystem>(
         *memory, *timing, [this] { PrepareReschedule(); }, memory_mode, num_cores,
         movie.GetOverrideInitTime());
+    SWITCH_TRACE_EVENT("Core", "System::Init.KernelSystem", "leave");
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.ExclusiveMonitor", "enter");
     exclusive_monitor = MakeExclusiveMonitor(*memory, num_cores);
+    SWITCH_TRACE_EVENT("Core", "System::Init.ExclusiveMonitor", "leave");
     cpu_cores.reserve(num_cores);
     if (Settings::values.use_cpu_jit) {
 #if CITRA_ARCH(x86_64) || CITRA_ARCH(arm64)
         for (u32 i = 0; i < num_cores; ++i) {
+            SWITCH_TRACE_EVENTF("Core", "System::Init.CPU", "enter", "core=%u backend=Dynarmic",
+                                i);
             cpu_cores.push_back(std::make_shared<ARM_Dynarmic>(
                 *this, *memory, i, timing->GetTimer(i), *exclusive_monitor));
+            SWITCH_TRACE_EVENTF("Core", "System::Init.CPU", "leave", "core=%u backend=Dynarmic",
+                                i);
         }
 #else
         for (u32 i = 0; i < num_cores; ++i) {
+            SWITCH_TRACE_EVENTF("Core", "System::Init.CPU", "enter", "core=%u backend=DynCom",
+                                i);
             cpu_cores.push_back(
                 std::make_shared<ARM_DynCom>(*this, *memory, USER32MODE, i, timing->GetTimer(i)));
+            SWITCH_TRACE_EVENTF("Core", "System::Init.CPU", "leave", "core=%u backend=DynCom",
+                                i);
         }
         LOG_WARNING(Core, "CPU JIT requested, but Dynarmic not available");
 #endif
     } else {
         for (u32 i = 0; i < num_cores; ++i) {
+            SWITCH_TRACE_EVENTF("Core", "System::Init.CPU", "enter", "core=%u backend=DynCom",
+                                i);
             cpu_cores.push_back(
                 std::make_shared<ARM_DynCom>(*this, *memory, USER32MODE, i, timing->GetTimer(i)));
+            SWITCH_TRACE_EVENTF("Core", "System::Init.CPU", "leave", "core=%u backend=DynCom",
+                                i);
         }
     }
+    SWITCH_TRACE_EVENT("Core", "System::Init.SetRunningCPU", "enter");
     running_core = cpu_cores[0].get();
 
     kernel->SetCPUs(cpu_cores);
     kernel->SetRunningCPU(cpu_cores[0].get());
+    SWITCH_TRACE_EVENT("Core", "System::Init.SetRunningCPU", "leave");
 
     const auto audio_emulation = Settings::values.audio_emulation.GetValue();
+    SWITCH_TRACE_EVENTF("Core", "System::Init.DSP", "enter", "audio_emulation=%d",
+                        static_cast<int>(audio_emulation));
     if (audio_emulation == Settings::AudioEmulation::HLE) {
         dsp_core = std::make_unique<AudioCore::DspHle>(*this);
     } else {
         const bool multithread = audio_emulation == Settings::AudioEmulation::LLEMultithreaded;
         dsp_core = std::make_unique<AudioCore::DspLle>(*this, multithread);
     }
+    SWITCH_TRACE_EVENT("Core", "System::Init.DSP", "leave");
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.DSPSettings", "enter");
     dsp_core->SetSink(Settings::values.output_type.GetValue(),
                       Settings::values.output_device.GetValue());
     dsp_core->EnableStretching(Settings::values.enable_audio_stretching.GetValue());
+    SWITCH_TRACE_EVENT("Core", "System::Init.DSPSettings", "leave");
 
 #ifdef ENABLE_SCRIPTING
     if (Settings::values.enable_rpc_server.GetValue()) {
@@ -562,41 +663,80 @@ System::ResultStatus System::Init(Frontend::EmuWindow& emu_window,
     }
 #endif
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.ServiceManager", "enter");
     service_manager = std::make_unique<Service::SM::ServiceManager>(*this);
+    SWITCH_TRACE_EVENT("Core", "System::Init.ServiceManager", "leave");
+    SWITCH_TRACE_EVENT("Core", "System::Init.ArchiveManager", "enter");
     archive_manager = std::make_unique<Service::FS::ArchiveManager>(*this);
+    SWITCH_TRACE_EVENT("Core", "System::Init.ArchiveManager", "leave");
 
     u64 loading_title_id = 0;
+    SWITCH_TRACE_EVENT("Core", "System::Init.ReadProgramId", "enter");
     app_loader->ReadProgramId(loading_title_id);
+    SWITCH_TRACE_EVENTF("Core", "System::Init.ReadProgramId", "leave", "title_id=0x%llx",
+                        static_cast<unsigned long long>(loading_title_id));
+    SWITCH_TRACE_EVENT("Core", "System::Init.AESInitKeys", "enter");
     HW::AES::InitKeys();
+    SWITCH_TRACE_EVENT("Core", "System::Init.AESInitKeys", "leave");
+    SWITCH_TRACE_EVENT("Core", "System::Init.ServiceInit", "enter");
     Service::Init(*this, loading_title_id, lle_modules, !app_loader->DoingInitialSetup());
+    SWITCH_TRACE_EVENT("Core", "System::Init.ServiceInit", "leave");
 #ifdef ENABLE_GDBSTUB
     GDBStub::DeferStart();
 #endif
 
     if (!registered_image_interface) {
+        SWITCH_TRACE_EVENT("Core", "System::Init.ImageInterface", "enter");
         registered_image_interface = std::make_shared<Frontend::ImageInterface>();
+        SWITCH_TRACE_EVENT("Core", "System::Init.ImageInterface", "leave");
     }
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.CustomTexManager", "enter");
     custom_tex_manager = std::make_unique<VideoCore::CustomTexManager>(*this);
+    SWITCH_TRACE_EVENT("Core", "System::Init.CustomTexManager", "leave");
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.GetGSP", "enter");
     auto gsp = service_manager->GetService<Service::GSP::GSP_GPU>("gsp::Gpu");
-    gpu = std::make_unique<VideoCore::GPU>(*this, emu_window, secondary_window);
+    SWITCH_TRACE_EVENTF("Core", "System::Init.GetGSP", "leave", "found=%s",
+                        gsp ? "true" : "false");
+    SWITCH_TRACE_EVENT("Core", "System::Init.GPU", "enter");
+    try {
+        gpu = std::make_unique<VideoCore::GPU>(*this, emu_window, secondary_window);
+    } catch (const std::exception& e) {
+        SWITCH_TRACE_EVENTF("Core", "System::Init.GPU", "failed", "error=%s", e.what());
+        LOG_ERROR(Render, "Deko3D renderer initialization failed: {}", e.what());
+        return ResultStatus::ErrorRendererInit;
+    }
+    if (!gpu) {
+        SWITCH_TRACE_EVENT("Core", "System::Init.GPU", "failed_null_gpu");
+        LOG_ERROR(Render, "Deko3D renderer initialization failed: null GPU");
+        return ResultStatus::ErrorRendererInit;
+    }
+    SWITCH_TRACE_EVENT("Core", "System::Init.GPU", "leave");
+    SWITCH_TRACE_EVENT("Core", "System::Init.GPUInterruptHandler", "enter");
     gpu->SetInterruptHandler([gsp](Service::GSP::InterruptId interrupt_id, u64 wait_delay_ns) {
         gsp->SignalInterrupt(interrupt_id, wait_delay_ns);
     });
+    SWITCH_TRACE_EVENT("Core", "System::Init.GPUInterruptHandler", "leave");
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.PLG_LDR", "enter");
     auto plg_ldr = Service::PLGLDR::GetService(*this);
     if (plg_ldr) {
         plg_ldr->SetEnabled(Settings::values.plugin_loader_enabled.GetValue());
         plg_ldr->SetAllowGameChangeState(Settings::values.allow_plugin_loader.GetValue());
     }
+    SWITCH_TRACE_EVENTF("Core", "System::Init.PLG_LDR", "leave", "found=%s",
+                        plg_ldr ? "true" : "false");
 
+    SWITCH_TRACE_EVENT("Core", "System::Init.SetInfoLEDColor", "enter");
     SetInfoLEDColor({});
+    SWITCH_TRACE_EVENT("Core", "System::Init.SetInfoLEDColor", "leave");
 
     LOG_DEBUG(Core, "Initialized OK");
 
     is_powered_on = true;
 
+    SWITCH_TRACE_EVENT("Core", "System::Init", "leave");
     return ResultStatus::Success;
 }
 

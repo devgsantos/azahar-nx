@@ -39,12 +39,15 @@ else()
     target_link_libraries(boost_serialization PUBLIC boost)
 
     # Boost::iostreams
-    add_library(
-        boost_iostreams
-        STATIC
+    set(boost_iostreams_SRC
         ${CMAKE_SOURCE_DIR}/externals/boost/libs/iostreams/src/file_descriptor.cpp
-        ${CMAKE_SOURCE_DIR}/externals/boost/libs/iostreams/src/mapped_file.cpp
     )
+    if (NOT CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+        list(APPEND boost_iostreams_SRC
+            ${CMAKE_SOURCE_DIR}/externals/boost/libs/iostreams/src/mapped_file.cpp
+        )
+    endif()
+    add_library(boost_iostreams STATIC ${boost_iostreams_SRC})
     target_link_libraries(boost_iostreams PUBLIC boost)
     # Add additional boost libs here; remember to ALIAS them in the root CMakeLists!
 endif()
@@ -317,7 +320,9 @@ else()
 endif()
 
 # OpenSSL
-if (USE_SYSTEM_OPENSSL)
+if (ENABLE_SWITCH_FRONTEND)
+    set(OPENSSL_LIBRARIES "")
+elseif (USE_SYSTEM_OPENSSL)
     find_package(OpenSSL 1.1)
     set(OPENSSL_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
 else()
@@ -358,8 +363,10 @@ else()
     target_include_directories(httplib INTERFACE ./httplib)
     target_disable_warnings(httplib)
 endif()
-target_compile_options(httplib INTERFACE -DCPPHTTPLIB_OPENSSL_SUPPORT)
-target_link_libraries(httplib INTERFACE ${OPENSSL_LIBRARIES})
+if (OPENSSL_LIBRARIES)
+    target_compile_options(httplib INTERFACE -DCPPHTTPLIB_OPENSSL_SUPPORT)
+    target_link_libraries(httplib INTERFACE ${OPENSSL_LIBRARIES})
+endif()
 
 if (UNIX AND NOT APPLE)
     add_subdirectory(gamemode EXCLUDE_FROM_ALL)

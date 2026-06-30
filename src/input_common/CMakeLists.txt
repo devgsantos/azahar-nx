@@ -10,15 +10,20 @@ add_library(input_common STATIC EXCLUDE_FROM_ALL
     precompiled_headers.h
     touch_from_button.cpp
     touch_from_button.h
-    sdl/sdl.cpp
-    sdl/sdl.h
-    udp/client.cpp
-    udp/client.h
-    udp/protocol.cpp
-    udp/protocol.h
-    udp/udp.cpp
-    udp/udp.h
 )
+
+if(NOT ENABLE_SWITCH_FRONTEND)
+    target_sources(input_common PRIVATE
+        sdl/sdl.cpp
+        sdl/sdl.h
+        udp/client.cpp
+        udp/client.h
+        udp/protocol.cpp
+        udp/protocol.h
+        udp/udp.cpp
+        udp/udp.h
+    )
+endif()
 
 if(ENABLE_SDL2)
     target_sources(input_common PRIVATE

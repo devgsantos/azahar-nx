@@ -225,6 +225,7 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
 
     switch (window_type) {
     case Frontend::WindowSystemType::Headless:
+    case Frontend::WindowSystemType::Switch:
         break;
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
     case Frontend::WindowSystemType::Windows:
@@ -251,7 +252,8 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
         break;
     }
 
-    if (window_type != Frontend::WindowSystemType::Headless) {
+    if (window_type != Frontend::WindowSystemType::Headless &&
+        window_type != Frontend::WindowSystemType::Switch) {
         extensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
     }
 

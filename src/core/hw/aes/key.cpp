@@ -290,7 +290,11 @@ void LoadPresetKeys() {
 } // namespace
 
 std::istringstream GetKeysStream() {
+#ifdef AZAHAR_SWITCH
+    const std::string filepath = "sdmc:/switch/azahar/userdata/keys/aes_keys.txt";
+#else
     const std::string filepath = FileUtil::GetUserPath(FileUtil::UserPath::SysDataDir) + KEYS_FILE;
+#endif
     FileUtil::CreateFullPath(filepath); // Create path if not already created
 
     boost::iostreams::stream<boost::iostreams::file_descriptor_source> file;

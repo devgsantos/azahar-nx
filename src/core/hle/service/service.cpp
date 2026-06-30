@@ -7,6 +7,7 @@
 #include "common/assert.h"
 #include "common/hacks/hack_manager.h"
 #include "common/logging/log.h"
+#include "common/switch_trace.h"
 #include "core/core.h"
 #include "core/hle/ipc.h"
 #include "core/hle/kernel/client_port.h"
@@ -133,15 +134,23 @@ ServiceFrameworkBase::ServiceFrameworkBase(const char* service_name, u32 max_ses
 ServiceFrameworkBase::~ServiceFrameworkBase() = default;
 
 void ServiceFrameworkBase::InstallAsService(SM::ServiceManager& service_manager) {
+    SWITCH_TRACE_EVENTF("Service", "ServiceFrameworkBase::InstallAsService", "enter",
+                        "service=%s max_sessions=%u", service_name.c_str(), max_sessions);
     std::shared_ptr<Kernel::ServerPort> port;
     R_ASSERT(service_manager.RegisterService(std::addressof(port), service_name, max_sessions));
     port->SetHleHandler(shared_from_this());
+    SWITCH_TRACE_EVENTF("Service", "ServiceFrameworkBase::InstallAsService", "leave",
+                        "service=%s", service_name.c_str());
 }
 
 void ServiceFrameworkBase::InstallAsNamedPort(Kernel::KernelSystem& kernel) {
+    SWITCH_TRACE_EVENTF("Service", "ServiceFrameworkBase::InstallAsNamedPort", "enter",
+                        "service=%s max_sessions=%u", service_name.c_str(), max_sessions);
     auto [server_port, client_port] = kernel.CreatePortPair(max_sessions, service_name);
     server_port->SetHleHandler(shared_from_this());
     kernel.AddNamedPort(service_name, std::move(client_port));
+    SWITCH_TRACE_EVENTF("Service", "ServiceFrameworkBase::InstallAsNamedPort", "leave",
+                        "service=%s", service_name.c_str());
 }
 
 void ServiceFrameworkBase::RegisterHandlersBase(const FunctionInfoBase* functions, std::size_t n) {
@@ -202,7 +211,11 @@ static bool AttemptLLE(const ServiceModuleInfo& service_module, u64 loading_titl
         Common::Hacks::HackType::ONLINE_LLE_REQUIRED, loading_titleid,
         Settings::values.enable_required_online_lle_modules.GetValue());
 
-    if (!Settings::values.lle_modules.at(service_module.name) &&
+    const auto lle_module = Settings::values.lle_modules.find(service_module.name);
+    const bool lle_enabled =
+        lle_module != Settings::values.lle_modules.end() && lle_module->second;
+
+    if (!lle_enabled &&
         (!enable_recommended_lle_modules || !service_module.is_online_recommended))
         return false;
     std::unique_ptr<Loader::AppLoader> loader =
@@ -228,17 +241,27 @@ static bool AttemptLLE(const ServiceModuleInfo& service_module, u64 loading_titl
 
 /// Initialize ServiceManager
 void Init(Core::System& core, u64 loading_titleid, std::vector<u64>& lle_modules, bool allow_lle) {
+    SWITCH_TRACE_EVENTF("Service", "Init", "enter", "title_id=0x%llx allow_lle=%s",
+                        static_cast<unsigned long long>(loading_titleid),
+                        allow_lle ? "true" : "false");
+    SWITCH_TRACE_EVENT("Service", "SM::ServiceManager::InstallInterfaces", "enter");
     SM::ServiceManager::InstallInterfaces(core);
+    SWITCH_TRACE_EVENT("Service", "SM::ServiceManager::InstallInterfaces", "leave");
     core.Kernel().SetAppMainThreadExtendedSleep(false);
     bool lle_module_present = false;
 
     for (const auto& service_module : service_module_map) {
+        SWITCH_TRACE_EVENTF("Service", "InitModule", "enter", "name=%s title_id=0x%llx",
+                            service_module.name,
+                            static_cast<unsigned long long>(service_module.title_id));
         if (core.GetSaveStateStatus() == Core::System::SaveStateStatus::LOADING &&
             std::find(lle_modules.begin(), lle_modules.end(), service_module.title_id) !=
                 lle_modules.end()) {
             // The system module has already been loaded before, do not attempt to load again as the
             // process, threads, etc are already serialized in the kernel structures.
             lle_module_present |= true;
+            SWITCH_TRACE_EVENTF("Service", "InitModule", "skip_savestate", "name=%s",
+                                service_module.name);
             continue;
         }
 
@@ -247,11 +270,22 @@ void Init(Core::System& core, u64 loading_titleid, std::vector<u64>& lle_modules
                              AttemptLLE(service_module, loading_titleid);
         if (has_lle) {
             lle_modules.push_back(service_module.title_id);
+            SWITCH_TRACE_EVENTF("Service", "InitModule", "lle_loaded", "name=%s",
+                                service_module.name);
         }
         if (!has_lle && service_module.init_function != nullptr) {
+            SWITCH_TRACE_EVENTF("Service", "InitModuleHLE", "enter", "name=%s",
+                                service_module.name);
             service_module.init_function(core);
+            SWITCH_TRACE_EVENTF("Service", "InitModuleHLE", "leave", "name=%s",
+                                service_module.name);
+        } else if (!has_lle) {
+            SWITCH_TRACE_EVENTF("Service", "InitModuleHLE", "none", "name=%s",
+                                service_module.name);
         }
         lle_module_present |= has_lle;
+        SWITCH_TRACE_EVENTF("Service", "InitModule", "leave", "name=%s has_lle=%s",
+                            service_module.name, has_lle ? "true" : "false");
     }
     if (lle_module_present) {
         // If there is at least one LLE module, tell the kernel to
@@ -259,6 +293,8 @@ void Init(Core::System& core, u64 loading_titleid, std::vector<u64>& lle_modules
         core.Kernel().SetAppMainThreadExtendedSleep(true);
     }
     LOG_DEBUG(Service, "initialized OK");
+    SWITCH_TRACE_EVENTF("Service", "Init", "leave", "lle_module_present=%s",
+                        lle_module_present ? "true" : "false");
 }
 
 } // namespace Service

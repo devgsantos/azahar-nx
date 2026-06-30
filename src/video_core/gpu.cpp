@@ -5,6 +5,7 @@
 #include "common/archives.h"
 #include "common/hacks/hack_manager.h"
 #include "common/microprofile.h"
+#include "common/switch_trace.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/service/gsp/gsp_gpu.h"
@@ -90,13 +91,19 @@ GPU::GPU(Core::System& system, Frontend::EmuWindow& emu_window,
          Frontend::EmuWindow* secondary_window)
     : right_eye_disabler{std::make_unique<RightEyeDisabler>(*this)},
       impl{std::make_unique<Impl>(system, emu_window, secondary_window)} {
+    SWITCH_TRACE_EVENT("VideoCore.GPU", "GPU::GPU", "enter");
+    SWITCH_TRACE_EVENT("VideoCore.GPU", "GPU::GPU.VBlankEvent", "enter");
     impl->vblank_event = impl->timing.RegisterEvent(
         "GPU::VBlankCallback",
         [this](uintptr_t user_data, s64 cycles_late) { VBlankCallback(user_data, cycles_late); });
     impl->timing.ScheduleEvent(FRAME_TICKS, impl->vblank_event);
+    SWITCH_TRACE_EVENT("VideoCore.GPU", "GPU::GPU.VBlankEvent", "leave");
 
     // Bind the rasterizer to the PICA GPU
+    SWITCH_TRACE_EVENT("VideoCore.GPU", "GPU::GPU.BindRasterizer", "enter");
     impl->pica.BindRasterizer(impl->rasterizer);
+    SWITCH_TRACE_EVENT("VideoCore.GPU", "GPU::GPU.BindRasterizer", "leave");
+    SWITCH_TRACE_EVENT("VideoCore.GPU", "GPU::GPU", "leave");
 }
 
 GPU::~GPU() = default;

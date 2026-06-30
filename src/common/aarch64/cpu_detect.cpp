@@ -14,7 +14,7 @@
 #include <sys/types.h>
 #include <sys/sysctl.h>
 // clang-format on
-#elif !defined(_WIN32)
+#elif !defined(_WIN32) && !defined(__SWITCH__)
 #ifndef __FreeBSD__
 #include <asm/hwcap.h>
 #endif // __FreeBSD__
@@ -36,7 +36,7 @@ static std::string GetCPUString() {
     }
     return buf;
 }
-#elif !defined(WIN32)
+#elif !defined(WIN32) && !defined(__SWITCH__)
 static std::string GetCPUString() {
     constexpr char procfile[] = "/proc/cpuinfo";
     constexpr char marker[] = "Hardware\t: ";
@@ -88,6 +88,14 @@ static CPUCaps Detect() {
     caps.crc32 = true;
     caps.sha1 = true;
     caps.sha2 = true;
+#elif defined(__SWITCH__)
+    caps.fp = true;
+    caps.asimd = true;
+    caps.aes = true;
+    caps.crc32 = false;
+    caps.sha1 = true;
+    caps.sha2 = true;
+    caps.cpu_string = "Nintendo Switch";
 #else
     caps.cpu_string = GetCPUString();
 

@@ -4,6 +4,7 @@
 
 #include <tuple>
 #include "common/assert.h"
+#include "common/switch_trace.h"
 #include "core/core.h"
 #include "core/hle/kernel/client_session.h"
 #include "core/hle/result.h"
@@ -21,42 +22,59 @@ static Result ValidateServiceName(const std::string& name) {
 ServiceManager::ServiceManager(Core::System& system) : system(system) {}
 
 void ServiceManager::InstallInterfaces(Core::System& system) {
+    SWITCH_TRACE_EVENT("Service.SM", "ServiceManager::InstallInterfaces", "enter");
     ASSERT(system.ServiceManager().srv_interface.expired());
 
     auto srv = std::make_shared<SRV>(system);
     srv->InstallAsNamedPort(system.Kernel());
     system.ServiceManager().srv_interface = srv;
+    SWITCH_TRACE_EVENT("Service.SM", "ServiceManager::InstallInterfaces", "leave");
 }
 
 Result ServiceManager::RegisterService(std::shared_ptr<Kernel::ServerPort>* out_server_port,
                                        std::string name, u32 max_sessions) {
+    SWITCH_TRACE_EVENTF("Service.SM", "ServiceManager::RegisterService", "enter",
+                        "name=%s max_sessions=%u", name.c_str(), max_sessions);
     R_TRY(ValidateServiceName(name));
     R_UNLESS(registered_services.find(name) == registered_services.end(), ResultAlreadyRegistered);
 
     const auto [server_port, client_port] = system.Kernel().CreatePortPair(max_sessions, name);
+    const std::string registered_name = name;
+    const u32 object_id = client_port->GetObjectId();
     registered_services_inverse.emplace(client_port->GetObjectId(), name);
     registered_services.emplace(std::move(name), std::move(client_port));
 
     *out_server_port = server_port;
+    SWITCH_TRACE_EVENTF("Service.SM", "ServiceManager::RegisterService", "leave",
+                        "name=%s object_id=%u", registered_name.c_str(), object_id);
     return ResultSuccess;
 }
 
 Result ServiceManager::GetServicePort(std::shared_ptr<Kernel::ClientPort>* out_client_port,
                                       const std::string& name) {
+    SWITCH_TRACE_EVENTF("Service.SM", "ServiceManager::GetServicePort", "enter", "name=%s",
+                        name.c_str());
     R_TRY(ValidateServiceName(name));
 
     auto it = registered_services.find(name);
     R_UNLESS(it != registered_services.end(), ResultServiceNotRegistered);
 
     *out_client_port = it->second;
+    SWITCH_TRACE_EVENTF("Service.SM", "ServiceManager::GetServicePort", "leave", "name=%s",
+                        name.c_str());
     return ResultSuccess;
 }
 
 Result ServiceManager::ConnectToService(std::shared_ptr<Kernel::ClientSession>* out_client_session,
                                         const std::string& name) {
+    SWITCH_TRACE_EVENTF("Service.SM", "ServiceManager::ConnectToService", "enter", "name=%s",
+                        name.c_str());
     std::shared_ptr<Kernel::ClientPort> client_port;
     R_TRY(GetServicePort(std::addressof(client_port), name));
-    return client_port->Connect(out_client_session);
+    const Result result = client_port->Connect(out_client_session);
+    SWITCH_TRACE_EVENTF("Service.SM", "ServiceManager::ConnectToService", "leave",
+                        "name=%s result=0x%08x", name.c_str(), result.raw);
+    return result;
 }
 
 std::string ServiceManager::GetServiceNameByPortId(u32 port) const {

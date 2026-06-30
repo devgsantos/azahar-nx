@@ -328,7 +328,6 @@ add_library(citra_core STATIC EXCLUDE_FROM_ALL
     hle/service/hid/hid_spvr.h
     hle/service/hid/hid_user.cpp
     hle/service/hid/hid_user.h
-    hle/service/http/http_c.cpp
     hle/service/http/http_c.h
     hle/service/ir/extra_hid.cpp
     hle/service/ir/extra_hid.h
@@ -448,7 +447,6 @@ add_library(citra_core STATIC EXCLUDE_FROM_ALL
     hle/service/sm/sm.h
     hle/service/sm/srv.cpp
     hle/service/sm/srv.h
-    hle/service/soc/soc_u.cpp
     hle/service/soc/soc_u.h
     hle/service/ssl/ssl_c.cpp
     hle/service/ssl/ssl_c.h
@@ -482,7 +480,6 @@ add_library(citra_core STATIC EXCLUDE_FROM_ALL
     memory.h
     movie.cpp
     movie.h
-    nus_download.cpp
     nus_download.h
     perf_stats.cpp
     perf_stats.h
@@ -502,6 +499,17 @@ if (ENABLE_BUILTIN_KEYBLOB)
 endif()
 
 create_target_directory_groups(citra_core)
+
+if (ENABLE_SWITCH_FRONTEND)
+    target_sources(citra_core PRIVATE hle/service/http/http_c_switch_stub.cpp)
+    target_sources(citra_core PRIVATE hle/service/soc/soc_u_switch_stub.cpp)
+    target_sources(citra_core PRIVATE nus_download_switch_stub.cpp)
+    target_compile_options(citra_core PRIVATE -include common/switch_cryptopp_rng.h)
+else()
+    target_sources(citra_core PRIVATE hle/service/http/http_c.cpp)
+    target_sources(citra_core PRIVATE hle/service/soc/soc_u.cpp)
+    target_sources(citra_core PRIVATE nus_download.cpp)
+endif()
 
 target_link_libraries(citra_core PUBLIC citra_common PRIVATE audio_core network video_core)
 target_link_libraries(citra_core PRIVATE Boost::boost Boost::serialization Boost::iostreams httplib)

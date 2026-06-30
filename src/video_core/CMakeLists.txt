@@ -118,6 +118,32 @@ if (ENABLE_SOFTWARE_RENDERER)
         renderer_software/sw_texturing.h
     )
 endif()
+if (ENABLE_SWITCH_FRONTEND)
+    target_sources(video_core PRIVATE
+        renderer_deko3d/deko3d_presenter.cpp
+        renderer_deko3d/deko3d_presenter.h
+        renderer_deko3d/deko3d_rasterizer.cpp
+        renderer_deko3d/deko3d_rasterizer.h
+        renderer_deko3d/deko3d_shader.cpp
+        renderer_deko3d/deko3d_shader.h
+        renderer_deko3d/deko3d_state.cpp
+        renderer_deko3d/deko3d_state.h
+        renderer_deko3d/deko3d_texture_cache.cpp
+        renderer_deko3d/deko3d_texture_cache.h
+        renderer_deko3d/renderer_deko3d.cpp
+        renderer_deko3d/renderer_deko3d.h
+    )
+    target_compile_definitions(video_core PUBLIC AZAHAR_ENABLE_DEKO3D)
+    if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+        find_path(DEKO3D_INCLUDE_DIR deko3d.h HINTS "$ENV{DEVKITPRO}/libnx/include")
+        find_library(DEKO3D_LIBRARY deko3d HINTS "$ENV{DEVKITPRO}/libnx/lib")
+        if(NOT DEKO3D_INCLUDE_DIR OR NOT DEKO3D_LIBRARY)
+            message(FATAL_ERROR "Deko3D headers/libs are required for ENABLE_SWITCH_FRONTEND")
+        endif()
+        target_include_directories(video_core PRIVATE ${DEKO3D_INCLUDE_DIR})
+        target_link_libraries(video_core PUBLIC ${DEKO3D_LIBRARY})
+    endif()
+endif()
 if (ENABLE_OPENGL)
     target_sources(video_core PRIVATE
         renderer_opengl/frame_dumper_opengl.cpp

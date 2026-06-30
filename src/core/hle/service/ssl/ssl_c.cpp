@@ -2,7 +2,11 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#ifdef __SWITCH__
+extern "C" void randomGet(void* buf, size_t len);
+#else
 #include <openssl/rand.h>
+#endif
 #include "common/archives.h"
 #include "common/common_types.h"
 #include "core/core.h"
@@ -75,7 +79,11 @@ void InstallInterfaces(Core::System& system) {
 
 void GenerateRandomData(std::vector<u8>& out) {
     // Fill the output buffer with random data.
+#ifdef __SWITCH__
+    randomGet(out.data(), out.size());
+#else
     RAND_bytes(out.data(), static_cast<int>(out.size()));
+#endif
 }
 
 } // namespace Service::SSL

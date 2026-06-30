@@ -38,6 +38,7 @@ if (BSD STREQUAL "OpenBSD")
 endif()
 
 option(ENABLE_LIBRETRO "Build as a LibRetro core" OFF)
+option(ENABLE_SWITCH_FRONTEND "Build the native Nintendo Switch frontend" OFF)
 
 # Some submodules like to pick their own default build type if not specified.
 # Make sure we default to Release build type always, unless the generator has custom types.
@@ -158,6 +159,29 @@ option(ENABLE_LTO "Enable link time optimization" ${DEFAULT_ENABLE_LTO})
 option(ENABLE_NATIVE_OPTIMIZATION "Enables processor-specific optimizations via -march=native" OFF)
 option(CITRA_USE_PRECOMPILED_HEADERS "Use precompiled headers" ON)
 option(CITRA_WARNINGS_AS_ERRORS "Enable warnings as errors" ON)
+
+if(ENABLE_SWITCH_FRONTEND)
+    set(ENABLE_QT OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_QT_TRANSLATION OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_QT_UPDATE_CHECKER OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_SDL2 OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_TESTS OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_ROOM OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_ROOM_STANDALONE OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_WEB_SERVICE OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_SCRIPTING OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_GDBSTUB OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_CUBEB OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_OPENAL OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_LIBUSB OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_OPENGL OFF CACHE BOOL "Disabled for native Switch frontend" FORCE)
+    set(ENABLE_VULKAN OFF CACHE BOOL "Disabled for native Switch Deko3D frontend" FORCE)
+    set(ENABLE_SOFTWARE_RENDERER OFF CACHE BOOL "Disabled for native Switch Deko3D frontend" FORCE)
+    set(ENABLE_LTO OFF CACHE BOOL "Avoid oversized first-pass Switch links" FORCE)
+    set(CITRA_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "Faster cross-build iteration for Switch" FORCE)
+    add_definitions(-DAZAHAR_SWITCH)
+    add_definitions(-DAZAHAR_ENABLE_DEKO3D)
+endif()
 
 # Handle incompatible options for libretro builds
 if(ENABLE_LIBRETRO)

@@ -12,7 +12,7 @@
 #elif defined(_WIN32)
 #include <windows.h>
 #include "common/string_util.h"
-#else
+#elif !defined(__SWITCH__)
 #if defined(__Bitrig__) || defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <pthread_np.h>
 #else
@@ -20,7 +20,7 @@
 #endif
 #include <sched.h>
 #endif
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__SWITCH__)
 #include <unistd.h>
 #endif
 
@@ -56,6 +56,12 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
         break;
     }
     SetThreadPriority(handle, windows_priority);
+}
+
+#elif defined(__SWITCH__)
+
+void SetCurrentThreadPriority(ThreadPriority) {
+    // TODO: Map Azahar thread priorities onto Horizon thread priorities.
 }
 
 #else
@@ -94,6 +100,8 @@ void SetCurrentThreadName(const char* name) {
 void SetCurrentThreadName(const char* name) {
 #ifdef __APPLE__
     pthread_setname_np(name);
+#elif defined(__SWITCH__)
+    (void)name;
 #elif defined(__Bitrig__) || defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
     pthread_set_name_np(pthread_self(), name);
 #elif defined(__NetBSD__)

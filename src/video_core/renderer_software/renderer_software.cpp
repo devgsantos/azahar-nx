@@ -2,7 +2,11 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
+
 #include "common/color.h"
+#include "common/logging/log.h"
+#include "core/3ds.h"
 #include "core/core.h"
 #include "video_core/gpu.h"
 #include "video_core/pica/pica_core.h"
@@ -42,16 +46,51 @@ void RendererSoftware::LoadFBToScreenInfo(int i, const Pica::ColorFill& color_fi
     const PAddr framebuffer_addr =
         framebuffer.active_fb == 0 ? framebuffer.address_left1 : framebuffer.address_left2;
     const s32 bpp = Pica::BytesPerPixel(framebuffer.color_format);
-    const u8* framebuffer_data = memory.GetPhysicalPointer(framebuffer_addr);
+    const u32 framebuffer_stride = framebuffer.stride;
+    const u32 framebuffer_height = framebuffer.height;
+    if (bpp <= 0 || framebuffer_stride == 0 || framebuffer_height == 0) {
+        LOG_WARNING(Render_Software,
+                    "Skipping software frame load with incomplete framebuffer state: screen={} "
+                    "addr={:#010X} stride={} height={} bpp={}",
+                    i, framebuffer_addr, framebuffer_stride, framebuffer_height, bpp);
+        info.width = i == 1 ? Core::kScreenBottomWidth : Core::kScreenTopWidth;
+        info.height = i == 1 ? Core::kScreenBottomHeight : Core::kScreenTopHeight;
+        info.pixels.assign(info.width * info.height * 4, 0);
+        return;
+    }
 
-    const s32 pixel_stride = framebuffer.stride / bpp;
-    info.height = framebuffer.height;
+    const s32 pixel_stride = framebuffer_stride / bpp;
+    if (pixel_stride <= 0) {
+        LOG_WARNING(Render_Software,
+                    "Skipping software frame load with invalid pixel stride: screen={} "
+                    "addr={:#010X} stride={} bpp={}",
+                    i, framebuffer_addr, framebuffer_stride, bpp);
+        info.width = i == 1 ? Core::kScreenBottomWidth : Core::kScreenTopWidth;
+        info.height = i == 1 ? Core::kScreenBottomHeight : Core::kScreenTopHeight;
+        info.pixels.assign(info.width * info.height * 4, 0);
+        return;
+    }
+
+    info.height = framebuffer_height;
     info.width = pixel_stride;
     info.pixels.resize(info.width * info.height * 4);
 
+    const u8* framebuffer_data = memory.GetPhysicalPointer(framebuffer_addr);
+    if (!framebuffer_data && !color_fill.is_enabled) {
+        LOG_WARNING(Render_Software,
+                    "Skipping software frame load with unmapped framebuffer: screen={} "
+                    "addr={:#010X} stride={} height={}",
+                    i, framebuffer_addr, framebuffer_stride, framebuffer_height);
+        std::fill(info.pixels.begin(), info.pixels.end(), 0);
+        return;
+    }
+
     for (u32 y = 0; y < info.height; y++) {
         for (u32 x = 0; x < info.width; x++) {
-            const u8* pixel = framebuffer_data + (y * pixel_stride + pixel_stride - x) * bpp;
+            const u8* pixel = nullptr;
+            if (!color_fill.is_enabled) {
+                pixel = framebuffer_data + (y * pixel_stride + pixel_stride - x - 1) * bpp;
+            }
             Common::Vec4 color = [&] {
                 if (color_fill.is_enabled) {
                     return Common::Vec4<u8>(color_fill.color_r, color_fill.color_g,
