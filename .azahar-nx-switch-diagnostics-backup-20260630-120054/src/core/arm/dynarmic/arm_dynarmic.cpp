@@ -38,15 +38,8 @@ public:
     ~DynarmicUserCallbacks() = default;
 
     std::optional<std::uint32_t> MemoryReadCode(VAddr vaddr) override {
-    const auto value = memory.Read32OrNullopt(vaddr);
-#ifdef __SWITCH__
-    if (!value) {
-        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "MemoryReadCode", "failed",
-                            "vaddr=0x%08x", vaddr);
+        return memory.Read32OrNullopt(vaddr);
     }
-#endif
-    return value;
-}
 
     std::uint8_t MemoryRead8(VAddr vaddr) override {
         return memory.Read8(vaddr);
@@ -88,37 +81,16 @@ public:
     }
 
     void InterpreterFallback(VAddr pc, std::size_t num_instructions) override {
-    const auto instruction = MemoryReadCode(pc);
-#ifdef __SWITCH__
-    SWITCH_TRACE_EVENTF("Dynarmic.Callback", "InterpreterFallback", "reached",
-                        "pc=0x%08x instruction=0x%08x count=%zu", pc,
-                        instruction.value_or(0), num_instructions);
-#endif
-    const std::string error = fmt::format(
-        "InterpreterFallback reached with pc = 0x{:08x}, code = 0x{:08x}, num = {}", pc,
-        instruction.value_or(0), num_instructions);
-    parent.system.SetStatus(Core::System::ResultStatus::ErrorCoreExceptionRaised,
-                            error.c_str());
-    parent.PrepareReschedule();
-}
+        // Should never happen.
+        UNREACHABLE_MSG("InterpeterFallback reached with pc = 0x{:08x}, code = 0x{:08x}, num = {}",
+                        pc, MemoryReadCode(pc).value(), num_instructions);
+    }
 
     void CallSVC(std::uint32_t swi) override {
-#ifdef __SWITCH__
-    SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "enter", "swi=0x%08x", swi);
-#endif
-    svc_context.CallSVC(swi);
-#ifdef __SWITCH__
-    SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "leave", "swi=0x%08x", swi);
-#endif
-}
+        svc_context.CallSVC(swi);
+    }
 
     void ExceptionRaised(VAddr pc, Dynarmic::A32::Exception exception) override {
-#ifdef __SWITCH__
-    SWITCH_TRACE_EVENTF("Dynarmic.Callback", "ExceptionRaised", "enter",
-                        "pc=0x%08x exception=%u", pc,
-                        static_cast<unsigned>(exception));
-#endif
-
         switch (exception) {
         case Dynarmic::A32::Exception::UndefinedInstruction:
         case Dynarmic::A32::Exception::UnpredictableInstruction:

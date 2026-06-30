@@ -5,9 +5,6 @@ add_executable(azahar_switch
     switch_audio.h
     switch_debug_log.cpp
     switch_debug_log.h
-    switch_exception_handler.cpp
-    switch_jit.cpp
-    switch_jit.h
     switch_input.cpp
     switch_input.h
     switch_libnx.cpp

@@ -15,7 +15,6 @@
 #include "network/network.h"
 #include "switch_debug_log.h"
 #include "switch_input.h"
-#include "switch_jit.h"
 #include "switch_libnx.h"
 #include "switch_paths.h"
 #include "switch_rom_browser.h"
@@ -105,15 +104,6 @@ bool SwitchApp::InitializePlatform() {
     Common::Log::Initialize(LogPath());
     Common::Log::Start();
     SWITCH_EARLY_LOG("Common::Log::Initialize/Start end");
-
-    SWITCH_EARLY_LOG("Switch JIT self-test start");
-    const bool jit_self_test_ok = RunJitSelfTest();
-    SWITCH_EARLY_LOGF("Switch JIT self-test end result=%s",
-                      jit_self_test_ok ? "passed" : "failed");
-    if (!jit_self_test_ok) {
-        LOG_CRITICAL(Frontend, "Switch JIT self-test failed; refusing to start emulation");
-        return false;
-    }
 
     LOG_INFO(Frontend, "Switch filesystem root: {}", RootPath);
     LOG_INFO(Frontend, "Switch ROM directory: {}", RomPath);
