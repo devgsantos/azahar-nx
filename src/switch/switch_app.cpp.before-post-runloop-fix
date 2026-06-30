@@ -3,7 +3,6 @@
 
 #include "switch_app.h"
 
-#include <chrono>
 #include <cstdio>
 #include <exception>
 #include <string>
@@ -256,7 +255,7 @@ int SwitchApp::LaunchGame(const std::string& path) {
         }
 
         int loop_count = 0;
-        auto last_perf_sample = std::chrono::steady_clock::now();
+        bool first_frame_presented = false;
         while (system.IsPoweredOn()) {
             if (loop_count < 60) {
                 SWITCH_EARLY_LOGF("RunLoop iteration %d begin", loop_count);
@@ -301,33 +300,16 @@ int SwitchApp::LaunchGame(const std::string& path) {
                 return 0;
             }
 
-            const int completed_iteration = loop_count - 1;
-            if (completed_iteration < 60) {
-                SWITCH_EARLY_LOGF("RunLoop iteration %d post RunLoop perf sampling enter",
-                                  completed_iteration);
+            const auto perf = system.GetAndResetPerfStats();
+            std::printf("\x1b[1;1HAzahar Switch\nFPS %.2f  Speed %.2f%%\nPlus+Minus Exit\n",
+                        perf.game_fps, perf.emulation_speed * 100.0);
+            if (!first_frame_presented) {
+                SWITCH_EARLY_LOG("before first frame presentation");
             }
-
-            const auto now = std::chrono::steady_clock::now();
-            if (now - last_perf_sample >= std::chrono::seconds(1)) {
-                const auto perf = system.GetAndResetPerfStats();
-                last_perf_sample = now;
-
-                LOG_INFO(Frontend, "Switch performance: FPS {:.2f} Speed {:.2f}%",
-                         perf.game_fps, perf.emulation_speed * 100.0);
-                SWITCH_EARLY_LOGF("performance fps=%.2f speed=%.2f%%", perf.game_fps,
-                                  perf.emulation_speed * 100.0);
-            }
-
-            if (completed_iteration < 60) {
-                SWITCH_EARLY_LOGF("RunLoop iteration %d post RunLoop perf sampling leave",
-                                  completed_iteration);
-                SWITCH_EARLY_LOGF(
-                    "RunLoop iteration %d console overlay skipped because Deko3D is active",
-                    completed_iteration);
-                SWITCH_EARLY_LOGF(
-                    "RunLoop iteration %d presentation synchronization owned by renderer",
-                    completed_iteration);
-                SWITCH_EARLY_LOGF("RunLoop iteration %d completed", completed_iteration);
+            WaitForVBlank();
+            if (!first_frame_presented) {
+                SWITCH_EARLY_LOG("after first frame presentation");
+                first_frame_presented = true;
             }
         }
     } catch (const std::exception& e) {
