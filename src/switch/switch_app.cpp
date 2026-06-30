@@ -50,13 +50,45 @@ const char* BoolString(bool value) {
 
 } // namespace
 
+bool SwitchApp::InitializeConsole() {
+    if (console_active) {
+        return true;
+    }
+
+    LibNx::ConsoleInit();
+    console_active = true;
+    SWITCH_EARLY_LOG("libnx console initialized");
+    return true;
+}
+
+void SwitchApp::SuspendConsoleForRenderer() {
+    if (!console_active) {
+        return;
+    }
+
+    LibNx::ConsoleUpdate();
+    LibNx::ConsoleExit();
+    console_active = false;
+    SWITCH_EARLY_LOG("libnx console released before Deko3D initialization");
+}
+
+void SwitchApp::RestoreConsoleAfterRenderer() {
+    if (console_active) {
+        return;
+    }
+
+    LibNx::ConsoleInit();
+    console_active = true;
+    SWITCH_EARLY_LOG("libnx console restored after Deko3D shutdown");
+}
+
 bool SwitchApp::InitializePlatform() {
     SWITCH_TRACE_SCOPE("Switch.Frontend", "SwitchApp::InitializePlatform");
     DebugLog::Initialize();
     SWITCH_EARLY_LOG("InitializePlatform entered");
 
     SWITCH_EARLY_LOG("ConsoleInit start");
-    LibNx::ConsoleInit();
+    InitializeConsole();
     SWITCH_EARLY_LOG("ConsoleInit end");
 
     SWITCH_EARLY_LOG("RomfsInit start");
@@ -144,7 +176,10 @@ int SwitchApp::Run() {
     audio.Shutdown();
     Network::Shutdown();
     LibNx::RomfsExit();
-    LibNx::ConsoleExit();
+    if (console_active) {
+        LibNx::ConsoleExit();
+        console_active = false;
+    }
     Common::Log::Stop();
     SWITCH_EARLY_LOG("SwitchApp::Run returned 0");
     return 0;
@@ -164,7 +199,6 @@ int SwitchApp::LaunchGame(const std::string& path) {
     }
 
     Core::System* system_ptr = nullptr;
-    bool loaded = false;
 
     try {
         SWITCH_EARLY_LOG("before Core::System::GetInstance");
@@ -173,6 +207,7 @@ int SwitchApp::LaunchGame(const std::string& path) {
         SWITCH_EARLY_LOG("after Core::System::GetInstance");
 
         DrawStatus("Loading ROM...");
+        SuspendConsoleForRenderer();
         SWITCH_EARLY_LOG("before system.Load");
         SWITCH_TRACE_EVENT("Switch.Frontend", "SwitchApp::LaunchGame.system.Load", "enter");
         const Core::System::ResultStatus load = system.Load(window, path);
@@ -185,10 +220,10 @@ int SwitchApp::LaunchGame(const std::string& path) {
             LOG_ERROR(Frontend, "Game load failed for {}: {}", path, message);
             SWITCH_EARLY_LOGF("Game load failed: %s", message.c_str());
             system.Shutdown();
+            RestoreConsoleAfterRenderer();
             DrawFatal(message);
             return 0;
         }
-        loaded = true;
 
         LOG_INFO(Frontend, "Emulation loop starting for {}", path);
         SWITCH_EARLY_LOG("before emulation loop");
@@ -204,6 +239,7 @@ int SwitchApp::LaunchGame(const std::string& path) {
             SWITCH_EARLY_LOG(message);
             LOG_ERROR(Frontend, "{}", message);
             system.Shutdown();
+            RestoreConsoleAfterRenderer();
             DrawFatal(message);
             return 0;
         }
@@ -213,6 +249,7 @@ int SwitchApp::LaunchGame(const std::string& path) {
             SWITCH_EARLY_LOG("returning to ROM browser");
             LOG_ERROR(Frontend, "Deko3D renderer is not initialized");
             system.Shutdown();
+            RestoreConsoleAfterRenderer();
             DrawFatal(message);
             return 0;
         }
@@ -257,8 +294,10 @@ int SwitchApp::LaunchGame(const std::string& path) {
                 const std::string message = ResultToString(run);
                 LOG_ERROR(Frontend, "Emulation loop failed: {}", message);
                 SWITCH_EARLY_LOGF("Emulation loop failed: %s", message.c_str());
+                system.Shutdown();
+                RestoreConsoleAfterRenderer();
                 DrawFatal(message);
-                break;
+                return 0;
             }
 
             const auto perf = system.GetAndResetPerfStats();
@@ -276,17 +315,19 @@ int SwitchApp::LaunchGame(const std::string& path) {
     } catch (const std::exception& e) {
         SWITCH_EARLY_LOGF("LaunchGame std::exception: %s", e.what());
         LOG_CRITICAL(Frontend, "LaunchGame exception: {}", e.what());
-        if (system_ptr && loaded) {
+        if (system_ptr) {
             system_ptr->Shutdown();
         }
+        RestoreConsoleAfterRenderer();
         DrawFatal(std::string("Launch exception: ") + e.what());
         return 0;
     } catch (...) {
         SWITCH_EARLY_LOG("LaunchGame unknown exception");
         LOG_CRITICAL(Frontend, "LaunchGame unknown exception");
-        if (system_ptr && loaded) {
+        if (system_ptr) {
             system_ptr->Shutdown();
         }
+        RestoreConsoleAfterRenderer();
         DrawFatal("Unknown launch exception. Check logs/azahar-switch-early.log.");
         return 0;
     }
@@ -296,6 +337,7 @@ int SwitchApp::LaunchGame(const std::string& path) {
         system_ptr->Shutdown();
         SWITCH_EARLY_LOG("after system.Shutdown");
     }
+    RestoreConsoleAfterRenderer();
     LOG_INFO(Frontend, "Emulation loop stopped");
     SWITCH_EARLY_LOG("LaunchGame normal exit");
     return 0;

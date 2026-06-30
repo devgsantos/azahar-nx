@@ -3,15 +3,27 @@
 
 #include "video_core/renderer_deko3d/deko3d_state.h"
 
+#include <limits>
+
 #include "common/logging/log.h"
 #include "common/switch_trace.h"
 
 #ifdef __SWITCH__
 typedef struct NWindow NWindow;
 extern "C" NWindow* nwindowGetDefault(void);
+extern "C" bool nwindowIsValid(NWindow* nw);
 #endif
 
 namespace VideoCore::Deko3D {
+namespace {
+
+#ifdef __SWITCH__
+u64 AlignUp(u64 value, u64 alignment) {
+    return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+}
+#endif
+
+} // namespace
 
 State::State() = default;
 
@@ -88,13 +100,36 @@ bool State::Initialize() {
 
 void State::Shutdown() {
 #ifdef __SWITCH__
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "enter");
     if (queue) {
+        SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "wait queue idle enter");
         dkQueueWaitIdle(queue);
+        SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "wait queue idle leave");
     }
-    if (queue) {
-        dkQueueDestroy(queue);
-        queue = nullptr;
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy presenter resources enter");
+    clear_cmd = 0;
+    bind_framebuffer_cmds.fill(0);
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy presenter resources leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy swapchain enter");
+    if (swapchain) {
+        dkSwapchainDestroy(swapchain);
+        swapchain = nullptr;
     }
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy swapchain leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy framebuffer image views enter");
+    framebuffer_views = {};
+    swapchain_images.fill(nullptr);
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy framebuffer image views leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy framebuffer images enter");
+    framebuffers = {};
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy framebuffer images leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy framebuffer memory enter");
+    if (framebuffer_mem_block) {
+        dkMemBlockDestroy(framebuffer_mem_block);
+        framebuffer_mem_block = nullptr;
+    }
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy framebuffer memory leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy command buffers enter");
     if (cmdbuf) {
         dkCmdBufDestroy(cmdbuf);
         cmdbuf = nullptr;
@@ -103,18 +138,20 @@ void State::Shutdown() {
         dkMemBlockDestroy(cmdbuf_mem_block);
         cmdbuf_mem_block = nullptr;
     }
-    if (swapchain) {
-        dkSwapchainDestroy(swapchain);
-        swapchain = nullptr;
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy command buffers leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy queue enter");
+    if (queue) {
+        dkQueueDestroy(queue);
+        queue = nullptr;
     }
-    if (framebuffer_mem_block) {
-        dkMemBlockDestroy(framebuffer_mem_block);
-        framebuffer_mem_block = nullptr;
-    }
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy queue leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy device-owned resources enter");
     if (device) {
         dkDeviceDestroy(device);
         device = nullptr;
     }
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy device-owned resources leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "leave");
 #endif
     initialized = false;
 }
@@ -176,57 +213,128 @@ bool State::CreateDevice() {
 }
 
 bool State::CreateFramebuffers() {
-    if (!nwindowGetDefault()) {
-        SetError("nwindowGetDefault failed");
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "CreateFramebuffers enter");
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "native window obtain enter");
+    NWindow* const native_window = nwindowGetDefault();
+    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers", "native window pointer",
+                        "pointer=%p", static_cast<void*>(native_window));
+    if (native_window == nullptr) {
+        SetError("nwindowGetDefault returned null");
+        return false;
+    }
+    const bool native_window_valid = nwindowIsValid(native_window);
+    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers", "native window valid",
+                        "valid=%s", native_window_valid ? "true" : "false");
+    if (!native_window_valid) {
+        SetError("Default libnx NWindow is invalid");
         return false;
     }
 
     DkImageLayoutMaker layout_maker;
     dkImageLayoutMakerDefaults(&layout_maker, device);
-    layout_maker.flags =
-        DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_HwCompression;
+    layout_maker.type = DkImageType_2D;
+    layout_maker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent;
     layout_maker.format = DkImageFormat_RGBA8_Unorm;
     layout_maker.dimensions[0] = FramebufferWidth;
     layout_maker.dimensions[1] = FramebufferHeight;
 
     DkImageLayout framebuffer_layout;
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "image layout initialize enter");
     dkImageLayoutInitialize(&framebuffer_layout, &layout_maker);
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "image layout initialize leave");
 
-    const u32 framebuffer_align = dkImageLayoutGetAlignment(&framebuffer_layout);
-    u32 framebuffer_size = dkImageLayoutGetSize(&framebuffer_layout);
-    framebuffer_size = (framebuffer_size + framebuffer_align - 1) & ~(framebuffer_align - 1);
-    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers", "layout",
-                        "width=%u height=%u align=%u size=%u count=%u", FramebufferWidth,
-                        FramebufferHeight, framebuffer_align, framebuffer_size, FramebufferCount);
+    const u64 image_size = dkImageLayoutGetSize(&framebuffer_layout);
+    const u32 image_alignment = dkImageLayoutGetAlignment(&framebuffer_layout);
+    if (image_size == 0 || image_alignment == 0) {
+        SetError("Deko3D image layout returned invalid size or alignment");
+        return false;
+    }
+    const u64 image_stride = AlignUp(image_size, image_alignment);
+    const u64 total_framebuffer_allocation = image_stride * FramebufferCount;
+    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers", "image size",
+                        "size=%llu", static_cast<unsigned long long>(image_size));
+    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers", "image alignment",
+                        "alignment=%u", image_alignment);
+    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers", "image stride",
+                        "stride=%llu", static_cast<unsigned long long>(image_stride));
+    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers", "framebuffer count",
+                        "count=%u", FramebufferCount);
+    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers",
+                        "total framebuffer allocation", "size=%llu",
+                        static_cast<unsigned long long>(total_framebuffer_allocation));
+    if (total_framebuffer_allocation > std::numeric_limits<u32>::max()) {
+        SetError("Deko3D framebuffer allocation is too large for dkMemBlockCreate");
+        return false;
+    }
 
     DkMemBlockMaker mem_block_maker;
-    dkMemBlockMakerDefaults(&mem_block_maker, device, FramebufferCount * framebuffer_size);
+    dkMemBlockMakerDefaults(&mem_block_maker, device,
+                            static_cast<u32>(total_framebuffer_allocation));
     mem_block_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "framebuffer memory create enter");
     framebuffer_mem_block = dkMemBlockCreate(&mem_block_maker);
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "framebuffer memory create leave");
     if (!framebuffer_mem_block) {
         SetError("Deko3D framebuffer memory allocation failed");
         return false;
     }
-    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "memory_created");
 
-    std::array<const DkImage*, FramebufferCount> swapchain_images{};
     for (u32 index = 0; index < FramebufferCount; ++index) {
-        swapchain_images[index] = &framebuffers[index];
+        const u64 image_offset = image_stride * index;
+        const u64 image_range_end = image_offset + image_size;
+        SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers", "framebuffer image range",
+                            "index=%u offset=%llu end=%llu total=%llu", index,
+                            static_cast<unsigned long long>(image_offset),
+                            static_cast<unsigned long long>(image_range_end),
+                            static_cast<unsigned long long>(total_framebuffer_allocation));
+        if ((image_offset % image_alignment) != 0 ||
+            image_range_end > total_framebuffer_allocation ||
+            image_offset > std::numeric_limits<u32>::max()) {
+            SetError("Deko3D framebuffer image offset/range validation failed");
+            return false;
+        }
+        SWITCH_TRACE_EVENTF("Deko3D", "State::CreateFramebuffers",
+                            index == 0 ? "framebuffer[0] initialize enter"
+                                       : "framebuffer[1] initialize enter",
+                            "offset=%llu", static_cast<unsigned long long>(image_offset));
         dkImageInitialize(&framebuffers[index], &framebuffer_layout, framebuffer_mem_block,
-                          index * framebuffer_size);
+                          static_cast<u32>(image_offset));
+        SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers",
+                           index == 0 ? "framebuffer[0] initialize leave"
+                                      : "framebuffer[1] initialize leave");
     }
 
+    for (u32 index = 0; index < FramebufferCount; ++index) {
+        SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers",
+                           index == 0 ? "framebuffer[0] view initialize enter"
+                                      : "framebuffer[1] view initialize enter");
+        dkImageViewDefaults(&framebuffer_views[index], &framebuffers[index]);
+        SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers",
+                           index == 0 ? "framebuffer[0] view initialize leave"
+                                      : "framebuffer[1] view initialize leave");
+    }
+
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers",
+                       "swapchain image array prepare enter");
+    for (u32 index = 0; index < FramebufferCount; ++index) {
+        swapchain_images[index] = &framebuffers[index];
+    }
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers",
+                       "swapchain image array prepare leave");
+
     DkSwapchainMaker swapchain_maker;
-    dkSwapchainMakerDefaults(&swapchain_maker, device, nwindowGetDefault(), swapchain_images.data(),
+    dkSwapchainMakerDefaults(&swapchain_maker, device, native_window, swapchain_images.data(),
                              swapchain_images.size());
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "swapchain create enter");
     swapchain = dkSwapchainCreate(&swapchain_maker);
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "swapchain create leave");
     if (!swapchain) {
         SetError("dkSwapchainCreate failed");
         return false;
     }
     dkSwapchainSetSwapInterval(swapchain, 1);
     LOG_INFO(Render, "Deko3D framebuffer created");
-    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "swapchain_created");
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "CreateFramebuffers leave");
     return true;
 }
 
@@ -269,9 +377,8 @@ bool State::CreateQueue() {
 
 bool State::RecordStaticCommands() {
     for (u32 index = 0; index < FramebufferCount; ++index) {
-        DkImageView image_view;
-        dkImageViewDefaults(&image_view, &framebuffers[index]);
-        dkCmdBufBindRenderTarget(cmdbuf, &image_view, nullptr);
+        dkCmdBufClear(cmdbuf);
+        dkCmdBufBindRenderTarget(cmdbuf, &framebuffer_views[index], nullptr);
         bind_framebuffer_cmds[index] = dkCmdBufFinishList(cmdbuf);
         if (!bind_framebuffer_cmds[index]) {
             SetError("Deko3D failed to record framebuffer bind command");

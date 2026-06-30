@@ -51,11 +51,13 @@ private:
     DkDevice device{};
     DkQueue queue{};
     DkMemBlock framebuffer_mem_block{};
-    DkImage framebuffers[FramebufferCount]{};
+    std::array<DkImage, FramebufferCount> framebuffers{};
+    std::array<DkImageView, FramebufferCount> framebuffer_views{};
+    std::array<const DkImage*, FramebufferCount> swapchain_images{};
     DkSwapchain swapchain{};
     DkMemBlock cmdbuf_mem_block{};
     DkCmdBuf cmdbuf{};
-    DkCmdList bind_framebuffer_cmds[FramebufferCount]{};
+    std::array<DkCmdList, FramebufferCount> bind_framebuffer_cmds{};
     DkCmdList clear_cmd{};
 #endif
 

@@ -251,8 +251,10 @@ void Init(Core::System& core, u64 loading_titleid, std::vector<u64>& lle_modules
     bool lle_module_present = false;
 
     for (const auto& service_module : service_module_map) {
-        SWITCH_TRACE_EVENTF("Service", "InitModule", "enter", "name=%s title_id=0x%llx",
-                            service_module.name,
+        const int service_name_size = static_cast<int>(service_module.name.size());
+        const char* service_name_data = service_module.name.data();
+        SWITCH_TRACE_EVENTF("Service", "InitModule", "enter", "name=%.*s title_id=0x%llx",
+                            service_name_size, service_name_data,
                             static_cast<unsigned long long>(service_module.title_id));
         if (core.GetSaveStateStatus() == Core::System::SaveStateStatus::LOADING &&
             std::find(lle_modules.begin(), lle_modules.end(), service_module.title_id) !=
@@ -260,8 +262,8 @@ void Init(Core::System& core, u64 loading_titleid, std::vector<u64>& lle_modules
             // The system module has already been loaded before, do not attempt to load again as the
             // process, threads, etc are already serialized in the kernel structures.
             lle_module_present |= true;
-            SWITCH_TRACE_EVENTF("Service", "InitModule", "skip_savestate", "name=%s",
-                                service_module.name);
+            SWITCH_TRACE_EVENTF("Service", "InitModule", "skip_savestate", "name=%.*s",
+                                service_name_size, service_name_data);
             continue;
         }
 
@@ -270,22 +272,22 @@ void Init(Core::System& core, u64 loading_titleid, std::vector<u64>& lle_modules
                              AttemptLLE(service_module, loading_titleid);
         if (has_lle) {
             lle_modules.push_back(service_module.title_id);
-            SWITCH_TRACE_EVENTF("Service", "InitModule", "lle_loaded", "name=%s",
-                                service_module.name);
+            SWITCH_TRACE_EVENTF("Service", "InitModule", "lle_loaded", "name=%.*s",
+                                service_name_size, service_name_data);
         }
         if (!has_lle && service_module.init_function != nullptr) {
-            SWITCH_TRACE_EVENTF("Service", "InitModuleHLE", "enter", "name=%s",
-                                service_module.name);
+            SWITCH_TRACE_EVENTF("Service", "InitModuleHLE", "enter", "name=%.*s",
+                                service_name_size, service_name_data);
             service_module.init_function(core);
-            SWITCH_TRACE_EVENTF("Service", "InitModuleHLE", "leave", "name=%s",
-                                service_module.name);
+            SWITCH_TRACE_EVENTF("Service", "InitModuleHLE", "leave", "name=%.*s",
+                                service_name_size, service_name_data);
         } else if (!has_lle) {
-            SWITCH_TRACE_EVENTF("Service", "InitModuleHLE", "none", "name=%s",
-                                service_module.name);
+            SWITCH_TRACE_EVENTF("Service", "InitModuleHLE", "none", "name=%.*s",
+                                service_name_size, service_name_data);
         }
         lle_module_present |= has_lle;
-        SWITCH_TRACE_EVENTF("Service", "InitModule", "leave", "name=%s has_lle=%s",
-                            service_module.name, has_lle ? "true" : "false");
+        SWITCH_TRACE_EVENTF("Service", "InitModule", "leave", "name=%.*s has_lle=%s",
+                            service_name_size, service_name_data, has_lle ? "true" : "false");
     }
     if (lle_module_present) {
         // If there is at least one LLE module, tell the kernel to

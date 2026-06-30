@@ -17,6 +17,9 @@ public:
 
 private:
     bool InitializePlatform();
+    bool InitializeConsole();
+    void SuspendConsoleForRenderer();
+    void RestoreConsoleAfterRenderer();
     int LaunchGame(const std::string& path);
     void DrawStatus(const char* message) const;
     void DrawFatal(const std::string& message) const;
@@ -24,6 +27,7 @@ private:
 
     SwitchWindow window;
     SwitchAudio audio;
+    bool console_active = false;
 };
 
 } // namespace Azahar::Switch
