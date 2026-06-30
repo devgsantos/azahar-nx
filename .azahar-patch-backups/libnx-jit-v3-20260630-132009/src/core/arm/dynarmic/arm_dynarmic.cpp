@@ -431,16 +431,6 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     // Multi-process state
     config.processor_id = GetID();
     config.global_monitor = &exclusive_monitor.monitor;
-#ifdef __SWITCH__
-    // AZAHAR_SWITCH_DUAL_ALIAS_JIT_V3
-    // Bound per-JIT allocation on the Switch and keep the unsupported
-    // signal-driven fastmem path disabled.
-    config.code_cache_size = 32 * 1024 * 1024;
-    config.fastmem_pointer = std::nullopt;
-    config.recompile_on_fastmem_failure = false;
-    config.fastmem_exclusive_access = false;
-    config.recompile_on_exclusive_fastmem_failure = false;
-#endif
 
     return std::make_unique<Dynarmic::A32::Jit>(config);
 }

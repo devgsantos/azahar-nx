@@ -5,7 +5,6 @@ add_executable(azahar_switch
     switch_audio.h
     switch_debug_log.cpp
     switch_debug_log.h
-    switch_dynarmic_jit_bridge.cpp
     switch_exception_handler.cpp
     switch_jit.cpp
     switch_jit.h
