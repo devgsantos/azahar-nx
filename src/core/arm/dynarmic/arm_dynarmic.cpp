@@ -434,8 +434,11 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
 #ifdef __SWITCH__
     // AZAHAR_SWITCH_DUAL_ALIAS_JIT_V3
     // Bound per-JIT allocation on the Switch and keep the unsupported
-    // signal-driven fastmem path disabled.
-    config.code_cache_size = 32 * 1024 * 1024;
+    // signal-driven fastmem path disabled. The return-stack-buffer path
+    // branches through cached host code pointers after syscall returns; on
+    // Horizon's dual-alias JIT path, force those returns through the dispatcher.
+    config.code_cache_size = 16 * 1024 * 1024;
+    config.optimizations &= ~Dynarmic::OptimizationFlag::ReturnStackBuffer;
     config.fastmem_pointer = std::nullopt;
     config.recompile_on_fastmem_failure = false;
     config.fastmem_exclusive_access = false;
