@@ -4,7 +4,7 @@ Azahar NX is a native Nintendo Switch fork of [Azahar](https://github.com/azahar
 
 This fork keeps the Azahar/Citra core architecture and adds a Switch-native frontend, libnx platform layer, Joy-Con input path, audren audio setup, Switch filesystem layout, and an early Deko3D renderer path.
 
-The current goal is a first playable Switch build. It is not a replacement for the desktop, Android, Linux, or macOS Azahar releases.
+The current goal is a first playable Switch build.
 
 ## Current Status
 
@@ -148,7 +148,7 @@ src/network/switch_network_stub.cpp
 src/core/hle/service/*_switch_stub.cpp
 ```
 
-The Switch build must use Deko3D. OpenGL, Qt windowing, Vulkan, and software-renderer bootstrap paths are not valid runtime fallbacks for this target.
+The Switch build must use Deko3D. Alternate renderer or window bootstrap paths are not valid runtime fallbacks for this target.
 
 If Deko3D initialization fails, the frontend should stay open, show a clean error, and return to the ROM browser instead of closing.
 
