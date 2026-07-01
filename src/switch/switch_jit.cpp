@@ -57,7 +57,7 @@ bool LogResultFailure(const char* operation, Result result) {
 } // namespace
 
 bool RunJitSelfTest() {
-    AppendJitLog("diagnostics_version=7 host_timing_callbacks=cpp range_validation=enabled");
+    AppendJitLog("diagnostics_version=8 stable_host_timing_callbacks=enabled thread_local_breadcrumbs=enabled");
     AppendJitLog("Switch JIT self-test enter");
 
     Jit jit{};

@@ -78,12 +78,13 @@ struct JitExecutionBreadcrumb {
 };
 
 JitRange registered_ranges[MaxRegisteredJitRanges]{};
-JitExecutionBreadcrumb breadcrumb{};
+thread_local JitExecutionBreadcrumb breadcrumb{};
 std::uint32_t next_jit_id = 1;
-std::uintptr_t last_dispatcher_target = 0;
-std::uintptr_t last_run_entry = 0;
-std::uint32_t host_timing_log_count = 0;
-std::uint32_t a32_svc_log_count = 0;
+thread_local std::uintptr_t last_dispatcher_target = 0;
+thread_local std::uintptr_t last_run_entry = 0;
+thread_local std::uint32_t host_timing_log_count = 0;
+thread_local std::uint32_t a32_svc_log_count = 0;
+thread_local std::uint32_t run_entry_log_count = 0;
 
 void Log(const char* format, ...) noexcept {
     std::FILE* file = std::fopen(LogPath, "a");
@@ -377,6 +378,10 @@ extern "C" void azahar_switch_dynarmic_jit_log_prelude_target(
 extern "C" void azahar_switch_dynarmic_jit_log_run_entry(
     std::uintptr_t run_entry) noexcept {
     last_run_entry = run_entry;
+    if (run_entry_log_count >= 8) {
+        return;
+    }
+    ++run_entry_log_count;
     LogAddressFields("run_entry", run_entry);
 }
 
