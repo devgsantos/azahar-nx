@@ -39,8 +39,12 @@ enum class JitExecutionPhase : std::uint32_t {
     InsideCallback,
     AfterCallback,
     BeforeDispatcherReturn,
+    BeforeHostGetTicks,
+    AfterHostGetTicks,
     BeforeGeneratedRun,
     AfterGeneratedRun,
+    BeforeHostAddTicks,
+    AfterHostAddTicks,
 };
 
 struct JitRange {
@@ -78,6 +82,7 @@ JitExecutionBreadcrumb breadcrumb{};
 std::uint32_t next_jit_id = 1;
 std::uintptr_t last_dispatcher_target = 0;
 std::uintptr_t last_run_entry = 0;
+std::uint32_t host_timing_log_count = 0;
 
 void Log(const char* format, ...) noexcept {
     std::FILE* file = std::fopen(LogPath, "a");
@@ -349,6 +354,25 @@ extern "C" bool azahar_switch_dynarmic_jit_is_rx_address(
     return ClassifyAddress(address).address_class == JitAddressClass::RX;
 }
 
+extern "C" std::uint32_t azahar_switch_dynarmic_jit_get_range_id(
+    std::uintptr_t address) noexcept {
+    return ClassifyAddress(address).id;
+}
+
+extern "C" void azahar_switch_dynarmic_jit_log_prelude_target(
+    const char* name, std::uintptr_t address) noexcept {
+    const JitAddressInfo info = ClassifyAddress(address);
+    if (address == 0) {
+        Log("prelude name=%s address=null class=host-side-callback id=0 offset=0x0",
+            name != nullptr ? name : "unknown");
+        return;
+    }
+    Log("prelude name=%s address=0x%016llx class=%s id=%u offset=0x%zx",
+        name != nullptr ? name : "unknown",
+        static_cast<unsigned long long>(address), ClassName(info.address_class),
+        info.id, info.offset);
+}
+
 extern "C" void azahar_switch_dynarmic_jit_log_run_entry(
     std::uintptr_t run_entry) noexcept {
     last_run_entry = run_entry;
@@ -372,6 +396,22 @@ extern "C" void azahar_switch_dynarmic_jit_set_breadcrumb_phase(
     breadcrumb.guest_pc = guest_pc;
     breadcrumb.svc = 0;
     breadcrumb.phase.store(phase, std::memory_order_release);
+}
+
+extern "C" void azahar_switch_dynarmic_jit_log_host_timing(
+    const char* phase, std::uint32_t guest_pc, std::uint64_t ticks_to_run,
+    std::uint64_t ticks_executed, std::uintptr_t run_entry,
+    std::uint32_t run_entry_range_id) noexcept {
+    if (host_timing_log_count >= 32) {
+        return;
+    }
+    ++host_timing_log_count;
+    Log("%s guest_pc=0x%08x ticks_to_run=%llu ticks_executed=%llu "
+        "run_entry=0x%016llx run_entry_range_id=%u",
+        phase != nullptr ? phase : "HostTiming", guest_pc,
+        static_cast<unsigned long long>(ticks_to_run),
+        static_cast<unsigned long long>(ticks_executed),
+        static_cast<unsigned long long>(run_entry), run_entry_range_id);
 }
 
 extern "C" void azahar_switch_dynarmic_jit_update_breadcrumb(
