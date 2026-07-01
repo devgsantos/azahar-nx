@@ -83,6 +83,7 @@ std::uint32_t next_jit_id = 1;
 std::uintptr_t last_dispatcher_target = 0;
 std::uintptr_t last_run_entry = 0;
 std::uint32_t host_timing_log_count = 0;
+std::uint32_t a32_svc_log_count = 0;
 
 void Log(const char* format, ...) noexcept {
     std::FILE* file = std::fopen(LogPath, "a");
@@ -412,6 +413,36 @@ extern "C" void azahar_switch_dynarmic_jit_log_host_timing(
         static_cast<unsigned long long>(ticks_to_run),
         static_cast<unsigned long long>(ticks_executed),
         static_cast<unsigned long long>(run_entry), run_entry_range_id);
+}
+
+extern "C" void azahar_switch_dynarmic_jit_log_a32_svc(
+    std::uint32_t svc, std::uintptr_t callback_target, std::uintptr_t continuation,
+    std::uint32_t guest_pc) noexcept {
+    const JitAddressInfo continuation_info = ClassifyAddress(continuation);
+    breadcrumb.block_entry = last_run_entry;
+    breadcrumb.callback_target = callback_target;
+    breadcrumb.continuation = continuation;
+    breadcrumb.dispatcher_target = last_dispatcher_target;
+    breadcrumb.host_lr = continuation;
+    breadcrumb.host_sp = 0;
+    breadcrumb.host_x16 = callback_target;
+    breadcrumb.host_x17 = 0;
+    breadcrumb.guest_pc = guest_pc;
+    breadcrumb.svc = svc;
+    breadcrumb.phase.store(static_cast<std::uint32_t>(JitExecutionPhase::BeforeCallback),
+                           std::memory_order_release);
+
+    if (a32_svc_log_count >= 32) {
+        return;
+    }
+    ++a32_svc_log_count;
+    Log("A32CallSVC before callback svc=0x%08x guest_pc=0x%08x "
+        "callback_target=0x%016llx continuation=0x%016llx continuation_class=%s "
+        "continuation_id=%u continuation_offset=0x%zx run_entry=0x%016llx",
+        svc, guest_pc, static_cast<unsigned long long>(callback_target),
+        static_cast<unsigned long long>(continuation),
+        ClassName(continuation_info.address_class), continuation_info.id,
+        continuation_info.offset, static_cast<unsigned long long>(last_run_entry));
 }
 
 extern "C" void azahar_switch_dynarmic_jit_update_breadcrumb(
