@@ -57,7 +57,7 @@ bool LogResultFailure(const char* operation, Result result) {
 } // namespace
 
 bool RunJitSelfTest() {
-    AppendJitLog("diagnostics_version=15 full_jit_cache_maintenance=enabled callback_safe_unmapped_memory=enabled call_free_cycle_budget=enabled thread_local_breadcrumbs=enabled");
+    AppendJitLog("diagnostics_version=16 persistent_switch_trace=enabled full_jit_cache_maintenance=enabled callback_safe_unmapped_memory=enabled call_free_cycle_budget=enabled thread_local_breadcrumbs=enabled");
     AppendJitLog("Switch JIT self-test enter");
 
     Jit jit{};

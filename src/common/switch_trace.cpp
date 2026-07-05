@@ -23,13 +23,29 @@ void EnsureLogDir() {
     mkdir(LogDir, 0777);
 }
 
+FILE* GetTraceFile() {
+#if defined(AZAHAR_SWITCH) || defined(__SWITCH__)
+    static FILE* file = []() -> FILE* {
+        EnsureLogDir();
+        FILE* opened = std::fopen(LogPath, "a");
+        if (opened != nullptr) {
+            // Keep ordering deterministic with the other early-log writers and
+            // preserve the final trace boundary on a crash, while avoiding the
+            // former mkdir/fopen/fflush/fclose cycle for every trace event.
+            std::setvbuf(opened, nullptr, _IONBF, 0);
+        }
+        return opened;
+    }();
+    return file;
+#else
+    return nullptr;
+#endif
+}
+
 void AppendTraceLine(const char* module, const char* scope, const char* event,
                      const char* detail) {
 #if defined(AZAHAR_SWITCH) || defined(__SWITCH__)
-    EnsureLogDir();
     char line[1536]{};
-    FILE* file = std::fopen(LogPath, "a");
-
     const auto id = ++sequence;
     std::snprintf(line, sizeof(line), "TRACE #%06llu module=%s scope=%s event=%s", id,
                   module ? module : "<null>", scope ? scope : "<null>", event ? event : "<null>");
@@ -38,15 +54,14 @@ void AppendTraceLine(const char* module, const char* scope, const char* event,
         std::snprintf(line + used, sizeof(line) - used, " detail=%s", detail);
     }
 
+    // stderr is retained for nxlink/live diagnostics. It is normally
+    // unbuffered, so an explicit fflush per trace is unnecessary.
     std::fprintf(stderr, "%s\n", line);
-    std::fflush(stderr);
 
-    if (!file) {
-        return;
+    FILE* file = GetTraceFile();
+    if (file != nullptr) {
+        std::fprintf(file, "%s\n", line);
     }
-    std::fprintf(file, "%s\n", line);
-    std::fflush(file);
-    std::fclose(file);
 #else
     (void)module;
     (void)scope;
