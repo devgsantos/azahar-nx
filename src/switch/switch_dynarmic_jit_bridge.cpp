@@ -290,6 +290,20 @@ extern "C" bool azahar_switch_dynarmic_jit_end_write(void* opaque,
         return false;
     }
 
+    // Match libnx's CodeMemory transition exactly. The RX alias contains both
+    // executable instructions and literal data read by generated trampolines;
+    // full-buffer maintenance prevents stale data or instructions surviving
+    // from another virtual alias or an earlier mapping.
+    if (handle->jit.type == JitType_CodeMemory) {
+        const Result rc = jitTransitionToExecutable(&handle->jit);
+        if (R_FAILED(rc)) {
+            Log("jitTransitionToExecutable full flush failed rc=0x%08x size=%zu",
+                rc, handle->jit.size);
+            return false;
+        }
+        return true;
+    }
+
     const std::size_t total_size = handle->jit.size;
     offset = std::min(offset, total_size);
     size = std::min(size, total_size - offset);
@@ -301,18 +315,14 @@ extern "C" bool azahar_switch_dynarmic_jit_end_write(void* opaque,
         armDCacheFlush(rw + offset, size);
     }
 
-    if (handle->jit.type == JitType_SetProcessMemoryPermission) {
-        const Result rc = jitTransitionToExecutable(&handle->jit);
-        if (R_FAILED(rc)) {
-            Log("jitTransitionToExecutable failed rc=0x%08x offset=%zu size=%zu",
-                rc, offset, size);
-            return false;
-        }
+    const Result rc = jitTransitionToExecutable(&handle->jit);
+    if (R_FAILED(rc)) {
+        Log("jitTransitionToExecutable failed rc=0x%08x offset=%zu size=%zu",
+            rc, offset, size);
+        return false;
     }
 
-    // For CodeMemory, avoid libnx's whole-buffer flush on every emitted block:
-    // both aliases are permanently mapped, so range maintenance is sufficient.
-    // For the permission fallback, invalidate after the RX view is mapped.
+    // Invalidate after the permission fallback maps the RX view.
     if (size != 0) {
         armICacheInvalidate(rx + offset, size);
     }
