@@ -5,6 +5,9 @@
 #include <csignal>
 #include <cstring>
 #include <dynarmic/interface/A32/a32.h>
+#ifdef __SWITCH__
+#include <dynarmic/interface/A32/switch_cycle_budget.h>
+#endif
 #include <dynarmic/interface/optimization_flags.h>
 #include "common/assert.h"
 #include "common/microprofile.h"
@@ -38,15 +41,15 @@ public:
     ~DynarmicUserCallbacks() = default;
 
     std::optional<std::uint32_t> MemoryReadCode(VAddr vaddr) override {
-    const auto value = memory.Read32OrNullopt(vaddr);
+        const auto value = memory.Read32OrNullopt(vaddr);
 #ifdef __SWITCH__
-    if (!value) {
-        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "MemoryReadCode", "failed",
-                            "vaddr=0x%08x", vaddr);
-    }
+        if (!value) {
+            SWITCH_TRACE_EVENTF("Dynarmic.Callback", "MemoryReadCode", "failed",
+                                "vaddr=0x%08x", vaddr);
+        }
 #endif
-    return value;
-}
+        return value;
+    }
 
     std::uint8_t MemoryRead8(VAddr vaddr) override {
         return memory.Read8(vaddr);
@@ -88,35 +91,35 @@ public:
     }
 
     void InterpreterFallback(VAddr pc, std::size_t num_instructions) override {
-    const auto instruction = MemoryReadCode(pc);
+        const auto instruction = MemoryReadCode(pc);
 #ifdef __SWITCH__
-    SWITCH_TRACE_EVENTF("Dynarmic.Callback", "InterpreterFallback", "reached",
-                        "pc=0x%08x instruction=0x%08x count=%zu", pc,
-                        instruction.value_or(0), num_instructions);
+        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "InterpreterFallback", "reached",
+                            "pc=0x%08x instruction=0x%08x count=%zu", pc,
+                            instruction.value_or(0), num_instructions);
 #endif
-    const std::string error = fmt::format(
-        "InterpreterFallback reached with pc = 0x{:08x}, code = 0x{:08x}, num = {}", pc,
-        instruction.value_or(0), num_instructions);
-    parent.system.SetStatus(Core::System::ResultStatus::ErrorCoreExceptionRaised,
-                            error.c_str());
-    parent.PrepareReschedule();
-}
+        const std::string error = fmt::format(
+            "InterpreterFallback reached with pc = 0x{:08x}, code = 0x{:08x}, num = {}", pc,
+            instruction.value_or(0), num_instructions);
+        parent.system.SetStatus(Core::System::ResultStatus::ErrorCoreExceptionRaised,
+                                error.c_str());
+        parent.PrepareReschedule();
+    }
 
     void CallSVC(std::uint32_t swi) override {
 #ifdef __SWITCH__
-    SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "enter", "swi=0x%08x", swi);
+        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "enter", "swi=0x%08x", swi);
 #endif
-    svc_context.CallSVC(swi);
+        svc_context.CallSVC(swi);
 #ifdef __SWITCH__
-    SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "leave", "swi=0x%08x", swi);
+        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "leave", "swi=0x%08x", swi);
 #endif
-}
+    }
 
     void ExceptionRaised(VAddr pc, Dynarmic::A32::Exception exception) override {
 #ifdef __SWITCH__
-    SWITCH_TRACE_EVENTF("Dynarmic.Callback", "ExceptionRaised", "enter",
-                        "pc=0x%08x exception=%u", pc,
-                        static_cast<unsigned>(exception));
+        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "ExceptionRaised", "enter",
+                            "pc=0x%08x exception=%u", pc,
+                            static_cast<unsigned>(exception));
 #endif
 
         switch (exception) {
@@ -180,20 +183,12 @@ public:
         }
     }
 
-    void HostAddTicks(std::uint64_t ticks) noexcept {
+    void AddTicks(std::uint64_t ticks) override {
         parent.GetTimer().AddTicks(ticks);
     }
-
-    std::uint64_t HostGetTicksRemaining() noexcept {
+    std::uint64_t GetTicksRemaining() override {
         const s64 ticks = parent.GetTimer().GetDowncount();
         return static_cast<u64>(ticks <= 0 ? 0 : ticks);
-    }
-
-    void AddTicks(std::uint64_t ticks) override {
-        HostAddTicks(ticks);
-    }
-    std::uint64_t GetTicksRemaining() override {
-        return HostGetTicksRemaining();
     }
     std::uint64_t GetTicksForCode(bool is_thumb, VAddr, std::uint32_t instruction) override {
         return Core::TicksForInstruction(is_thumb, instruction);
@@ -203,26 +198,6 @@ public:
     Kernel::SVCContext svc_context;
     Memory::MemorySystem& memory;
 };
-
-} // namespace Core
-
-#ifdef __SWITCH__
-extern "C" std::uint64_t azahar_switch_dynarmic_host_get_ticks_remaining(
-    void* opaque) noexcept {
-    auto* callbacks = static_cast<Core::DynarmicUserCallbacks*>(opaque);
-    return callbacks != nullptr ? callbacks->HostGetTicksRemaining() : 0;
-}
-
-extern "C" void azahar_switch_dynarmic_host_add_ticks(
-    void* opaque, std::uint64_t ticks) noexcept {
-    auto* callbacks = static_cast<Core::DynarmicUserCallbacks*>(opaque);
-    if (callbacks != nullptr) {
-        callbacks->HostAddTicks(ticks);
-    }
-}
-#endif
-
-namespace Core {
 
 ARM_Dynarmic::ARM_Dynarmic(Core::System& system_, Memory::MemorySystem& memory_, u32 core_id_,
                            std::shared_ptr<Core::Timing::Timer> timer_,
@@ -259,8 +234,25 @@ void ARM_Dynarmic::Run() {
         return;
     }
 
+#ifdef __SWITCH__
+    const s64 downcount = GetTimer().GetDowncount();
+    const u64 ticks_to_run = static_cast<u64>(downcount <= 0 ? 0 : downcount);
+    Dynarmic::A32::SwitchCycleBudget::SetRequestedTicks(ticks_to_run);
+    Dynarmic::A32::SwitchCycleBudget::SetExecutedTicks(0);
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "cycle budget prepared",
+                        "requested=%llu", static_cast<unsigned long long>(ticks_to_run));
+#endif
+
     SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "before jit->Run or jit->Step");
     jit->Run();
+
+#ifdef __SWITCH__
+    const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
+    GetTimer().AddTicks(ticks_executed);
+    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "cycle budget consumed",
+                        "executed=%llu", static_cast<unsigned long long>(ticks_executed));
+#endif
+
     SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "after jit->Run or jit->Step",
                         "pc=0x%08x ticks=%llu downcount=%lld", GetPC(),
                         static_cast<unsigned long long>(GetTimer().GetTicks()),
@@ -288,8 +280,19 @@ void ARM_Dynarmic::Step() {
         return;
     }
 
+#ifdef __SWITCH__
+    Dynarmic::A32::SwitchCycleBudget::SetRequestedTicks(1);
+    Dynarmic::A32::SwitchCycleBudget::SetExecutedTicks(0);
+#endif
+
     SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "before jit->Run or jit->Step");
     jit->Step();
+
+#ifdef __SWITCH__
+    const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
+    GetTimer().AddTicks(ticks_executed);
+#endif
+
     SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "after jit->Run or jit->Step",
                         "pc=0x%08x ticks=%llu downcount=%lld", GetPC(),
                         static_cast<unsigned long long>(GetTimer().GetTicks()),
