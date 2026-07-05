@@ -42,9 +42,38 @@ FILE* GetTraceFile() {
 #endif
 }
 
+bool ShouldWriteTrace(const char* module, const char* scope, const char* event) {
+    if (module == nullptr || scope == nullptr || event == nullptr) {
+        return true;
+    }
+
+    // System::RunLoop generated more than 8,000 synchronous SD-card writes
+    // before the first frame in the v16 diagnostic run. The in-memory crash
+    // breadcrumbs remain active, so these textual enter/leave details are no
+    // longer needed on the performance path.
+    if (std::strcmp(module, "Core") == 0 &&
+        std::strcmp(scope, "System::RunLoop") == 0) {
+        return false;
+    }
+
+    // Keep only the two useful Dynarmic progress records. Callback traces use
+    // their own module and are intentionally preserved for crash diagnosis.
+    if (std::strcmp(module, "Core.ARM") == 0 &&
+        std::strcmp(scope, "ARM_Dynarmic::Run") == 0) {
+        return std::strcmp(event, "cycle budget consumed") == 0 ||
+               std::strcmp(event, "after jit->Run or jit->Step") == 0;
+    }
+
+    return true;
+}
+
 void AppendTraceLine(const char* module, const char* scope, const char* event,
                      const char* detail) {
 #if defined(AZAHAR_SWITCH) || defined(__SWITCH__)
+    if (!ShouldWriteTrace(module, scope, event)) {
+        return;
+    }
+
     char line[1536]{};
     const auto id = ++sequence;
     std::snprintf(line, sizeof(line), "TRACE #%06llu module=%s scope=%s event=%s", id,
