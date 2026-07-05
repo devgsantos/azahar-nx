@@ -15,6 +15,8 @@ namespace {
 
 constexpr const char* LogDir = "sdmc:/switch/azahar/logs";
 constexpr const char* LogPath = "sdmc:/switch/azahar/logs/azahar-switch-early.log";
+constexpr unsigned long long FlushInterval = 64;
+constexpr std::size_t FileBufferSize = 64 * 1024;
 std::atomic<unsigned long long> sequence{0};
 
 void EnsureLogDir() {
@@ -23,13 +25,42 @@ void EnsureLogDir() {
     mkdir(LogDir, 0777);
 }
 
+FILE* GetTraceFile() {
+#if defined(AZAHAR_SWITCH) || defined(__SWITCH__)
+    static FILE* file = []() -> FILE* {
+        EnsureLogDir();
+        FILE* opened = std::fopen(LogPath, "a");
+        if (opened != nullptr) {
+            std::setvbuf(opened, nullptr, _IOFBF, FileBufferSize);
+        }
+        return opened;
+    }();
+    return file;
+#else
+    return nullptr;
+#endif
+}
+
+bool ShouldFlush(const char* module, const char* event, unsigned long long id) {
+    if ((id % FlushInterval) == 0) {
+        return true;
+    }
+
+    // Preserve the last useful boundary before entering generated code and
+    // callback activity while avoiding a synchronous SD-card flush per trace.
+    if (event != nullptr && std::strcmp(event, "before jit->Run or jit->Step") == 0) {
+        return true;
+    }
+    if (module != nullptr && std::strcmp(module, "Dynarmic.Callback") == 0) {
+        return true;
+    }
+    return false;
+}
+
 void AppendTraceLine(const char* module, const char* scope, const char* event,
                      const char* detail) {
 #if defined(AZAHAR_SWITCH) || defined(__SWITCH__)
-    EnsureLogDir();
     char line[1536]{};
-    FILE* file = std::fopen(LogPath, "a");
-
     const auto id = ++sequence;
     std::snprintf(line, sizeof(line), "TRACE #%06llu module=%s scope=%s event=%s", id,
                   module ? module : "<null>", scope ? scope : "<null>", event ? event : "<null>");
@@ -38,15 +69,20 @@ void AppendTraceLine(const char* module, const char* scope, const char* event,
         std::snprintf(line + used, sizeof(line) - used, " detail=%s", detail);
     }
 
+    // stderr is kept for nxlink/live diagnostics. Avoid an explicit fflush on
+    // every line; stderr is normally unbuffered and the file sink below keeps
+    // bounded crash-loss through periodic and boundary flushes.
     std::fprintf(stderr, "%s\n", line);
-    std::fflush(stderr);
 
-    if (!file) {
+    FILE* file = GetTraceFile();
+    if (file == nullptr) {
         return;
     }
+
     std::fprintf(file, "%s\n", line);
-    std::fflush(file);
-    std::fclose(file);
+    if (ShouldFlush(module, event, id)) {
+        std::fflush(file);
+    }
 #else
     (void)module;
     (void)scope;
