@@ -290,26 +290,37 @@ extern "C" bool azahar_switch_dynarmic_jit_end_write(void* opaque,
         return false;
     }
 
-    // Match libnx's CodeMemory transition exactly. The RX alias contains both
-    // executable instructions and literal data read by generated trampolines;
-    // full-buffer maintenance prevents stale data or instructions surviving
-    // from another virtual alias or an earlier mapping.
-    if (handle->jit.type == JitType_CodeMemory) {
-        const Result rc = jitTransitionToExecutable(&handle->jit);
-        if (R_FAILED(rc)) {
-            Log("jitTransitionToExecutable full flush failed rc=0x%08x size=%zu",
-                rc, handle->jit.size);
-            return false;
-        }
-        return true;
-    }
-
     const std::size_t total_size = handle->jit.size;
     offset = std::min(offset, total_size);
     size = std::min(size, total_size - offset);
 
     auto* rw = static_cast<std::uint8_t*>(jitGetRwAddr(&handle->jit));
     auto* rx = static_cast<std::uint8_t*>(jitGetRxAddr(&handle->jit));
+
+    if (handle->jit.type == JitType_CodeMemory) {
+        // Keep libnx's full CodeMemory transition for complete publication,
+        // such as prelude creation, invalidate-all and full cache reset.
+        if (offset == 0 && size == total_size) {
+            const Result rc = jitTransitionToExecutable(&handle->jit);
+            if (R_FAILED(rc)) {
+                Log("jitTransitionToExecutable full flush failed rc=0x%08x size=%zu",
+                    rc, total_size);
+                return false;
+            }
+            return true;
+        }
+
+        if (size == 0) {
+            return true;
+        }
+
+        // Ordinary Dynarmic block emission and relinking already provide the
+        // exact modified range through Oaknut.
+        armDCacheFlush(rw + offset, size);
+        armDCacheInvalidate(rx + offset, size);
+        armICacheInvalidate(rx + offset, size);
+        return true;
+    }
 
     if (size != 0) {
         armDCacheFlush(rw + offset, size);
@@ -322,7 +333,6 @@ extern "C" bool azahar_switch_dynarmic_jit_end_write(void* opaque,
         return false;
     }
 
-    // Invalidate after the permission fallback maps the RX view.
     if (size != 0) {
         armICacheInvalidate(rx + offset, size);
     }
