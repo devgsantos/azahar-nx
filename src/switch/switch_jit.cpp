@@ -57,7 +57,7 @@ bool LogResultFailure(const char* operation, Result result) {
 } // namespace
 
 bool RunJitSelfTest() {
-    AppendJitLog("diagnostics_version=9 direct_host_timing_bridges=enabled thread_local_breadcrumbs=enabled");
+    AppendJitLog("diagnostics_version=10 concrete_host_timing_bridges=enabled thread_local_breadcrumbs=enabled");
     AppendJitLog("Switch JIT self-test enter");
 
     Jit jit{};
