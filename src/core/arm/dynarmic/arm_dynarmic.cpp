@@ -41,6 +41,12 @@ public:
     ~DynarmicUserCallbacks() = default;
 
     std::optional<std::uint32_t> MemoryReadCode(VAddr vaddr) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 32, false);
+            return std::nullopt;
+        }
+#endif
         const auto value = memory.Read32OrNullopt(vaddr);
 #ifdef __SWITCH__
         if (!value) {
@@ -52,41 +58,113 @@ public:
     }
 
     std::uint8_t MemoryRead8(VAddr vaddr) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 8, false);
+            return 0;
+        }
+#endif
         return memory.Read8(vaddr);
     }
     std::uint16_t MemoryRead16(VAddr vaddr) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 16, false);
+            return 0;
+        }
+#endif
         return memory.Read16(vaddr);
     }
     std::uint32_t MemoryRead32(VAddr vaddr) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 32, false);
+            return 0;
+        }
+#endif
         return memory.Read32(vaddr);
     }
     std::uint64_t MemoryRead64(VAddr vaddr) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 64, false);
+            return 0;
+        }
+#endif
         return memory.Read64(vaddr);
     }
 
     void MemoryWrite8(VAddr vaddr, std::uint8_t value) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 8, true);
+            return;
+        }
+#endif
         memory.Write8(vaddr, value);
     }
     void MemoryWrite16(VAddr vaddr, std::uint16_t value) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 16, true);
+            return;
+        }
+#endif
         memory.Write16(vaddr, value);
     }
     void MemoryWrite32(VAddr vaddr, std::uint32_t value) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 32, true);
+            return;
+        }
+#endif
         memory.Write32(vaddr, value);
     }
     void MemoryWrite64(VAddr vaddr, std::uint64_t value) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 64, true);
+            return;
+        }
+#endif
         memory.Write64(vaddr, value);
     }
 
     bool MemoryWriteExclusive8(u32 vaddr, u8 value, u8 expected) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 8, true);
+            return true;
+        }
+#endif
         return memory.WriteExclusive8(vaddr, value, expected);
     }
     bool MemoryWriteExclusive16(u32 vaddr, u16 value, u16 expected) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 16, true);
+            return true;
+        }
+#endif
         return memory.WriteExclusive16(vaddr, value, expected);
     }
     bool MemoryWriteExclusive32(u32 vaddr, u32 value, u32 expected) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 32, true);
+            return true;
+        }
+#endif
         return memory.WriteExclusive32(vaddr, value, expected);
     }
     bool MemoryWriteExclusive64(u32 vaddr, u64 value, u64 expected) override {
+#ifdef __SWITCH__
+        if (IsUnmapped(vaddr)) {
+            RecordUnmapped(vaddr, 64, true);
+            return true;
+        }
+#endif
         return memory.WriteExclusive64(vaddr, value, expected);
     }
 
@@ -194,6 +272,45 @@ public:
         return Core::TicksForInstruction(is_thumb, instruction);
     }
 
+    void ReportPendingUnmappedAccess() {
+#ifdef __SWITCH__
+        if (!pending_unmapped.valid) {
+            return;
+        }
+        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "UnmappedMemory", "deferred",
+                            "operation=%s bits=%u vaddr=0x%08x",
+                            pending_unmapped.write ? "write" : "read",
+                            static_cast<unsigned>(pending_unmapped.bits),
+                            pending_unmapped.vaddr);
+        pending_unmapped = {};
+#endif
+    }
+
+private:
+#ifdef __SWITCH__
+    struct PendingUnmappedAccess {
+        VAddr vaddr = 0;
+        u8 bits = 0;
+        bool write = false;
+        bool valid = false;
+    };
+
+    bool IsUnmapped(VAddr vaddr) const noexcept {
+        const auto& page_table = parent.current_page_table;
+        return page_table &&
+               page_table->attributes[vaddr >> Memory::CITRA_PAGE_BITS] ==
+                   Memory::PageType::Unmapped;
+    }
+
+    void RecordUnmapped(VAddr vaddr, u8 bits, bool write) noexcept {
+        if (!pending_unmapped.valid) {
+            pending_unmapped = {vaddr, bits, write, true};
+        }
+    }
+
+    PendingUnmappedAccess pending_unmapped{};
+#endif
+
     ARM_Dynarmic& parent;
     Kernel::SVCContext svc_context;
     Memory::MemorySystem& memory;
@@ -245,6 +362,7 @@ void ARM_Dynarmic::Run() {
 
     SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "before jit->Run or jit->Step");
     jit->Run();
+    cb->ReportPendingUnmappedAccess();
 
 #ifdef __SWITCH__
     const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
@@ -287,6 +405,7 @@ void ARM_Dynarmic::Step() {
 
     SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "before jit->Run or jit->Step");
     jit->Step();
+    cb->ReportPendingUnmappedAccess();
 
 #ifdef __SWITCH__
     const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
