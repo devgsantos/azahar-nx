@@ -185,11 +185,36 @@ public:
 
     void CallSVC(std::uint32_t swi) override {
 #ifdef __SWITCH__
-        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "enter", "swi=0x%08x", swi);
-#endif
+        // Do not execute the complete HLE syscall while still inside generated
+        // ARM64 code. Record it and return through Dynarmic's normal dispatcher.
+        pending_svc = swi;
+        pending_svc_valid = true;
+
+        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "deferred",
+                            "swi=0x%08x", swi);
+
+        parent.PrepareReschedule();
+#else
         svc_context.CallSVC(swi);
+#endif
+    }
+
+    void HandlePendingSVC() {
 #ifdef __SWITCH__
-        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "leave", "swi=0x%08x", swi);
+        if (!pending_svc_valid) {
+            return;
+        }
+
+        const u32 swi = pending_svc;
+        pending_svc_valid = false;
+
+        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "handle enter",
+                            "swi=0x%08x", swi);
+
+        svc_context.CallSVC(swi);
+
+        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "handle leave",
+                            "swi=0x%08x", swi);
 #endif
     }
 
@@ -309,6 +334,8 @@ private:
     }
 
     PendingUnmappedAccess pending_unmapped{};
+    u32 pending_svc = 0;
+    bool pending_svc_valid = false;
 #endif
 
     ARM_Dynarmic& parent;
@@ -369,6 +396,10 @@ void ARM_Dynarmic::Run() {
     GetTimer().AddTicks(ticks_executed);
     SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "cycle budget consumed",
                         "executed=%llu", static_cast<unsigned long long>(ticks_executed));
+
+    // Account for guest execution before the HLE syscall can reschedule or
+    // replace the current thread.
+    cb->HandlePendingSVC();
 #endif
 
     SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "after jit->Run or jit->Step",
@@ -410,6 +441,7 @@ void ARM_Dynarmic::Step() {
 #ifdef __SWITCH__
     const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
     GetTimer().AddTicks(ticks_executed);
+    cb->HandlePendingSVC();
 #endif
 
     SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "after jit->Run or jit->Step",
