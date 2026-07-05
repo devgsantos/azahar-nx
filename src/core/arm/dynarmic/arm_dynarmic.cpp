@@ -587,7 +587,7 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     // signal-driven fastmem path disabled. The return-stack-buffer path
     // branches through cached host code pointers after syscall returns; on
     // Horizon's dual-alias JIT path, force those returns through the dispatcher.
-    config.code_cache_size = 16 * 1024 * 1024;
+    config.code_cache_size = 8 * 1024 * 1024;
     config.optimizations &= ~Dynarmic::OptimizationFlag::ReturnStackBuffer;
     config.fastmem_pointer = std::nullopt;
     config.recompile_on_fastmem_failure = false;
