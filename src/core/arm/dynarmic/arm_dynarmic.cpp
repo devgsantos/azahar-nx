@@ -180,12 +180,20 @@ public:
         }
     }
 
-    void AddTicks(std::uint64_t ticks) override {
+    void HostAddTicks(std::uint64_t ticks) noexcept {
         parent.GetTimer().AddTicks(ticks);
     }
-    std::uint64_t GetTicksRemaining() override {
-        s64 ticks = parent.GetTimer().GetDowncount();
+
+    std::uint64_t HostGetTicksRemaining() noexcept {
+        const s64 ticks = parent.GetTimer().GetDowncount();
         return static_cast<u64>(ticks <= 0 ? 0 : ticks);
+    }
+
+    void AddTicks(std::uint64_t ticks) override {
+        HostAddTicks(ticks);
+    }
+    std::uint64_t GetTicksRemaining() override {
+        return HostGetTicksRemaining();
     }
     std::uint64_t GetTicksForCode(bool is_thumb, VAddr, std::uint32_t instruction) override {
         return Core::TicksForInstruction(is_thumb, instruction);
@@ -195,6 +203,26 @@ public:
     Kernel::SVCContext svc_context;
     Memory::MemorySystem& memory;
 };
+
+} // namespace Core
+
+#ifdef __SWITCH__
+extern "C" std::uint64_t azahar_switch_dynarmic_host_get_ticks_remaining(
+    void* opaque) noexcept {
+    auto* callbacks = static_cast<Core::DynarmicUserCallbacks*>(opaque);
+    return callbacks != nullptr ? callbacks->HostGetTicksRemaining() : 0;
+}
+
+extern "C" void azahar_switch_dynarmic_host_add_ticks(
+    void* opaque, std::uint64_t ticks) noexcept {
+    auto* callbacks = static_cast<Core::DynarmicUserCallbacks*>(opaque);
+    if (callbacks != nullptr) {
+        callbacks->HostAddTicks(ticks);
+    }
+}
+#endif
+
+namespace Core {
 
 ARM_Dynarmic::ARM_Dynarmic(Core::System& system_, Memory::MemorySystem& memory_, u32 core_id_,
                            std::shared_ptr<Core::Timing::Timer> timer_,
