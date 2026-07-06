@@ -317,7 +317,6 @@ extern "C" bool azahar_switch_dynarmic_jit_end_write(void* opaque,
         // Ordinary Dynarmic block emission and relinking already provide the
         // exact modified range through Oaknut.
         armDCacheFlush(rw + offset, size);
-        armDCacheInvalidate(rx + offset, size);
         armICacheInvalidate(rx + offset, size);
         return true;
     }
