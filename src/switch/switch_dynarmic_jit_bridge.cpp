@@ -268,12 +268,8 @@ extern "C" bool azahar_switch_dynarmic_jit_begin_write(void* opaque) noexcept {
         return false;
     }
 
-    // CodeMemory has simultaneous RW and RX aliases. The permission-based
-    // fallback must unmap the RX view before writes resume.
-    if (handle->jit.type == JitType_CodeMemory) {
-        return true;
-    }
-
+    // Mirror Oaknut's CodeBlock::unprotect() semantics on Switch: transition the
+    // JIT backing store to writable before emitting new host code.
     const Result rc = jitTransitionToWritable(&handle->jit);
     if (R_FAILED(rc)) {
         Log("jitTransitionToWritable failed rc=0x%08x", rc);
@@ -297,34 +293,12 @@ extern "C" bool azahar_switch_dynarmic_jit_end_write(void* opaque,
     auto* rw = static_cast<std::uint8_t*>(jitGetRwAddr(&handle->jit));
     auto* rx = static_cast<std::uint8_t*>(jitGetRxAddr(&handle->jit));
 
-    if (handle->jit.type == JitType_CodeMemory) {
-        // Keep libnx's full CodeMemory transition for complete publication,
-        // such as prelude creation, invalidate-all and full cache reset.
-        if (offset == 0 && size == total_size) {
-            const Result rc = jitTransitionToExecutable(&handle->jit);
-            if (R_FAILED(rc)) {
-                Log("jitTransitionToExecutable full flush failed rc=0x%08x size=%zu",
-                    rc, total_size);
-                return false;
-            }
-            return true;
-        }
-
-        if (size == 0) {
-            return true;
-        }
-
-        // Ordinary Dynarmic block emission and relinking already provide the
-        // exact modified range through Oaknut.
-        armDCacheFlush(rw + offset, size);
-        armICacheInvalidate(rx + offset, size);
-        return true;
-    }
-
     if (size != 0) {
         armDCacheFlush(rw + offset, size);
     }
 
+    // Mirror Oaknut's CodeBlock::protect() semantics on Switch: transition the
+    // JIT backing store back to executable after emitting and publishing code.
     const Result rc = jitTransitionToExecutable(&handle->jit);
     if (R_FAILED(rc)) {
         Log("jitTransitionToExecutable failed rc=0x%08x offset=%zu size=%zu",

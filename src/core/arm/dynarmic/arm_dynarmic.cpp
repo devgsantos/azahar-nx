@@ -615,12 +615,11 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     config.global_monitor = &exclusive_monitor.monitor;
 #ifdef __SWITCH__
     // AZAHAR_SWITCH_DUAL_ALIAS_JIT_V3
-    // Bound per-JIT allocation on the Switch and keep the unsupported
-    // signal-driven fastmem path disabled. The return-stack-buffer path
-    // branches through cached host code pointers after syscall returns; on
-    // Horizon's dual-alias JIT path, force those returns through the dispatcher.
+    // The Switch JIT path has proven unstable with Dynarmic's safe
+    // optimization set on Horizon's dual-alias code memory, so disable it
+    // entirely for now and rely on the conservative dispatcher path.
     config.code_cache_size = 8 * 1024 * 1024;
-    config.optimizations &= ~Dynarmic::OptimizationFlag::ReturnStackBuffer;
+    config.optimizations = Dynarmic::no_optimizations;
     config.fastmem_pointer = std::nullopt;
     config.recompile_on_fastmem_failure = false;
     config.fastmem_exclusive_access = false;
