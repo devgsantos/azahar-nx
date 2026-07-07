@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace Core {
 class System;
 }
@@ -24,6 +26,9 @@ private:
     State& state;
     Core::System& system;
     bool presented_frame = false;
+    std::uint64_t frame_counter = 0;
+    std::uint64_t blank_top_frames = 0;
+    std::uint64_t blank_bottom_frames = 0;
 };
 
 } // namespace VideoCore::Deko3D

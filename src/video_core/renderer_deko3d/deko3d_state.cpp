@@ -585,7 +585,6 @@ void State::UploadScreenTextures() {
 }
 
 bool State::PresentScreenTexturesFrame() {
-    SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "enter");
     if (!initialized || !queue || !swapchain) {
         SetError("Deko3D present requested before initialization");
         SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "failed_not_initialized");
@@ -602,8 +601,6 @@ bool State::PresentScreenTexturesFrame() {
                             "slot=%d", slot);
         return false;
     }
-    SWITCH_TRACE_EVENTF("Deko3D", "State::PresentScreenTexturesFrame", "acquired", "slot=%d", slot);
-
     if (!screen_data_buffer || !upload_cpu_buffer || upload_gpu_addr == 0) {
         // Fallback path when the GPU upload path is unavailable.
         dkQueueSubmitCommands(queue, bind_framebuffer_cmds[slot]);
@@ -613,7 +610,6 @@ bool State::PresentScreenTexturesFrame() {
         clear_cmd = dkCmdBufFinishList(cmdbuf);
         dkQueueSubmitCommands(queue, clear_cmd);
         dkQueuePresentImage(queue, swapchain, slot);
-        SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "leave_fallback");
         return true;
     }
 
@@ -624,7 +620,16 @@ bool State::PresentScreenTexturesFrame() {
     constexpr u32 frame_width = FramebufferWidth;
     constexpr u32 frame_height = FramebufferHeight;
     constexpr u32 frame_pitch = FramebufferWidth * 4;
-    std::memset(frame_ptr, 0, frame_pitch * frame_height);
+    for (u32 y = 0; y < frame_height; ++y) {
+        u8* const row = frame_ptr + (y * frame_pitch);
+        for (u32 x = 0; x < frame_width; ++x) {
+            const u32 pixel = x * 4;
+            row[pixel + 0] = 0x20; // R
+            row[pixel + 1] = 0x30; // G
+            row[pixel + 2] = 0x60; // B
+            row[pixel + 3] = 0xFF; // A
+        }
+    }
 
     const u8* const top_src = static_cast<const u8*>(screen_data_buffer);
     const u8* const bottom_src = top_src + (400 * 240 * 4);
@@ -640,9 +645,41 @@ bool State::PresentScreenTexturesFrame() {
         }
     };
 
+    const u32 top_x = (frame_width - 400) / 2;
+    const u32 top_y = 40;
+    const u32 bottom_x = (frame_width - 320) / 2;
+    const u32 bottom_y = 320;
+
     // Place top and bottom 3DS screens centered on Switch output.
-    blit_rgba(top_src, 400, 240, (frame_width - 400) / 2, 40);
-    blit_rgba(bottom_src, 320, 240, (frame_width - 320) / 2, 320);
+    blit_rgba(top_src, 400, 240, top_x, top_y);
+    blit_rgba(bottom_src, 320, 240, bottom_x, bottom_y);
+
+    auto draw_rect_outline = [&](u32 x, u32 y, u32 w, u32 h, u8 r, u8 g, u8 b) {
+        if (w < 2 || h < 2) {
+            return;
+        }
+        const auto plot = [&](u32 px, u32 py) {
+            if (px >= frame_width || py >= frame_height) {
+                return;
+            }
+            u8* const p = frame_ptr + (py * frame_pitch) + (px * 4);
+            p[0] = r;
+            p[1] = g;
+            p[2] = b;
+            p[3] = 0xFF;
+        };
+        for (u32 px = x; px < x + w; ++px) {
+            plot(px, y);
+            plot(px, y + h - 1);
+        }
+        for (u32 py = y; py < y + h; ++py) {
+            plot(x, py);
+            plot(x + w - 1, py);
+        }
+    };
+
+    draw_rect_outline(top_x, top_y, 400, 240, 0xF0, 0x30, 0x30);
+    draw_rect_outline(bottom_x, bottom_y, 320, 240, 0x30, 0xF0, 0x30);
 
     DkCopyBuf copy_src = {upload_gpu_addr, 0, 0};
     DkImageRect copy_dst = {0, 0, 0, frame_width, frame_height, 1};
@@ -657,7 +694,6 @@ bool State::PresentScreenTexturesFrame() {
 
     dkQueueSubmitCommands(queue, copy_cmd);
     dkQueuePresentImage(queue, swapchain, slot);
-    SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "leave");
     return true;
 }
 #endif

@@ -17,6 +17,23 @@
 namespace VideoCore::Deko3D {
 namespace {
 
+bool HasAnyVisiblePixel(const u8* rgba, u32 width, u32 height) {
+    if (!rgba || width == 0 || height == 0) {
+        return false;
+    }
+
+    constexpr u32 step = 8;
+    for (u32 y = 0; y < height; y += step) {
+        for (u32 x = 0; x < width; x += step) {
+            const u8* const px = rgba + ((y * width + x) * 4);
+            if (px[0] != 0 || px[1] != 0 || px[2] != 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 u32 EstimateBytesPerPixel(u32 width, u32 stride) {
     if (width == 0) {
         return 0;
@@ -84,8 +101,6 @@ void ConvertRotateToRgba8888(const u8* src, u8* dst, u32 src_width, u32 src_heig
 Presenter::Presenter(State& state_, Core::System& system_) : state{state_}, system{system_} {}
 
 bool Presenter::PresentFrame() {
-    SWITCH_TRACE_EVENT("Deko3D", "Presenter::PresentFrame", "enter");
-
     try {
         auto& pica_core = system.GPU().PicaCore();
         auto& memory = system.Memory();
@@ -96,9 +111,6 @@ bool Presenter::PresentFrame() {
                                                               : framebuffer_config[0].address_left2;
         PAddr fb1_addr = framebuffer_config[1].active_fb == 0 ? framebuffer_config[1].address_left1
                                                               : framebuffer_config[1].address_left2;
-
-        SWITCH_TRACE_EVENTF("Deko3D", "Presenter::PresentFrame", "framebuffer addresses",
-                            "fb0_addr=0x%08x fb1_addr=0x%08x", fb0_addr, fb1_addr);
 
         auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
         if (!screen_buffer || state.GetScreenDataSize() < ((400 * 240 + 320 * 240) * 4)) {
@@ -117,9 +129,6 @@ bool Presenter::PresentFrame() {
             u8* fb0_ptr = memory.GetPhysicalPointer(fb0_addr);
             if (fb0_ptr && width > 0 && height > 0 && stride > 0) {
                 ConvertRotateToRgba8888(fb0_ptr, screen_buffer, width, height, stride, 400, 240);
-                SWITCH_TRACE_EVENTF("Deko3D", "Presenter::PresentFrame", "top screen converted",
-                                    "width=%u height=%u stride=%u bpp=%u", width, height, stride,
-                                    EstimateBytesPerPixel(width, stride));
             }
         }
 
@@ -135,10 +144,26 @@ bool Presenter::PresentFrame() {
                 const u32 top_size = 400 * 240 * 4;
                 u8* const bottom_buffer = screen_buffer + top_size;
                 ConvertRotateToRgba8888(fb1_ptr, bottom_buffer, width, height, stride, 320, 240);
-                SWITCH_TRACE_EVENTF("Deko3D", "Presenter::PresentFrame", "bottom screen converted",
-                                    "width=%u height=%u stride=%u bpp=%u", width, height, stride,
-                                    EstimateBytesPerPixel(width, stride));
             }
+        }
+
+        ++frame_counter;
+        const u8* const top_rgba = screen_buffer;
+        const u8* const bottom_rgba = screen_buffer + (400 * 240 * 4);
+        const bool top_has_pixels = HasAnyVisiblePixel(top_rgba, 400, 240);
+        const bool bottom_has_pixels = HasAnyVisiblePixel(bottom_rgba, 320, 240);
+        if (!top_has_pixels) {
+            ++blank_top_frames;
+        }
+        if (!bottom_has_pixels) {
+            ++blank_bottom_frames;
+        }
+
+        if ((frame_counter % 120) == 0) {
+            LOG_INFO(Render,
+                     "Deko3D source diagnostics: frames={} blank_top={} blank_bottom={} "
+                     "fb0=0x{:08x} fb1=0x{:08x}",
+                     frame_counter, blank_top_frames, blank_bottom_frames, fb0_addr, fb1_addr);
         }
 
     } catch (const std::exception& e) {
@@ -151,8 +176,6 @@ bool Presenter::PresentFrame() {
         SWITCH_TRACE_EVENT("Deko3D", "Presenter::PresentFrame", "first frame presented");
         presented_frame = true;
     }
-    SWITCH_TRACE_EVENTF("Deko3D", "Presenter::PresentFrame", "leave", "presented=%s",
-                        presented ? "true" : "false");
     return presented;
 }
 
