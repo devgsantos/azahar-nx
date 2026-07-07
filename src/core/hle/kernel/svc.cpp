@@ -11,6 +11,7 @@
 #include "common/microprofile.h"
 #include "common/scm_rev.h"
 #include "common/settings.h"
+#include "common/switch_trace.h"
 #include "core/arm/arm_interface.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -682,6 +683,14 @@ Result SVC::SendSyncRequest(Handle handle) {
     if (is_hle) {
         system.perf_stats->EndIPCProcessing();
     }
+
+#ifdef __SWITCH__
+    if (res.raw != ResultSuccess.raw) {
+        SWITCH_TRACE_EVENTF("Kernel.SVC", "SendSyncRequest", "error",
+                            "handle=0x%08x name=%s result=0x%08x", handle,
+                            session->GetName().c_str(), static_cast<u32>(res.raw));
+    }
+#endif
 
     return res;
 }

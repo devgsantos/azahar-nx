@@ -84,6 +84,11 @@ private:
     std::array<DkCmdList, FramebufferCount> bind_framebuffer_cmds{};
     DkCmdList clear_cmd{};
 
+    DkMemBlock upload_mem_block{};
+    void* upload_cpu_buffer = nullptr;
+    DkGpuAddr upload_gpu_addr = 0;
+    u32 upload_buffer_size = 0;
+
     // Screen textures for CPU framebuffer display (400x240 top, 320x240 bottom)
     DkMemBlock screen_tex_mem_block{};
     DkImage* top_screen_image = nullptr;     // 400x240 RGBA8

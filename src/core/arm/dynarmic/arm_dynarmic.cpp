@@ -190,9 +190,6 @@ public:
         pending_svc = swi;
         pending_svc_valid = true;
 
-        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "deferred",
-                            "swi=0x%08x", swi);
-
         parent.PrepareReschedule();
 #else
         svc_context.CallSVC(swi);
@@ -208,13 +205,7 @@ public:
         const u32 swi = pending_svc;
         pending_svc_valid = false;
 
-        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "handle enter",
-                            "swi=0x%08x", swi);
-
         svc_context.CallSVC(swi);
-
-        SWITCH_TRACE_EVENTF("Dynarmic.Callback", "CallSVC", "handle leave",
-                            "swi=0x%08x", swi);
 #endif
     }
 
@@ -357,24 +348,9 @@ ARM_Dynarmic::~ARM_Dynarmic() = default;
 MICROPROFILE_DEFINE(ARM_Jit, "ARM JIT", "ARM JIT", MP_RGB(255, 64, 64));
 
 void ARM_Dynarmic::Run() {
-    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "ARM_Dynarmic::Run enter");
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "core id", "core=%u", GetID());
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "page table pointer", "page_table=%p",
-                        static_cast<const void*>(current_page_table.get()));
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "JIT pointer", "jit=%p",
-                        static_cast<const void*>(jit));
-    if (jit) {
-        SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "guest PC", "pc=0x%08x", GetPC());
-    }
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "ticks/downcount",
-                        "ticks=%llu downcount=%lld",
-                        static_cast<unsigned long long>(GetTimer().GetTicks()),
-                        static_cast<long long>(GetTimer().GetDowncount()));
     ASSERT(memory.GetCurrentPageTable() == current_page_table);
     MICROPROFILE_SCOPE(ARM_Jit);
     if (break_flag) [[unlikely]] {
-        SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "break flag set");
-        SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "ARM_Dynarmic::Run leave");
         return;
     }
 
@@ -383,49 +359,23 @@ void ARM_Dynarmic::Run() {
     const u64 ticks_to_run = static_cast<u64>(downcount <= 0 ? 0 : downcount);
     Dynarmic::A32::SwitchCycleBudget::SetRequestedTicks(ticks_to_run);
     Dynarmic::A32::SwitchCycleBudget::SetExecutedTicks(0);
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "cycle budget prepared",
-                        "requested=%llu", static_cast<unsigned long long>(ticks_to_run));
 #endif
 
-    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "before jit->Run or jit->Step");
     jit->Run();
     cb->ReportPendingUnmappedAccess();
 
 #ifdef __SWITCH__
     const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
     GetTimer().AddTicks(ticks_executed);
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "cycle budget consumed",
-                        "executed=%llu", static_cast<unsigned long long>(ticks_executed));
 
     // Account for guest execution before the HLE syscall can reschedule or
     // replace the current thread.
     cb->HandlePendingSVC();
 #endif
-
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Run", "after jit->Run or jit->Step",
-                        "pc=0x%08x ticks=%llu downcount=%lld", GetPC(),
-                        static_cast<unsigned long long>(GetTimer().GetTicks()),
-                        static_cast<long long>(GetTimer().GetDowncount()));
-    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Run", "ARM_Dynarmic::Run leave");
 }
 
 void ARM_Dynarmic::Step() {
-    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "ARM_Dynarmic::Step enter");
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "core id", "core=%u", GetID());
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "page table pointer", "page_table=%p",
-                        static_cast<const void*>(current_page_table.get()));
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "JIT pointer", "jit=%p",
-                        static_cast<const void*>(jit));
-    if (jit) {
-        SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "guest PC", "pc=0x%08x", GetPC());
-    }
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "ticks/downcount",
-                        "ticks=%llu downcount=%lld",
-                        static_cast<unsigned long long>(GetTimer().GetTicks()),
-                        static_cast<long long>(GetTimer().GetDowncount()));
     if (break_flag) [[unlikely]] {
-        SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "break flag set");
-        SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "ARM_Dynarmic::Step leave");
         return;
     }
 
@@ -434,7 +384,6 @@ void ARM_Dynarmic::Step() {
     Dynarmic::A32::SwitchCycleBudget::SetExecutedTicks(0);
 #endif
 
-    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "before jit->Run or jit->Step");
     jit->Step();
     cb->ReportPendingUnmappedAccess();
 
@@ -443,12 +392,6 @@ void ARM_Dynarmic::Step() {
     GetTimer().AddTicks(ticks_executed);
     cb->HandlePendingSVC();
 #endif
-
-    SWITCH_TRACE_EVENTF("Core.ARM", "ARM_Dynarmic::Step", "after jit->Run or jit->Step",
-                        "pc=0x%08x ticks=%llu downcount=%lld", GetPC(),
-                        static_cast<unsigned long long>(GetTimer().GetTicks()),
-                        static_cast<long long>(GetTimer().GetDowncount()));
-    SWITCH_TRACE_EVENT("Core.ARM", "ARM_Dynarmic::Step", "ARM_Dynarmic::Step leave");
 }
 
 void ARM_Dynarmic::SetPC(u32 pc) {

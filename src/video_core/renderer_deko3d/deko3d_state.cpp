@@ -110,6 +110,26 @@ bool State::Initialize() {
         Shutdown();
         return false;
     }
+
+    upload_buffer_size = FramebufferWidth * FramebufferHeight * 4;
+    DkMemBlockMaker upload_maker;
+    dkMemBlockMakerDefaults(&upload_maker, device,
+                            static_cast<u32>(AlignUp(upload_buffer_size, DK_MEMBLOCK_ALIGNMENT)));
+    upload_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+    upload_mem_block = dkMemBlockCreate(&upload_maker);
+    if (!upload_mem_block) {
+        SetError("Failed to create upload staging memory block");
+        Shutdown();
+        return false;
+    }
+    upload_cpu_buffer = dkMemBlockGetCpuAddr(upload_mem_block);
+    upload_gpu_addr = dkMemBlockGetGpuAddr(upload_mem_block);
+    if (!upload_cpu_buffer || upload_gpu_addr == 0) {
+        SetError("Failed to map upload staging memory block");
+        Shutdown();
+        return false;
+    }
+
     SWITCH_TRACE_EVENTF("Deko3D", "State::Initialize", "screen buffer allocated",
                         "size=%u", screen_data_buffer_size);
 
@@ -166,6 +186,15 @@ void State::Shutdown() {
         cmdbuf_mem_block = nullptr;
     }
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy command buffers leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging enter");
+    if (upload_mem_block) {
+        dkMemBlockDestroy(upload_mem_block);
+        upload_mem_block = nullptr;
+    }
+    upload_cpu_buffer = nullptr;
+    upload_gpu_addr = 0;
+    upload_buffer_size = 0;
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures enter");
     if (screen_tex_mem_block) {
         dkMemBlockDestroy(screen_tex_mem_block);
@@ -294,7 +323,7 @@ bool State::CreateFramebuffers() {
     DkImageLayoutMaker layout_maker;
     dkImageLayoutMakerDefaults(&layout_maker, device);
     layout_maker.type = DkImageType_2D;
-    layout_maker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent;
+    layout_maker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine;
     layout_maker.format = DkImageFormat_RGBA8_Unorm;
     layout_maker.dimensions[0] = FramebufferWidth;
     layout_maker.dimensions[1] = FramebufferHeight;
@@ -575,8 +604,8 @@ bool State::PresentScreenTexturesFrame() {
     }
     SWITCH_TRACE_EVENTF("Deko3D", "State::PresentScreenTexturesFrame", "acquired", "slot=%d", slot);
 
-    if (!framebuffer_cpu_buffer || framebuffer_image_stride == 0 || !screen_data_buffer) {
-        // Fallback path when CPU composition is not possible.
+    if (!screen_data_buffer || !upload_cpu_buffer || upload_gpu_addr == 0) {
+        // Fallback path when the GPU upload path is unavailable.
         dkQueueSubmitCommands(queue, bind_framebuffer_cmds[slot]);
         dkQueueWaitIdle(queue);
         dkCmdBufClear(cmdbuf);
@@ -588,11 +617,10 @@ bool State::PresentScreenTexturesFrame() {
         return true;
     }
 
-    // Ensure GPU is idle before writing CPU-composed pixels into swapchain memory.
+    // Ensure GPU is idle before reusing staging and command memory.
     dkQueueWaitIdle(queue);
 
-    u8* const frame_ptr = static_cast<u8*>(framebuffer_cpu_buffer) +
-                          (static_cast<u32>(slot) * framebuffer_image_stride);
+    u8* const frame_ptr = static_cast<u8*>(upload_cpu_buffer);
     constexpr u32 frame_width = FramebufferWidth;
     constexpr u32 frame_height = FramebufferHeight;
     constexpr u32 frame_pitch = FramebufferWidth * 4;
@@ -616,6 +644,18 @@ bool State::PresentScreenTexturesFrame() {
     blit_rgba(top_src, 400, 240, (frame_width - 400) / 2, 40);
     blit_rgba(bottom_src, 320, 240, (frame_width - 320) / 2, 320);
 
+    DkCopyBuf copy_src = {upload_gpu_addr, 0, 0};
+    DkImageRect copy_dst = {0, 0, 0, frame_width, frame_height, 1};
+
+    dkCmdBufClear(cmdbuf);
+    dkCmdBufCopyBufferToImage(cmdbuf, &copy_src, &framebuffer_views[slot], &copy_dst, 0);
+    const DkCmdList copy_cmd = dkCmdBufFinishList(cmdbuf);
+    if (!copy_cmd) {
+        SetError("Deko3D failed to record buffer-to-image copy command");
+        return false;
+    }
+
+    dkQueueSubmitCommands(queue, copy_cmd);
     dkQueuePresentImage(queue, swapchain, slot);
     SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "leave");
     return true;
