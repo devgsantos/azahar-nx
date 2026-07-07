@@ -38,6 +38,23 @@ public:
     bool PresentClearFrame(float red, float green, float blue, float alpha);
     void WaitIdle();
 
+    // Accessors for screen textures (used by Presenter for CPU framebuffer upload)
+    [[nodiscard]] void* GetScreenDataBuffer() const {
+        return screen_data_buffer;
+    }
+
+    [[nodiscard]] u32 GetScreenDataSize() const {
+        return screen_data_buffer_size;
+    }
+
+    [[nodiscard]] const DkImage* GetTopScreenImage() const {
+        return top_screen_image;
+    }
+
+    [[nodiscard]] const DkImage* GetBottomScreenImage() const {
+        return bottom_screen_image;
+    }
+
 private:
     void SetError(const char* message);
 
@@ -47,6 +64,7 @@ private:
     bool CreateCommandBuffer();
     bool CreateQueue();
     bool RecordStaticCommands();
+    bool CreateScreenTextures();
 
     DkDevice device{};
     DkQueue queue{};
@@ -59,6 +77,17 @@ private:
     DkCmdBuf cmdbuf{};
     std::array<DkCmdList, FramebufferCount> bind_framebuffer_cmds{};
     DkCmdList clear_cmd{};
+
+    // Screen textures for CPU framebuffer display (400x240 top, 320x240 bottom)
+    DkMemBlock screen_tex_mem_block{};
+    DkImage* top_screen_image = nullptr;     // 400x240 RGBA8
+    DkImage* bottom_screen_image = nullptr;  // 320x240 RGBA8
+    DkImageView* top_screen_view = nullptr;
+    DkImageView* bottom_screen_view = nullptr;
+
+    // Screen texture data buffer for CPU framebuffer upload
+    void* screen_data_buffer = nullptr;
+    u32 screen_data_buffer_size = 0;
 #endif
 
     bool initialized = false;

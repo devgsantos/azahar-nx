@@ -13,7 +13,7 @@ namespace VideoCore::Deko3D {
 
 RendererDeko3D::RendererDeko3D(Core::System& system_, Frontend::EmuWindow& window,
                                Frontend::EmuWindow* secondary_window)
-    : RendererBase{system_, window, secondary_window}, presenter{state} {
+    : RendererBase{system_, window, secondary_window}, presenter{state, system_} {
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D", "enter");
     LOG_INFO(Render, "Renderer backend selected: Deko3D");
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D", "Renderer backend selected: Deko3D");

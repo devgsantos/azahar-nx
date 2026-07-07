@@ -88,6 +88,30 @@ bool State::Initialize() {
     }
     SWITCH_TRACE_EVENT("Deko3D", "State::RecordStaticCommands", "leave");
 
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateScreenTextures", "enter");
+    if (!CreateScreenTextures()) {
+        SWITCH_TRACE_EVENT("Deko3D", "State::CreateScreenTextures", "failed");
+        Shutdown();
+        return false;
+    }
+    SWITCH_TRACE_EVENT("Deko3D", "State::CreateScreenTextures", "leave");
+
+    // Allocate CPU-accessible screen data buffer for framebuffer uploads
+    // Top screen: 400x240 RGBA8, Bottom screen: 320x240 RGBA8
+    constexpr u32 TopScreenPixels = 400 * 240;
+    constexpr u32 BottomScreenPixels = 320 * 240;
+    constexpr u32 BytesPerPixel = 4;
+    screen_data_buffer_size = (TopScreenPixels + BottomScreenPixels) * BytesPerPixel;
+    screen_data_buffer = new u8[screen_data_buffer_size];
+
+    if (!screen_data_buffer) {
+        SetError("Failed to allocate screen data buffer");
+        Shutdown();
+        return false;
+    }
+    SWITCH_TRACE_EVENTF("Deko3D", "State::Initialize", "screen buffer allocated",
+                        "size=%u", screen_data_buffer_size);
+
     initialized = true;
     LOG_INFO(Render, "Deko3D renderer initialized: framebuffer={}x{} count={}", FramebufferWidth,
              FramebufferHeight, FramebufferCount);
@@ -139,6 +163,28 @@ void State::Shutdown() {
         cmdbuf_mem_block = nullptr;
     }
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy command buffers leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures enter");
+    if (screen_tex_mem_block) {
+        dkMemBlockDestroy(screen_tex_mem_block);
+        screen_tex_mem_block = nullptr;
+    }
+    if (top_screen_view) {
+        delete top_screen_view;
+        top_screen_view = nullptr;
+    }
+    if (bottom_screen_view) {
+        delete bottom_screen_view;
+        bottom_screen_view = nullptr;
+    }
+    if (top_screen_image) {
+        delete top_screen_image;
+        top_screen_image = nullptr;
+    }
+    if (bottom_screen_image) {
+        delete bottom_screen_image;
+        bottom_screen_image = nullptr;
+    }
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy queue enter");
     if (queue) {
         dkQueueDestroy(queue);
@@ -153,6 +199,12 @@ void State::Shutdown() {
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy device-owned resources leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "leave");
 #endif
+    // Free screen data buffer
+    if (screen_data_buffer) {
+        delete[] static_cast<u8*>(screen_data_buffer);
+        screen_data_buffer = nullptr;
+        screen_data_buffer_size = 0;
+    }
     initialized = false;
 }
 
@@ -391,6 +443,86 @@ bool State::RecordStaticCommands() {
             return false;
         }
     }
+    return true;
+}
+
+bool State::CreateScreenTextures() {
+    // Create images for 3DS screens: top (400x240) and bottom (320x240) in RGBA8
+    constexpr u32 TopScreenWidth = 400;
+    constexpr u32 TopScreenHeight = 240;
+    constexpr u32 BottomScreenWidth = 320;
+    constexpr u32 BottomScreenHeight = 240;
+
+    DkImageLayoutMaker layout_maker;
+    dkImageLayoutMakerDefaults(&layout_maker, device);
+    layout_maker.type = DkImageType_2D;
+    layout_maker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent;
+    layout_maker.format = DkImageFormat_RGBA8_Unorm;
+
+    // Calculate total allocation needed for both screen textures
+    // Top screen: 400x240 RGBA8
+    layout_maker.dimensions[0] = TopScreenWidth;
+    layout_maker.dimensions[1] = TopScreenHeight;
+    DkImageLayout top_layout;
+    dkImageLayoutInitialize(&top_layout, &layout_maker);
+    u64 top_size = dkImageLayoutGetSize(&top_layout);
+    u32 top_alignment = dkImageLayoutGetAlignment(&top_layout);
+
+    // Bottom screen: 320x240 RGBA8
+    layout_maker.dimensions[0] = BottomScreenWidth;
+    layout_maker.dimensions[1] = BottomScreenHeight;
+    DkImageLayout bottom_layout;
+    dkImageLayoutInitialize(&bottom_layout, &layout_maker);
+    u64 bottom_size = dkImageLayoutGetSize(&bottom_layout);
+    u32 bottom_alignment = dkImageLayoutGetAlignment(&bottom_layout);
+
+    u64 top_stride = AlignUp(top_size, top_alignment);
+    u64 bottom_stride = AlignUp(bottom_size, bottom_alignment);
+    u64 total_size = top_stride + bottom_stride;
+
+    if (total_size > std::numeric_limits<u32>::max()) {
+        SetError("Screen texture allocation would exceed 32-bit limit");
+        return false;
+    }
+
+    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateScreenTextures", "allocation",
+                        "top_size=%llu bottom_size=%llu total=%llu",
+                        (unsigned long long)top_size, (unsigned long long)bottom_size,
+                        (unsigned long long)total_size);
+
+    DkMemBlockMaker mem_block_maker;
+    dkMemBlockMakerDefaults(&mem_block_maker, device, static_cast<u32>(total_size));
+    mem_block_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+
+    screen_tex_mem_block = dkMemBlockCreate(&mem_block_maker);
+    if (!screen_tex_mem_block) {
+        SetError("Failed to create screen texture memory block");
+        return false;
+    }
+
+    // Allocate image objects
+    try {
+        top_screen_image = new DkImage();
+        bottom_screen_image = new DkImage();
+        top_screen_view = new DkImageView();
+        bottom_screen_view = new DkImageView();
+    } catch (const std::exception& e) {
+        SetError("Failed to allocate screen image objects");
+        return false;
+    }
+
+    // Initialize top screen image
+    dkImageInitialize(top_screen_image, &top_layout, screen_tex_mem_block, 0);
+    dkImageViewDefaults(top_screen_view, top_screen_image);
+
+    // Initialize bottom screen image
+    dkImageInitialize(bottom_screen_image, &bottom_layout, screen_tex_mem_block,
+                     static_cast<u32>(top_stride));
+    dkImageViewDefaults(bottom_screen_view, bottom_screen_image);
+
+    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateScreenTextures", "success",
+                        "top=%ux%u bottom=%ux%u", TopScreenWidth, TopScreenHeight,
+                        BottomScreenWidth, BottomScreenHeight);
     return true;
 }
 #endif

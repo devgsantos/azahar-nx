@@ -3,13 +3,17 @@
 
 #pragma once
 
+namespace Core {
+class System;
+}
+
 namespace VideoCore::Deko3D {
 
 class State;
 
 class Presenter {
 public:
-    explicit Presenter(State& state);
+    Presenter(State& state, Core::System& system);
 
     bool PresentFrame();
     bool HasPresentedFrame() const {
@@ -18,6 +22,7 @@ public:
 
 private:
     State& state;
+    Core::System& system;
     bool presented_frame = false;
 };
 
