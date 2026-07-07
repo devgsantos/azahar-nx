@@ -75,6 +75,10 @@ public:
     void MarkTopScreenGpuDirty() {
         top_screen_gpu_dirty = true;
     }
+
+    [[nodiscard]] bool IsTopScreenGpuDirty() const {
+        return top_screen_gpu_dirty;
+    }
 #endif
 
 private:

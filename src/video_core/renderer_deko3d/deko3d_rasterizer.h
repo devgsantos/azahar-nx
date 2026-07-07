@@ -71,13 +71,37 @@ private:
     struct HardwareEligibility {
         bool supported = false;
         FallbackReason reason = FallbackReason::UnsupportedState;
+        u32 blockers = 0;
+    };
+
+    enum EligibilityBlocker : u32 {
+        InvalidBatch = 1U << 0,
+        MissingGpuResources = 1U << 1,
+        ShaderUnavailable = 1U << 2,
+        WrongRenderTarget = 1U << 3,
+        FramebufferFormat = 1U << 4,
+        FramebufferDimensions = 1U << 5,
+        TexturesEnabled = 1U << 6,
+        DepthTestEnabled = 1U << 7,
+        DepthWriteEnabled = 1U << 8,
+        StencilEnabled = 1U << 9,
+        BlendingEnabled = 1U << 10,
+        AlphaTestUnsupported = 1U << 11,
+        LogicOpUnsupported = 1U << 12,
+        ColorMaskUnsupported = 1U << 13,
+        CullModeUnsupported = 1U << 14,
+        ViewportUnsupported = 1U << 15,
+        ScissorUnsupported = 1U << 16,
+        ShadowRendering = 1U << 17,
+        ProceduralTexture = 1U << 18,
     };
 
     bool InitializeGpuResources();
     void ShutdownGpuResources();
     FrameSlice& CurrentFrameSlice();
     bool WaitForFrameSlice(FrameSlice& slice);
-    HardwareEligibility EvaluateHardwareEligibility() const;
+    HardwareEligibility EvaluateTransformedBatchEligibility() const;
+    HardwareEligibility EvaluateDirectBatchEligibility(bool is_indexed) const;
     bool TryDrawHardwareBatch(std::size_t& submitted_vertices);
     bool SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex, std::size_t vertex_count);
     bool QueueHasError(const char* context);

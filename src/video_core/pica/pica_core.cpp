@@ -12,6 +12,7 @@
 #include "video_core/debug_utils/debug_utils.h"
 #include "video_core/pica/pica_core.h"
 #include "video_core/pica/vertex_loader.h"
+#include "video_core/renderer_deko3d/deko3d_stats.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/shader/shader.h"
 
@@ -41,6 +42,7 @@ PicaCore::PicaCore(Memory::MemorySystem& memory_, std::shared_ptr<DebugContext> 
         const auto add_triangle = [this](const OutputVertex& v0, const OutputVertex& v1,
                                          const OutputVertex& v2) {
             rasterizer->AddTriangle(v0, v1, v2);
+            VideoCore::Deko3D::RecordPicaOutputTriangles(1);
         };
         const auto vertex = OutputVertex(regs.internal.rasterizer, buffer);
         primitive_assembler.SubmitVertex(vertex, add_triangle);
@@ -109,6 +111,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
     cmd_list.Reset(list, head, size);
 
     bool stop_requested = false;
+    u64 processed_commands = 0;
     while (cmd_list.current_index < cmd_list.length) {
         if (stop_requested) [[unlikely]] {
             break;
@@ -124,6 +127,7 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
 
         // Write to the requested PICA register.
         WriteInternalReg(header.cmd_id, value, header.parameter_mask, stop_requested);
+        ++processed_commands;
 
         // Write any extra paramters as well.
         for (u32 i = 0; i < header.extra_data_length; ++i) {
@@ -133,8 +137,10 @@ void PicaCore::ProcessCmdList(PAddr list, u32 size, bool ignore_list) {
             const u32 cmd = header.cmd_id + (header.group_commands ? i + 1 : 0);
             const u32 extra_value = cmd_list.head[cmd_list.current_index++];
             WriteInternalReg(cmd, extra_value, header.parameter_mask, stop_requested);
+            ++processed_commands;
         }
     }
+    VideoCore::Deko3D::RecordPicaCommandList(processed_commands);
 }
 
 static bool any_byte_match(u32 a, u32 b) {
@@ -529,6 +535,7 @@ void PicaCore::DrawImmediate() {
 
 void PicaCore::DrawArrays(bool is_indexed) {
     MICROPROFILE_SCOPE(GPU_Drawing);
+    VideoCore::Deko3D::RecordPicaDraw(is_indexed, regs.internal.pipeline.num_vertices);
 
     // Track vertex in the debug recorder.
     if (debug_context) {

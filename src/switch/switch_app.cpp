@@ -487,6 +487,93 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     static_cast<unsigned long long>(deko_stats.fallback_topology),
                     static_cast<unsigned long long>(deko_stats.fallback_shadow),
                     static_cast<unsigned long long>(deko_stats.fallback_unsupported_state));
+                LOG_INFO(
+                    Frontend,
+                    "Switch graphics telemetry: deko_transformed_batch_checks {} "
+                    "deko_transformed_batch_valid {} deko_transformed_batch_invalid {} "
+                    "deko_transformed_batch_eligible {} deko_transformed_batch_submitted {} "
+                    "deko_transformed_batch_completed {} deko_transformed_vertices_submitted {} "
+                    "deko_transformed_vertices_completed {} deko_direct_batch_checks {} "
+                    "deko_direct_batch_rejected {} deko_blocker_invalid_batch {} "
+                    "deko_blocker_missing_gpu_resources {} deko_blocker_shader_unavailable {} "
+                    "deko_blocker_wrong_render_target {} deko_blocker_framebuffer_format {} "
+                    "deko_blocker_framebuffer_dimensions {} deko_blocker_textures_enabled {} "
+                    "deko_blocker_depth_test_enabled {} deko_blocker_depth_write_enabled {} "
+                    "deko_blocker_stencil_enabled {} deko_blocker_blending_enabled {} "
+                    "deko_blocker_alpha_test {} deko_blocker_logic_op {} "
+                    "deko_blocker_color_mask {} deko_batches_with_multiple_blockers {} "
+                    "deko_partial_batches {} deko_partial_hw_triangles {} "
+                    "deko_partial_sw_triangles {} deko_duplicate_triangle_preventions {} "
+                    "deko_dropped_triangle_detections {} pica_command_lists_processed {} "
+                    "pica_commands_processed {} pica_draw_array_commands {} "
+                    "pica_draw_indexed_commands {} pica_output_triangles {} "
+                    "pica_output_vertices {} pica_memory_fill_requests {} "
+                    "pica_memory_fill_completed {} pica_memory_fill_bytes {} "
+                    "pica_display_transfer_requests {} pica_display_transfer_completed {} "
+                    "pica_display_transfer_bytes {} pica_texture_copy_requests {} "
+                    "pica_texture_copy_completed {} pica_texture_copy_bytes {} "
+                    "pica_cache_flush_requests {} pica_cache_invalidation_requests {} "
+                    "gsp_interrupts_requested {} gsp_interrupts_delivered {} "
+                    "gsp_interrupts_dropped {} present_calls {} present_changed_frames {} "
+                    "present_unchanged_frames {} present_source_cpu_upload {} "
+                    "present_source_deko_render_target {} present_source_repeated_frame {} "
+                    "emulated_system_frames {} emulated_vblanks {} game_frame_counter {} "
+                    "hardware_raster_frames {} software_raster_frames {} transfer_only_frames {} "
+                    "deko_raster_queue_submits {} deko_raster_queue_flushes {} "
+                    "deko_raster_fence_polls {} deko_raster_fence_poll_successes {} "
+                    "deko_raster_fence_waits {} deko_raster_fence_timeouts {} "
+                    "deko_raster_max_fence_wait_us {} deko_raster_queue_errors {} "
+                    "deko_present_queue_submits {} deko_present_queue_flushes {} "
+                    "deko_present_fence_polls {} deko_present_fence_poll_successes {} "
+                    "deko_present_fence_waits {} deko_present_fence_timeouts {} "
+                    "deko_present_max_fence_wait_us {} deko_present_queue_errors {}",
+                    deko_stats.transformed_batch_checks, deko_stats.transformed_batch_valid,
+                    deko_stats.transformed_batch_invalid, deko_stats.transformed_batch_eligible,
+                    deko_stats.transformed_batch_submitted,
+                    deko_stats.transformed_batch_completed,
+                    deko_stats.transformed_vertices_submitted,
+                    deko_stats.transformed_vertices_completed, deko_stats.direct_batch_checks,
+                    deko_stats.direct_batch_rejected, deko_stats.blocker_invalid_batch,
+                    deko_stats.blocker_missing_gpu_resources,
+                    deko_stats.blocker_shader_unavailable, deko_stats.blocker_wrong_render_target,
+                    deko_stats.blocker_framebuffer_format,
+                    deko_stats.blocker_framebuffer_dimensions,
+                    deko_stats.blocker_textures_enabled,
+                    deko_stats.blocker_depth_test_enabled,
+                    deko_stats.blocker_depth_write_enabled, deko_stats.blocker_stencil_enabled,
+                    deko_stats.blocker_blending_enabled, deko_stats.blocker_alpha_test,
+                    deko_stats.blocker_logic_op, deko_stats.blocker_color_mask,
+                    deko_stats.batches_with_multiple_blockers, deko_stats.partial_batches,
+                    deko_stats.partial_hw_triangles, deko_stats.partial_sw_triangles,
+                    deko_stats.duplicate_triangle_preventions,
+                    deko_stats.dropped_triangle_detections,
+                    deko_stats.pica_command_lists_processed, deko_stats.pica_commands_processed,
+                    deko_stats.pica_draw_array_commands, deko_stats.pica_draw_indexed_commands,
+                    deko_stats.pica_output_triangles, deko_stats.pica_output_vertices,
+                    deko_stats.pica_memory_fill_requests, deko_stats.pica_memory_fill_completed,
+                    deko_stats.pica_memory_fill_bytes, deko_stats.pica_display_transfer_requests,
+                    deko_stats.pica_display_transfer_completed,
+                    deko_stats.pica_display_transfer_bytes, deko_stats.pica_texture_copy_requests,
+                    deko_stats.pica_texture_copy_completed, deko_stats.pica_texture_copy_bytes,
+                    deko_stats.pica_cache_flush_requests,
+                    deko_stats.pica_cache_invalidation_requests,
+                    deko_stats.gsp_interrupts_requested, deko_stats.gsp_interrupts_delivered,
+                    deko_stats.gsp_interrupts_dropped, deko_stats.present_calls,
+                    deko_stats.present_changed_frames, deko_stats.present_unchanged_frames,
+                    deko_stats.present_source_cpu_upload,
+                    deko_stats.present_source_deko_render_target,
+                    deko_stats.present_source_repeated_frame, deko_stats.emulated_system_frames,
+                    deko_stats.emulated_vblanks, deko_stats.game_frame_counter,
+                    deko_stats.hardware_raster_frames, deko_stats.software_raster_frames,
+                    deko_stats.transfer_only_frames, deko_stats.raster_queue_submits,
+                    deko_stats.raster_queue_flushes, deko_stats.raster_fence_polls,
+                    deko_stats.raster_fence_poll_successes, deko_stats.raster_fence_waits,
+                    deko_stats.raster_fence_timeouts, deko_stats.raster_max_fence_wait_us,
+                    deko_stats.raster_queue_errors, deko_stats.present_queue_submits,
+                    deko_stats.present_queue_flushes, deko_stats.present_fence_polls,
+                    deko_stats.present_fence_poll_successes, deko_stats.present_fence_waits,
+                    deko_stats.present_fence_timeouts, deko_stats.present_max_fence_wait_us,
+                    deko_stats.present_queue_errors);
             }
         }
     } catch (const std::exception& e) {

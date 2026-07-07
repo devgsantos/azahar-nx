@@ -10,6 +10,7 @@
 #include "common/switch_trace.h"
 #include "core/core.h"
 #include "core/memory.h"
+#include "video_core/renderer_deko3d/deko3d_stats.h"
 #include "video_core/renderer_deko3d/deko3d_state.h"
 #include "video_core/gpu.h"
 #include "video_core/pica/pica_core.h"
@@ -114,16 +115,28 @@ void ClearRgba8888(u8* dst, u32 width, u32 height) {
 Presenter::Presenter(State& state_, Core::System& system_) : state{state_}, system{system_} {}
 
 bool Presenter::PresentFrame() {
+    PAddr fb0_addr = 0;
+    PAddr fb1_addr = 0;
+    bool top_changed = false;
+    bool bottom_changed = false;
+    bool frame_changed = false;
+    PresentSource source = PresentSource::Unknown;
     try {
         auto& pica_core = system.GPU().PicaCore();
         auto& memory = system.Memory();
         const auto& framebuffer_config = pica_core.regs.framebuffer_config;
 
         // Get active framebuffer addresses for top and bottom screens
-        PAddr fb0_addr = framebuffer_config[0].active_fb == 0 ? framebuffer_config[0].address_left1
-                                                              : framebuffer_config[0].address_left2;
-        PAddr fb1_addr = framebuffer_config[1].active_fb == 0 ? framebuffer_config[1].address_left1
-                                                              : framebuffer_config[1].address_left2;
+        fb0_addr = framebuffer_config[0].active_fb == 0 ? framebuffer_config[0].address_left1
+                                                        : framebuffer_config[0].address_left2;
+        fb1_addr = framebuffer_config[1].active_fb == 0 ? framebuffer_config[1].address_left1
+                                                        : framebuffer_config[1].address_left2;
+        top_changed = !have_last_addrs || last_top_addr != fb0_addr;
+        bottom_changed = !have_last_addrs || last_bottom_addr != fb1_addr;
+        frame_changed = top_changed || bottom_changed || state.IsTopScreenGpuDirty();
+        source = state.IsTopScreenGpuDirty() ? PresentSource::DekoRenderTarget
+                                             : (frame_changed ? PresentSource::CpuFramebufferUpload
+                                                              : PresentSource::RepeatedPreviousFrame);
 
         auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
         if (!screen_buffer ||
@@ -195,6 +208,13 @@ bool Presenter::PresentFrame() {
     }
 
     const bool presented = state.PresentScreenTexturesFrame();
+    if (presented) {
+        RecordPresent(source, frame_changed, top_changed || state.IsTopScreenGpuDirty(),
+                      bottom_changed);
+        last_top_addr = fb0_addr;
+        last_bottom_addr = fb1_addr;
+        have_last_addrs = true;
+    }
     if (presented && !presented_frame) {
         LOG_INFO(Render, "Deko3D first frame presented");
         SWITCH_TRACE_EVENT("Deko3D", "Presenter::PresentFrame", "first frame presented");

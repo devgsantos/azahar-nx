@@ -3,6 +3,8 @@
 
 #include "video_core/renderer_deko3d/deko3d_state.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <limits>
 
@@ -326,6 +328,7 @@ bool State::CreateDevice() {
 bool State::QueueHasError(const char* context) {
     if (queue && dkQueueIsInErrorState(queue)) {
         RecordQueueError();
+        RecordPresentQueueError();
         LOG_ERROR(Render, "Deko3D queue entered error state {}", context ? context : "");
         return true;
     }
@@ -336,6 +339,7 @@ void State::FlushQueue() {
     if (queue) {
         dkQueueFlush(queue);
         RecordQueueFlush();
+        RecordPresentQueueFlush();
     }
 }
 
@@ -638,6 +642,7 @@ bool State::PresentScreenTexturesFrame() {
     if (!screen_data_buffer || !upload_cpu_buffer || upload_gpu_addr == 0) {
         // Fallback path when the GPU upload path is unavailable.
         dkQueueSubmitCommands(queue, bind_framebuffer_cmds[slot]);
+        RecordPresentQueueSubmit();
         if (QueueHasError("after fallback framebuffer bind submit")) {
             return false;
         }
@@ -647,6 +652,7 @@ bool State::PresentScreenTexturesFrame() {
         dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.02f, 0.04f, 0.06f, 1.0f);
         clear_cmd = dkCmdBufFinishList(cmdbuf);
         dkQueueSubmitCommands(queue, clear_cmd);
+        RecordPresentQueueSubmit();
         if (QueueHasError("after fallback clear submit")) {
             return false;
         }
@@ -657,19 +663,28 @@ bool State::PresentScreenTexturesFrame() {
 
     if (present_fence_pending) {
         FlushQueue();
+        RecordPresentFencePoll();
         const DkResult poll_result = dkFenceWait(&present_fence, 0);
         if (poll_result == DkResult_Success) {
             RecordFencePollSuccess();
+            RecordPresentFencePollSuccess();
             present_fence_pending = false;
         }
     }
     if (present_fence_pending) {
         RecordFenceWait();
+        RecordPresentFenceWait();
         constexpr s64 FenceWaitTimeoutNs = 1'000'000'000LL;
+        const auto wait_start = std::chrono::steady_clock::now();
         const DkResult result = dkFenceWait(&present_fence, FenceWaitTimeoutNs);
+        const auto wait_end = std::chrono::steady_clock::now();
+        const auto wait_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(wait_end - wait_start).count();
+        RecordPresentFenceWaitDurationUs(static_cast<std::uint64_t>(std::max<s64>(wait_us, 0)));
         if (result != DkResult_Success) {
             if (result == DkResult_Timeout) {
                 RecordFenceTimeout();
+                RecordPresentFenceTimeout();
             }
             SetError("Deko3D present fence wait failed");
             return false;
@@ -730,6 +745,7 @@ bool State::PresentScreenTexturesFrame() {
     }
 
     dkQueueSubmitCommands(queue, copy_cmd);
+    RecordPresentQueueSubmit();
     if (QueueHasError("after present copy submit")) {
         return false;
     }

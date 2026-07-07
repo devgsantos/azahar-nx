@@ -17,6 +17,7 @@
 #include "video_core/gpu_impl.h"
 #include "video_core/pica/pica_core.h"
 #include "video_core/pica/regs_lcd.h"
+#include "video_core/renderer_deko3d/deko3d_stats.h"
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_software/sw_blitter.h"
 #include "video_core/right_eye_disabler.h"
@@ -251,6 +252,7 @@ void GPU::Execute(const Service::GSP::Command& command) {
     case CommandId::CacheFlush: {
         // Rasterizer flushing handled elsewhere in CPU read/write and other GPU handlers
         // Use command.cache_flush.regions to implement this handler
+        Deko3D::RecordPicaCacheFlush();
         break;
     }
     default:
@@ -269,6 +271,12 @@ void GPU::SetBufferSwap(u32 screen_id, const Service::GSP::FrameBufferInfo& info
 
     // Update framebuffer properties.
     auto& framebuffer = impl->pica.regs.framebuffer_config[screen_id];
+    const PAddr previous_left = framebuffer.active_fb == 0 ? framebuffer.address_left1
+                                                           : framebuffer.address_left2;
+    const u32 previous_stride = framebuffer.stride;
+    const auto previous_format = framebuffer.format;
+    const auto previous_width = framebuffer.width.Value();
+    const auto previous_height = framebuffer.height.Value();
     if (info.active_fb == 0) {
         framebuffer.address_left1 = phys_address_left;
         framebuffer.address_right1 = phys_address_right;
@@ -280,6 +288,14 @@ void GPU::SetBufferSwap(u32 screen_id, const Service::GSP::FrameBufferInfo& info
     framebuffer.stride = info.stride;
     framebuffer.format = info.format;
     framebuffer.active_fb = info.shown_fb;
+    const bool address_changed = previous_left !=
+        (framebuffer.active_fb == 0 ? framebuffer.address_left1 : framebuffer.address_left2);
+    const bool format_changed = previous_format != framebuffer.format;
+    const bool dimension_changed =
+        previous_width != framebuffer.width.Value() || previous_height != framebuffer.height.Value();
+    const bool stride_changed = previous_stride != framebuffer.stride;
+    Deko3D::RecordFramebufferChange(screen_id == 0, address_changed, format_changed,
+                                    dimension_changed, stride_changed);
 
     // Notify debugger about the buffer swap.
     if (impl->debug_context) {
@@ -289,6 +305,7 @@ void GPU::SetBufferSwap(u32 screen_id, const Service::GSP::FrameBufferInfo& info
     if (screen_id == 0) {
         MicroProfileFlip();
         impl->system.perf_stats->EndGameFrame();
+        Deko3D::RecordGameFrame();
         right_eye_disabler->ReportEndFrame();
     }
 }
@@ -431,14 +448,16 @@ void GPU::MemoryFill(u32 index, u32 intr_index) {
     }
 
     // Perform memory fill.
+    const u64 fill_bytes = config.GetEndAddress() - config.GetStartAddress();
     if (!impl->rasterizer->AccelerateFill(config)) {
         impl->sw_blitter->MemoryFill(config);
     }
+    Deko3D::RecordPicaMemoryFill(fill_bytes, true);
 
     // Treat fill as texture transfer from VRAM
     u64 delay = DelayGenerator::CalculateDelayNanoseconds(
         DelayGenerator::GetCopyMode(true, config.IsVRAM()), true,
-        config.GetEndAddress() - config.GetStartAddress());
+        fill_bytes);
 
     // It seems that it won't signal interrupt if "address_start" is zero.
     // TODO: hwtest this
@@ -476,6 +495,7 @@ void GPU::MemoryTransfer() {
         if (!impl->rasterizer->AccelerateTextureCopy(config)) {
             impl->sw_blitter->TextureCopy(config);
         }
+        Deko3D::RecordPicaTextureCopy(config.texture_copy.size, true);
         delay = DelayGenerator::CalculateDelayNanoseconds(
             DelayGenerator::GetCopyMode(config.IsInputVRAM(), config.IsOutputVRAM()), true,
             config.texture_copy.size);
@@ -486,9 +506,13 @@ void GPU::MemoryTransfer() {
                 impl->sw_blitter->DisplayTransfer(config);
             }
         }
+        const u64 transfer_bytes =
+            config.input_width * config.input_height * BytesPerPixel(config.input_format);
+        Deko3D::RecordPicaDisplayTransfer(transfer_bytes, true);
+        Deko3D::RecordTransferOnlyFrame();
         delay = DelayGenerator::CalculateDelayNanoseconds(
             DelayGenerator::GetCopyMode(config.IsInputVRAM(), config.IsOutputVRAM()), true,
-            config.input_width * config.input_height * BytesPerPixel(config.input_format));
+            transfer_bytes);
     }
 
     // Complete transfer.
@@ -497,6 +521,7 @@ void GPU::MemoryTransfer() {
 }
 
 void GPU::VBlankCallback(std::uintptr_t user_data, s64 cycles_late) {
+    Deko3D::RecordSystemFrame();
     // Present renderered frame.
     impl->renderer->SwapBuffers();
 

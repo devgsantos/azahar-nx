@@ -29,6 +29,9 @@ private:
     std::uint64_t frame_counter = 0;
     std::uint64_t blank_top_frames = 0;
     std::uint64_t blank_bottom_frames = 0;
+    std::uint32_t last_top_addr = 0;
+    std::uint32_t last_bottom_addr = 0;
+    bool have_last_addrs = false;
 };
 
 } // namespace VideoCore::Deko3D
