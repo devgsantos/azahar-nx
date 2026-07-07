@@ -86,27 +86,50 @@ thread_local std::uint32_t host_timing_log_count = 0;
 thread_local std::uint32_t a32_svc_log_count = 0;
 thread_local std::uint32_t run_entry_log_count = 0;
 
-void Log(const char* format, ...) noexcept {
+void LogTaggedV(const char* tag, const char* format, va_list args) noexcept {
     std::FILE* file = std::fopen(LogPath, "a");
-    va_list args;
-    va_start(args, format);
     va_list file_args;
     va_copy(file_args, args);
 
-    std::fprintf(stderr, "[Dynarmic.JIT] ");
+    std::fprintf(stderr, "[%s] ", tag != nullptr ? tag : "Dynarmic.JIT");
     std::vfprintf(stderr, format, args);
     std::fprintf(stderr, "\n");
     std::fflush(stderr);
 
     if (file != nullptr) {
-        std::fputs("[Dynarmic.JIT] ", file);
+        std::fprintf(file, "[%s] ", tag != nullptr ? tag : "Dynarmic.JIT");
         std::vfprintf(file, format, file_args);
         std::fputc('\n', file);
         std::fflush(file);
         std::fclose(file);
     }
     va_end(file_args);
+}
+
+void LogTaggedMessage(const char* tag, const char* message) noexcept {
+    std::FILE* file = std::fopen(LogPath, "a");
+
+    std::fprintf(stderr, "[%s] %s\n", tag != nullptr ? tag : "Dynarmic.JIT",
+                 message != nullptr ? message : "");
+    std::fflush(stderr);
+
+    if (file != nullptr) {
+        std::fprintf(file, "[%s] %s\n", tag != nullptr ? tag : "Dynarmic.JIT",
+                     message != nullptr ? message : "");
+        std::fflush(file);
+        std::fclose(file);
+    }
+}
+
+void Log(const char* format, ...) noexcept {
+    va_list args;
+    va_start(args, format);
+    LogTaggedV("Dynarmic.JIT", format, args);
     va_end(args);
+}
+
+void LogLine(const char* tag, const char* message) noexcept {
+    LogTaggedMessage(tag, message);
 }
 
 void RegisterRange(SwitchDynarmicJit& handle, std::uint32_t* rw,
@@ -380,6 +403,11 @@ extern "C" void azahar_switch_dynarmic_jit_log_run_entry(
 
 extern "C" std::uintptr_t azahar_switch_dynarmic_jit_get_run_entry() noexcept {
     return last_run_entry;
+}
+
+extern "C" void azahar_switch_dynarmic_jit_log_message(
+    const char* tag, const char* message) noexcept {
+    LogTaggedMessage(tag, message);
 }
 
 extern "C" void azahar_switch_dynarmic_jit_set_breadcrumb_phase(

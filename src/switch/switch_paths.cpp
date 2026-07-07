@@ -94,6 +94,7 @@ void ApplySwitchSettings() {
     Settings::values.use_gdbstub = false;
     Settings::values.enable_rpc_server = false;
 
+    LOG_INFO(Frontend, "Switch CPU JIT requested: {}", Settings::values.use_cpu_jit.GetValue());
     LOG_INFO(Frontend, "Switch performance profile applied: JIT enabled, native resolution, "
                        "shader cache on, texture cache on, expensive enhancements off");
     LOG_INFO(Render, "Renderer backend selected: Deko3D");

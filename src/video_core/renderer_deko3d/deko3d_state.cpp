@@ -187,6 +187,12 @@ bool State::PresentClearFrame(float red, float green, float blue, float alpha) {
 
     dkQueueSubmitCommands(queue, bind_framebuffer_cmds[slot]);
 
+    // Wait for all submitted commands (including the bind above) to finish before reusing
+    // the command buffer memory.  Without this, dkCmdBufClear resets the write pointer over
+    // the still-in-flight bind_framebuffer_cmds, corrupting the GPU queue and causing
+    // dkQueueAcquireImage to crash on the following frame.
+    dkQueueWaitIdle(queue);
+
     // Re-record the clear color so the first playable path can tint frames later from guest state.
     dkCmdBufClear(cmdbuf);
     dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, red, green, blue, alpha);
