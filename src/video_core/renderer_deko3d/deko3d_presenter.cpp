@@ -17,6 +17,12 @@
 namespace VideoCore::Deko3D {
 namespace {
 
+constexpr u32 TopScreenWidth = 400;
+constexpr u32 TopScreenHeight = 240;
+constexpr u32 BottomScreenWidth = 320;
+constexpr u32 BottomScreenHeight = 240;
+constexpr u32 BytesPerPixel = 4;
+
 bool HasAnyVisiblePixel(const u8* rgba, u32 width, u32 height) {
     if (!rgba || width == 0 || height == 0) {
         return false;
@@ -96,6 +102,13 @@ void ConvertRotateToRgba8888(const u8* src, u8* dst, u32 src_width, u32 src_heig
     }
 }
 
+void ClearRgba8888(u8* dst, u32 width, u32 height) {
+    if (!dst || width == 0 || height == 0) {
+        return;
+    }
+    std::memset(dst, 0, static_cast<std::size_t>(width) * height * BytesPerPixel);
+}
+
 } // namespace
 
 Presenter::Presenter(State& state_, Core::System& system_) : state{state_}, system{system_} {}
@@ -113,11 +126,13 @@ bool Presenter::PresentFrame() {
                                                               : framebuffer_config[1].address_left2;
 
         auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
-        if (!screen_buffer || state.GetScreenDataSize() < ((400 * 240 + 320 * 240) * 4)) {
+        if (!screen_buffer ||
+            state.GetScreenDataSize() <
+                ((TopScreenWidth * TopScreenHeight + BottomScreenWidth * BottomScreenHeight) *
+                 BytesPerPixel)) {
             LOG_WARNING(Render, "Deko3D screen buffer unavailable or too small");
             return false;
         }
-        std::memset(screen_buffer, 0, state.GetScreenDataSize());
 
         // Copy top screen (400x240 RGB565 or RGBA8)
         {
@@ -128,7 +143,10 @@ bool Presenter::PresentFrame() {
 
             u8* fb0_ptr = memory.GetPhysicalPointer(fb0_addr);
             if (fb0_ptr && width > 0 && height > 0 && stride > 0) {
-                ConvertRotateToRgba8888(fb0_ptr, screen_buffer, width, height, stride, 400, 240);
+                ConvertRotateToRgba8888(fb0_ptr, screen_buffer, width, height, stride,
+                                        TopScreenWidth, TopScreenHeight);
+            } else {
+                ClearRgba8888(screen_buffer, TopScreenWidth, TopScreenHeight);
             }
         }
 
@@ -141,9 +159,13 @@ bool Presenter::PresentFrame() {
 
             u8* fb1_ptr = memory.GetPhysicalPointer(fb1_addr);
             if (fb1_ptr && width > 0 && height > 0 && stride > 0) {
-                const u32 top_size = 400 * 240 * 4;
+                const u32 top_size = TopScreenWidth * TopScreenHeight * BytesPerPixel;
                 u8* const bottom_buffer = screen_buffer + top_size;
-                ConvertRotateToRgba8888(fb1_ptr, bottom_buffer, width, height, stride, 320, 240);
+                ConvertRotateToRgba8888(fb1_ptr, bottom_buffer, width, height, stride,
+                                        BottomScreenWidth, BottomScreenHeight);
+            } else {
+                const u32 top_size = TopScreenWidth * TopScreenHeight * BytesPerPixel;
+                ClearRgba8888(screen_buffer + top_size, BottomScreenWidth, BottomScreenHeight);
             }
         }
 

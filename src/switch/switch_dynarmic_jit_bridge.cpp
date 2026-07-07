@@ -352,9 +352,16 @@ extern "C" void* azahar_switch_dynarmic_jit_create(std::size_t size,
     }
 
     RegisterRange(*handle, *rw, *rx, DefaultOwner);
-    Log("owner=%s id=%u type=%d requested_size=%zu actual_size=%zu rw=%p rx=%p",
+    Log("owner=%s id=%u jit_type=%d requested_size=%zu actual_size=%zu rw=%p rx=%p "
+        "partial_publish_enabled=%s",
         DefaultOwner, handle->id, static_cast<int>(handle->jit.type), size,
-        handle->jit.size, static_cast<void*>(*rw), static_cast<void*>(*rx));
+        handle->jit.size, static_cast<void*>(*rw), static_cast<void*>(*rx),
+#if defined(AZAHAR_SWITCH_JIT_PARTIAL_PUBLISH)
+        "true"
+#else
+        "false"
+#endif
+    );
     return handle;
 }
 

@@ -111,7 +111,9 @@ bool State::Initialize() {
         return false;
     }
 
-    upload_buffer_size = FramebufferWidth * FramebufferHeight * 4;
+    constexpr u32 TopScreenUploadBytes = 400 * 240 * 4;
+    constexpr u32 BottomScreenUploadBytes = 320 * 240 * 4;
+    upload_buffer_size = TopScreenUploadBytes + BottomScreenUploadBytes;
     DkMemBlockMaker upload_maker;
     dkMemBlockMakerDefaults(&upload_maker, device,
                             static_cast<u32>(AlignUp(upload_buffer_size, DK_MEMBLOCK_ALIGNMENT)));
@@ -194,7 +196,7 @@ void State::Shutdown() {
     upload_cpu_buffer = nullptr;
     upload_gpu_addr = 0;
     upload_buffer_size = 0;
-    upload_background_initialized = false;
+    swapchain_background_initialized = {};
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures enter");
     if (screen_tex_mem_block) {
@@ -613,75 +615,44 @@ bool State::PresentScreenTexturesFrame() {
     // Ensure GPU is idle before reusing staging and command memory.
     dkQueueWaitIdle(queue);
 
-    u8* const frame_ptr = static_cast<u8*>(upload_cpu_buffer);
+    u8* const upload_ptr = static_cast<u8*>(upload_cpu_buffer);
     constexpr u32 frame_width = FramebufferWidth;
-    constexpr u32 frame_height = FramebufferHeight;
-    constexpr u32 frame_pitch = FramebufferWidth * 4;
-    if (!upload_background_initialized) {
-        for (u32 y = 0; y < frame_height; ++y) {
-            u32* const row = reinterpret_cast<u32*>(frame_ptr + (y * frame_pitch));
-            for (u32 x = 0; x < frame_width; ++x) {
-                row[x] = 0xFF603020;
-            }
-        }
-        upload_background_initialized = true;
-    }
+    constexpr u32 top_width = 400;
+    constexpr u32 top_height = 240;
+    constexpr u32 bottom_width = 320;
+    constexpr u32 bottom_height = 240;
+    constexpr u32 top_bytes = top_width * top_height * 4;
+    constexpr u32 bottom_bytes = bottom_width * bottom_height * 4;
 
     const u8* const top_src = static_cast<const u8*>(screen_data_buffer);
-    const u8* const bottom_src = top_src + (400 * 240 * 4);
+    const u8* const bottom_src = top_src + top_bytes;
+    std::memcpy(upload_ptr, top_src, top_bytes);
+    std::memcpy(upload_ptr + top_bytes, bottom_src, bottom_bytes);
 
-    auto blit_rgba = [&](const u8* src, u32 src_w, u32 src_h, u32 dst_x, u32 dst_y) {
-        for (u32 y = 0; y < src_h; ++y) {
-            if ((dst_y + y) >= frame_height) {
-                break;
-            }
-            u8* const dst_row = frame_ptr + ((dst_y + y) * frame_pitch) + (dst_x * 4);
-            const u8* const src_row = src + (y * src_w * 4);
-            std::memcpy(dst_row, src_row, src_w * 4);
-        }
-    };
-
-    const u32 top_x = (frame_width - 400) / 2;
+    const u32 top_x = (frame_width - top_width) / 2;
     const u32 top_y = 40;
-    const u32 bottom_x = (frame_width - 320) / 2;
+    const u32 bottom_x = (frame_width - bottom_width) / 2;
     const u32 bottom_y = 320;
 
-    // Place top and bottom 3DS screens centered on Switch output.
-    blit_rgba(top_src, 400, 240, top_x, top_y);
-    blit_rgba(bottom_src, 320, 240, bottom_x, bottom_y);
-
-    auto draw_rect_outline = [&](u32 x, u32 y, u32 w, u32 h, u8 r, u8 g, u8 b) {
-        if (w < 2 || h < 2) {
-            return;
-        }
-        const auto plot = [&](u32 px, u32 py) {
-            if (px >= frame_width || py >= frame_height) {
-                return;
-            }
-            u8* const p = frame_ptr + (py * frame_pitch) + (px * 4);
-            p[0] = r;
-            p[1] = g;
-            p[2] = b;
-            p[3] = 0xFF;
-        };
-        for (u32 px = x; px < x + w; ++px) {
-            plot(px, y);
-            plot(px, y + h - 1);
-        }
-        for (u32 py = y; py < y + h; ++py) {
-            plot(x, py);
-            plot(x + w - 1, py);
-        }
-    };
-
-    draw_rect_outline(top_x, top_y, 400, 240, 0xF0, 0x30, 0x30);
-    draw_rect_outline(bottom_x, bottom_y, 320, 240, 0x30, 0xF0, 0x30);
-
-    DkCopyBuf copy_src = {upload_gpu_addr, 0, 0};
-    DkImageRect copy_dst = {0, 0, 0, frame_width, frame_height, 1};
-
     dkCmdBufClear(cmdbuf);
-    dkCmdBufCopyBufferToImage(cmdbuf, &copy_src, &framebuffer_views[slot], &copy_dst, 0);
+
+    if (!swapchain_background_initialized[slot]) {
+        dkCmdBufBindRenderTarget(cmdbuf, &framebuffer_views[slot], nullptr);
+        dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.125f, 0.188f, 0.376f, 1.0f);
+        swapchain_background_initialized[slot] = true;
+    }
+
+    // Place top and bottom 3DS screens centered on Switch output.  Copy only the native
+    // screen rectangles instead of rebuilding/uploading a full 1280x720 image every frame.
+    DkCopyBuf top_copy_src = {upload_gpu_addr, 0, 0};
+    DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
+    dkCmdBufCopyBufferToImage(cmdbuf, &top_copy_src, &framebuffer_views[slot], &top_copy_dst, 0);
+
+    DkCopyBuf bottom_copy_src = {upload_gpu_addr + top_bytes, 0, 0};
+    DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
+    dkCmdBufCopyBufferToImage(cmdbuf, &bottom_copy_src, &framebuffer_views[slot], &bottom_copy_dst,
+                              0);
+
     const DkCmdList copy_cmd = dkCmdBufFinishList(cmdbuf);
     if (!copy_cmd) {
         SetError("Deko3D failed to record buffer-to-image copy command");
