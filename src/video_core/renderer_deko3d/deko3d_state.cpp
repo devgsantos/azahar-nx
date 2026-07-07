@@ -578,10 +578,6 @@ void State::UploadScreenTextures() {
     if (!initialized || !top_screen_image || !bottom_screen_image || !screen_data_buffer) {
         return;
     }
-
-    // Placeholder until buffer-to-image copy commands are wired.
-    SWITCH_TRACE_EVENTF("Deko3D", "State::UploadScreenTextures", "staged",
-                        "bytes=%u", screen_data_buffer_size);
 }
 
 bool State::PresentScreenTexturesFrame() {

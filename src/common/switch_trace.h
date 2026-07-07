@@ -26,6 +26,7 @@ private:
 
 #define SWITCH_TRACE_CONCAT_INNER(a, b) a##b
 #define SWITCH_TRACE_CONCAT(a, b) SWITCH_TRACE_CONCAT_INNER(a, b)
+#if defined(AZAHAR_SWITCH_TRACE_ENABLED)
 #define SWITCH_TRACE_SCOPE(module, scope)                                                          \
     ::Common::SwitchTrace::ScopedTrace SWITCH_TRACE_CONCAT(switch_trace_scope_, __LINE__)(module,  \
                                                                                           scope)
@@ -36,3 +37,9 @@ private:
     ::Common::SwitchTrace::Write(module, scope, event)
 #define SWITCH_TRACE_EVENTF(module, scope, event, fmt, ...)                                         \
     ::Common::SwitchTrace::WriteFormat(module, scope, event, fmt, ##__VA_ARGS__)
+#else
+#define SWITCH_TRACE_SCOPE(module, scope) ((void)0)
+#define SWITCH_TRACE_SCOPE_DETAIL(module, scope, detail) ((void)0)
+#define SWITCH_TRACE_EVENT(module, scope, event) ((void)0)
+#define SWITCH_TRACE_EVENTF(module, scope, event, fmt, ...) ((void)0)
+#endif

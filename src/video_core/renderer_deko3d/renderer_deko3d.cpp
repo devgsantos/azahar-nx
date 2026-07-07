@@ -54,7 +54,6 @@ RendererDeko3D::~RendererDeko3D() {
 }
 
 void RendererDeko3D::SwapBuffers() {
-    SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D::SwapBuffers", "enter");
     system.perf_stats->StartSwap();
     if (!presenter.PresentFrame()) {
         SWITCH_TRACE_EVENTF("Deko3D", "RendererDeko3D::SwapBuffers", "failed", "error=%s",
@@ -63,7 +62,6 @@ void RendererDeko3D::SwapBuffers() {
     }
     system.perf_stats->EndSwap();
     EndFrame();
-    SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D::SwapBuffers", "leave");
 }
 
 void RendererDeko3D::TryPresent(int, bool) {

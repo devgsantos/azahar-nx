@@ -458,6 +458,7 @@ extern "C" void azahar_switch_dynarmic_jit_log_a32_svc(
     breadcrumb.phase.store(static_cast<std::uint32_t>(JitExecutionPhase::BeforeCallback),
                            std::memory_order_release);
 
+#if defined(AZAHAR_SWITCH_TRACE_DYNARMIC_SVC)
     if (a32_svc_log_count >= 32) {
         return;
     }
@@ -469,6 +470,7 @@ extern "C" void azahar_switch_dynarmic_jit_log_a32_svc(
         static_cast<unsigned long long>(continuation),
         ClassName(continuation_info.address_class), continuation_info.id,
         continuation_info.offset, static_cast<unsigned long long>(last_run_entry));
+#endif
 }
 
 extern "C" void azahar_switch_dynarmic_jit_update_breadcrumb(
