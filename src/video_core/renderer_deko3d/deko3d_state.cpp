@@ -194,6 +194,7 @@ void State::Shutdown() {
     upload_cpu_buffer = nullptr;
     upload_gpu_addr = 0;
     upload_buffer_size = 0;
+    upload_background_initialized = false;
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures enter");
     if (screen_tex_mem_block) {
@@ -616,15 +617,14 @@ bool State::PresentScreenTexturesFrame() {
     constexpr u32 frame_width = FramebufferWidth;
     constexpr u32 frame_height = FramebufferHeight;
     constexpr u32 frame_pitch = FramebufferWidth * 4;
-    for (u32 y = 0; y < frame_height; ++y) {
-        u8* const row = frame_ptr + (y * frame_pitch);
-        for (u32 x = 0; x < frame_width; ++x) {
-            const u32 pixel = x * 4;
-            row[pixel + 0] = 0x20; // R
-            row[pixel + 1] = 0x30; // G
-            row[pixel + 2] = 0x60; // B
-            row[pixel + 3] = 0xFF; // A
+    if (!upload_background_initialized) {
+        for (u32 y = 0; y < frame_height; ++y) {
+            u32* const row = reinterpret_cast<u32*>(frame_ptr + (y * frame_pitch));
+            for (u32 x = 0; x < frame_width; ++x) {
+                row[x] = 0xFF603020;
+            }
         }
+        upload_background_initialized = true;
     }
 
     const u8* const top_src = static_cast<const u8*>(screen_data_buffer);

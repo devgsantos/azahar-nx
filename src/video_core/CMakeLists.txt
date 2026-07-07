@@ -120,6 +120,18 @@ if (ENABLE_SOFTWARE_RENDERER)
 endif()
 if (ENABLE_SWITCH_FRONTEND)
     target_sources(video_core PRIVATE
+        renderer_software/sw_clipper.cpp
+        renderer_software/sw_clipper.h
+        renderer_software/sw_framebuffer.cpp
+        renderer_software/sw_framebuffer.h
+        renderer_software/sw_lighting.cpp
+        renderer_software/sw_lighting.h
+        renderer_software/sw_proctex.cpp
+        renderer_software/sw_proctex.h
+        renderer_software/sw_rasterizer.cpp
+        renderer_software/sw_rasterizer.h
+        renderer_software/sw_texturing.cpp
+        renderer_software/sw_texturing.h
         renderer_deko3d/deko3d_presenter.cpp
         renderer_deko3d/deko3d_presenter.h
         renderer_deko3d/deko3d_rasterizer.cpp

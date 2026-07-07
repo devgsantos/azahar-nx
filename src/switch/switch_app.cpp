@@ -279,15 +279,6 @@ int SwitchApp::LaunchGame(const std::string& path) {
         int loop_count = 0;
         auto last_perf_sample = std::chrono::steady_clock::now();
         while (system.IsPoweredOn()) {
-            if (loop_count < 60) {
-                SWITCH_EARLY_LOGF("RunLoop iteration %d begin", loop_count);
-                SWITCH_EARLY_LOGF("RunLoop iteration %d CPU running state=%s", loop_count,
-                                  BoolString(system.IsPoweredOn()));
-                SWITCH_EARLY_LOGF("RunLoop iteration %d renderer initialized state=%s",
-                                  loop_count, BoolString(renderer_backend_available));
-                SWITCH_EARLY_LOGF("RunLoop iteration %d window initialized state=%s", loop_count,
-                                  BoolString(window.IsValid()));
-            }
             window.PollEvents();
             const InputState input = PollInput();
             if (input.plus && input.minus) {
@@ -296,16 +287,7 @@ int SwitchApp::LaunchGame(const std::string& path) {
                 system.RequestShutdown();
             }
 
-            if (loop_count < 60) {
-                SWITCH_EARLY_LOGF("RunLoop iteration %d before system.RunLoop", loop_count);
-            }
             const Core::System::ResultStatus run = system.RunLoop();
-            if (loop_count < 60) {
-                SWITCH_EARLY_LOGF("RunLoop iteration %d after system.RunLoop result=%s",
-                                  loop_count, ResultToString(run));
-                SWITCH_EARLY_LOGF("RunLoop iteration %d end result=%s", loop_count,
-                                  ResultToString(run));
-            }
             ++loop_count;
 
             if (run == Core::System::ResultStatus::ShutdownRequested) {
@@ -322,12 +304,6 @@ int SwitchApp::LaunchGame(const std::string& path) {
                 return 0;
             }
 
-            const int completed_iteration = loop_count - 1;
-            if (completed_iteration < 60) {
-                SWITCH_EARLY_LOGF("RunLoop iteration %d post RunLoop perf sampling enter",
-                                  completed_iteration);
-            }
-
             const auto now = std::chrono::steady_clock::now();
             if (now - last_perf_sample >= std::chrono::seconds(1)) {
                 const auto perf = system.GetAndResetPerfStats();
@@ -337,18 +313,6 @@ int SwitchApp::LaunchGame(const std::string& path) {
                          perf.game_fps, perf.emulation_speed * 100.0);
                 SWITCH_EARLY_LOGF("performance fps=%.2f speed=%.2f%%", perf.game_fps,
                                   perf.emulation_speed * 100.0);
-            }
-
-            if (completed_iteration < 60) {
-                SWITCH_EARLY_LOGF("RunLoop iteration %d post RunLoop perf sampling leave",
-                                  completed_iteration);
-                SWITCH_EARLY_LOGF(
-                    "RunLoop iteration %d console overlay skipped because Deko3D is active",
-                    completed_iteration);
-                SWITCH_EARLY_LOGF(
-                    "RunLoop iteration %d presentation synchronization owned by renderer",
-                    completed_iteration);
-                SWITCH_EARLY_LOGF("RunLoop iteration %d completed", completed_iteration);
             }
         }
     } catch (const std::exception& e) {

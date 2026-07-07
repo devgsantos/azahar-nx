@@ -57,7 +57,7 @@ bool LogResultFailure(const char* operation, Result result) {
 } // namespace
 
 bool RunJitSelfTest() {
-    AppendJitLog("diagnostics_version=16 persistent_switch_trace=enabled full_jit_cache_maintenance=enabled callback_safe_unmapped_memory=enabled call_free_cycle_budget=enabled thread_local_breadcrumbs=enabled");
+    AppendJitLog("diagnostics_version=21 persistent_switch_trace=enabled full_jit_cache_maintenance=enabled callback_safe_unmapped_memory=enabled call_free_cycle_budget=enabled thread_local_breadcrumbs=enabled quiet_dynarmic_text_logs=enabled quiet_run_entry_logs=enabled filtered_trace_formatting=disabled quiet_runloop_early_logs=enabled cached_deko3d_present_background=enabled quiet_deko3d_source_diagnostics=enabled");
     AppendJitLog("Switch JIT self-test enter");
 
     Jit jit{};

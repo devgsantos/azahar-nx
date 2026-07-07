@@ -147,6 +147,7 @@ bool Presenter::PresentFrame() {
             }
         }
 
+#if defined(AZAHAR_SWITCH_DEKO3D_SOURCE_DIAGNOSTICS)
         ++frame_counter;
         const u8* const top_rgba = screen_buffer;
         const u8* const bottom_rgba = screen_buffer + (400 * 240 * 4);
@@ -165,6 +166,7 @@ bool Presenter::PresentFrame() {
                      "fb0=0x{:08x} fb1=0x{:08x}",
                      frame_counter, blank_top_frames, blank_bottom_frames, fb0_addr, fb1_addr);
         }
+#endif
 
     } catch (const std::exception& e) {
         LOG_WARNING(Render, "Deko3D Presenter framebuffer access error: {}", e.what());

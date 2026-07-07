@@ -14,7 +14,7 @@ namespace VideoCore::Deko3D {
 
 class RendererDeko3D final : public RendererBase {
 public:
-    RendererDeko3D(Core::System& system, Frontend::EmuWindow& window,
+    RendererDeko3D(Core::System& system, Pica::PicaCore& pica, Frontend::EmuWindow& window,
                    Frontend::EmuWindow* secondary_window);
     ~RendererDeko3D() override;
 

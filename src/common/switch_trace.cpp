@@ -106,6 +106,10 @@ void Write(const char* module, const char* scope, const char* event) {
 }
 
 void WriteFormat(const char* module, const char* scope, const char* event, const char* fmt, ...) {
+    if (!ShouldWriteTrace(module, scope, event)) {
+        return;
+    }
+
     char detail[1024]{};
     va_list args;
     va_start(args, fmt);

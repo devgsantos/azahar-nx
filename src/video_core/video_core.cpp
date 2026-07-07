@@ -37,7 +37,8 @@ std::unique_ptr<RendererBase> CreateRenderer(Frontend::EmuWindow& emu_window,
     SWITCH_TRACE_EVENT("VideoCore", "CreateRenderer", "force_backend_deko3d");
     LOG_INFO(Render, "Renderer backend selected: Deko3D");
 #ifdef AZAHAR_ENABLE_DEKO3D
-    auto renderer = std::make_unique<Deko3D::RendererDeko3D>(system, emu_window, secondary_window);
+    auto renderer =
+        std::make_unique<Deko3D::RendererDeko3D>(system, pica, emu_window, secondary_window);
     if (!renderer || !renderer->IsInitialized() || !renderer->Rasterizer()) {
         SWITCH_TRACE_EVENT("VideoCore", "CreateRenderer", "failed_invalid_deko3d_renderer");
         throw std::runtime_error("Deko3D renderer initialization failed");
@@ -53,7 +54,8 @@ std::unique_ptr<RendererBase> CreateRenderer(Frontend::EmuWindow& emu_window,
     switch (graphics_api) {
 #ifdef AZAHAR_ENABLE_DEKO3D
     case Settings::GraphicsAPI::Deko3D:
-        return std::make_unique<Deko3D::RendererDeko3D>(system, emu_window, secondary_window);
+        return std::make_unique<Deko3D::RendererDeko3D>(system, pica, emu_window,
+                                                       secondary_window);
 #endif
 #ifdef ENABLE_SOFTWARE_RENDERER
     case Settings::GraphicsAPI::Software:
@@ -78,7 +80,8 @@ std::unique_ptr<RendererBase> CreateRenderer(Frontend::EmuWindow& emu_window,
                      "Unknown or unsupported graphics API {}, falling back to available default",
                      graphics_api);
 #ifdef AZAHAR_ENABLE_DEKO3D
-        return std::make_unique<Deko3D::RendererDeko3D>(system, emu_window, secondary_window);
+        return std::make_unique<Deko3D::RendererDeko3D>(system, pica, emu_window,
+                                                       secondary_window);
 #elif defined(ENABLE_OPENGL)
         return std::make_unique<OpenGL::RendererOpenGL>(system, pica, emu_window, secondary_window);
 #elif ENABLE_VULKAN

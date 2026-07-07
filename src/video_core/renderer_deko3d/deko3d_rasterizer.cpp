@@ -8,38 +8,53 @@
 namespace VideoCore::Deko3D {
 namespace {
 
-void LogOnce(const char* message) {
+void LogSoftwareBridgeOnce() {
     static bool logged = false;
     if (!logged) {
-        LOG_WARNING(Render, "Deko3D rasterizer: {}", message);
+        LOG_INFO(Render,
+                 "Deko3D rasterizer: using software PICA rasterization with native Deko3D "
+                 "presentation");
         logged = true;
     }
 }
 
 } // namespace
 
-void Rasterizer::AddTriangle(const Pica::OutputVertex&, const Pica::OutputVertex&,
-                             const Pica::OutputVertex&) {
-    LogOnce("PICA triangle path is not fully translated yet");
+Rasterizer::Rasterizer(Memory::MemorySystem& memory, Pica::PicaCore& pica)
+    : software_rasterizer{memory, pica} {}
+
+void Rasterizer::AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
+                             const Pica::OutputVertex& v2) {
+    LogSoftwareBridgeOnce();
+    software_rasterizer.AddTriangle(v0, v1, v2);
 }
 
 void Rasterizer::DrawTriangles() {
-    LogOnce("DrawTriangles reached before full Deko3D PICA pipeline translation");
+    software_rasterizer.DrawTriangles();
 }
 
-void Rasterizer::FlushAll() {}
+void Rasterizer::FlushAll() {
+    software_rasterizer.FlushAll();
+}
 
-void Rasterizer::FlushRegion(PAddr, u32) {}
+void Rasterizer::FlushRegion(PAddr addr, u32 size) {
+    software_rasterizer.FlushRegion(addr, size);
+}
 
-void Rasterizer::InvalidateRegion(PAddr, u32) {}
+void Rasterizer::InvalidateRegion(PAddr addr, u32 size) {
+    software_rasterizer.InvalidateRegion(addr, size);
+}
 
-void Rasterizer::FlushAndInvalidateRegion(PAddr, u32) {}
+void Rasterizer::FlushAndInvalidateRegion(PAddr addr, u32 size) {
+    software_rasterizer.FlushAndInvalidateRegion(addr, size);
+}
 
-void Rasterizer::ClearAll(bool) {}
+void Rasterizer::ClearAll(bool flush) {
+    software_rasterizer.ClearAll(flush);
+}
 
-bool Rasterizer::AccelerateDrawBatch(bool) {
-    LogOnce("AccelerateDrawBatch is not complete");
-    return false;
+bool Rasterizer::AccelerateDrawBatch(bool is_indexed) {
+    return software_rasterizer.AccelerateDrawBatch(is_indexed);
 }
 
 } // namespace VideoCore::Deko3D

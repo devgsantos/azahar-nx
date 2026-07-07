@@ -8,12 +8,16 @@
 #include "common/logging/log.h"
 #include "common/switch_trace.h"
 #include "core/core.h"
+#include "video_core/gpu.h"
+#include "video_core/pica/pica_core.h"
 
 namespace VideoCore::Deko3D {
 
-RendererDeko3D::RendererDeko3D(Core::System& system_, Frontend::EmuWindow& window,
+RendererDeko3D::RendererDeko3D(Core::System& system_, Pica::PicaCore& pica,
+                               Frontend::EmuWindow& window,
                                Frontend::EmuWindow* secondary_window)
-    : RendererBase{system_, window, secondary_window}, presenter{state, system_} {
+    : RendererBase{system_, window, secondary_window}, rasterizer{system_.Memory(), pica},
+      presenter{state, system_} {
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D", "enter");
     LOG_INFO(Render, "Renderer backend selected: Deko3D");
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D", "Renderer backend selected: Deko3D");

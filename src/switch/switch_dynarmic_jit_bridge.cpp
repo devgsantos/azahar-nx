@@ -84,7 +84,9 @@ thread_local std::uintptr_t last_dispatcher_target = 0;
 thread_local std::uintptr_t last_run_entry = 0;
 thread_local std::uint32_t host_timing_log_count = 0;
 thread_local std::uint32_t a32_svc_log_count = 0;
+#if defined(AZAHAR_SWITCH_DYNARMIC_VERBOSE_TEXT_LOGS)
 thread_local std::uint32_t run_entry_log_count = 0;
+#endif
 
 void LogTaggedV(const char* tag, const char* format, va_list args) noexcept {
     std::FILE* file = std::fopen(LogPath, "a");
@@ -394,11 +396,13 @@ extern "C" void azahar_switch_dynarmic_jit_log_prelude_target(
 extern "C" void azahar_switch_dynarmic_jit_log_run_entry(
     std::uintptr_t run_entry) noexcept {
     last_run_entry = run_entry;
+#if defined(AZAHAR_SWITCH_DYNARMIC_VERBOSE_TEXT_LOGS)
     if (run_entry_log_count >= 8) {
         return;
     }
     ++run_entry_log_count;
     LogAddressFields("run_entry", run_entry);
+#endif
 }
 
 extern "C" std::uintptr_t azahar_switch_dynarmic_jit_get_run_entry() noexcept {
