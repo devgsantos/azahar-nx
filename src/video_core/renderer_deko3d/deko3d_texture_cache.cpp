@@ -11,8 +11,11 @@ namespace VideoCore::Deko3D {
 bool TextureCache::Initialize() {
     SWITCH_TRACE_EVENT("Deko3D", "TextureCache::Initialize", "enter");
     initialized = true;
-    LOG_INFO(Render, "Deko3D texture cache created");
-    SWITCH_TRACE_EVENT("Deko3D", "TextureCache::Initialize", "Deko3D texture upload path ready");
+    LOG_WARNING(Render,
+                "Deko3D texture cache initialized without GPU texture entries; software "
+                "framebuffer presentation remains active");
+    SWITCH_TRACE_EVENT("Deko3D", "TextureCache::Initialize",
+                       "no GPU texture entries allocated");
     SWITCH_TRACE_EVENT("Deko3D", "TextureCache::Initialize", "leave");
     return true;
 }

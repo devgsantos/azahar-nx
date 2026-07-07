@@ -11,8 +11,11 @@ namespace VideoCore::Deko3D {
 bool ShaderCache::Initialize() {
     SWITCH_TRACE_EVENT("Deko3D", "ShaderCache::Initialize", "enter");
     initialized = true;
-    LOG_INFO(Render, "Deko3D shader cache created");
-    SWITCH_TRACE_EVENT("Deko3D", "ShaderCache::Initialize", "minimum shader path ready");
+    LOG_WARNING(Render,
+                "Deko3D shader cache initialized without DKSH programs; hardware rasterizer "
+                "pipeline is not active");
+    SWITCH_TRACE_EVENT("Deko3D", "ShaderCache::Initialize",
+                       "no DKSH shader programs loaded");
     SWITCH_TRACE_EVENT("Deko3D", "ShaderCache::Initialize", "leave");
     return true;
 }

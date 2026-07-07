@@ -17,6 +17,11 @@
 // type-name collision.
 #include <switch.h>
 
+extern "C" void azahar_switch_dynarmic_jit_take_publish_stats(
+    std::uint64_t* partial_publishes, std::uint64_t* full_publishes,
+    std::uint64_t* flushed, std::uint64_t* invalidated,
+    std::uint64_t* cache_clears, std::uint64_t* blocks_compiled) noexcept;
+
 namespace Azahar::Switch {
 
 namespace {
@@ -63,7 +68,7 @@ bool LogResultFailure(const char* operation, Result result) {
 } // namespace
 
 bool RunJitSelfTest() {
-    AppendJitLog("diagnostics_version=29 persistent_switch_trace=enabled full_jit_cache_maintenance=enabled callback_safe_unmapped_memory=enabled call_free_cycle_budget=enabled thread_local_breadcrumbs=enabled quiet_dynarmic_text_logs=enabled quiet_run_entry_logs=enabled quiet_prelude_logs=enabled quiet_dynarmic_block_trace=enabled filtered_trace_formatting=enabled quiet_runloop_early_logs=enabled cached_deko3d_present_background=enabled quiet_deko3d_source_diagnostics=enabled switch_perf_buckets=enabled switch_jit_run_stats=enabled");
+    AppendJitLog("diagnostics_version=34 persistent_switch_trace=enabled range_jit_publication=opt_in full_publish_fallback=enabled dynarmic_safe_optimizations=opt_in dynarmic_default_optimizations=none dynarmic_code_cache=8MiB dynarmic_rsb=disabled dynarmic_fastmem=disabled crash_breadcrumbs=minimal perf_diagnostics=aggregate verbose_dynarmic_text_logs=disabled quiet_dynarmic_emit_trace=enabled per_run_sd_writes=forbidden callback_safe_unmapped_memory=enabled call_free_cycle_budget=enabled quiet_run_entry_logs=enabled quiet_prelude_logs=enabled quiet_dynarmic_block_trace=enabled filtered_trace_formatting=enabled quiet_runloop_early_logs=enabled cached_deko3d_present_background=enabled quiet_deko3d_source_diagnostics=enabled switch_perf_buckets=enabled switch_jit_run_stats=enabled");
     AppendJitLog("Switch JIT self-test enter");
 
     Jit jit{};
@@ -148,6 +153,14 @@ JitRunStats TakeJitRunStats() {
         jit_run_executed_ticks.exchange(0, std::memory_order_relaxed),
         jit_run_zero_tick_calls.exchange(0, std::memory_order_relaxed),
     };
+}
+
+JitPublishStats TakeJitPublishStats() {
+    JitPublishStats stats{};
+    azahar_switch_dynarmic_jit_take_publish_stats(
+        &stats.partial_publishes, &stats.full_publishes, &stats.bytes_flushed,
+        &stats.bytes_invalidated, &stats.cache_clears, &stats.blocks_compiled);
+    return stats;
 }
 
 extern "C" void azahar_switch_dynarmic_jit_record_run(

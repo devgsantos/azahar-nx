@@ -87,6 +87,12 @@ thread_local std::uint32_t a32_svc_log_count = 0;
 #if defined(AZAHAR_SWITCH_DYNARMIC_VERBOSE_TEXT_LOGS)
 thread_local std::uint32_t run_entry_log_count = 0;
 #endif
+std::atomic<std::uint64_t> partial_publish_count{0};
+std::atomic<std::uint64_t> full_publish_count{0};
+std::atomic<std::uint64_t> bytes_flushed{0};
+std::atomic<std::uint64_t> bytes_invalidated{0};
+std::atomic<std::uint64_t> cache_clear_count{0};
+std::atomic<std::uint64_t> compiled_block_count{0};
 
 void LogTaggedV(const char* tag, const char* format, va_list args) noexcept {
     std::FILE* file = std::fopen(LogPath, "a");
@@ -262,6 +268,52 @@ void LogAddressFields(const char* name, std::uintptr_t address) noexcept {
         static_cast<unsigned long long>(info.other_alias));
 }
 
+void PublishPartialRange(SwitchDynarmicJit& handle, std::size_t offset,
+                         std::size_t size) noexcept {
+    if (size == 0) {
+        return;
+    }
+
+    auto* rw = static_cast<std::uint8_t*>(jitGetRwAddr(&handle.jit));
+    auto* rx = static_cast<std::uint8_t*>(jitGetRxAddr(&handle.jit));
+    armDCacheFlush(rw + offset, size);
+    __asm__ volatile("dsb ish" ::: "memory");
+    armICacheInvalidate(rx + offset, size);
+    __asm__ volatile("dsb ish\nisb" ::: "memory");
+
+    handle.jit.is_executable = true;
+    partial_publish_count.fetch_add(1, std::memory_order_relaxed);
+    bytes_flushed.fetch_add(size, std::memory_order_relaxed);
+    bytes_invalidated.fetch_add(size, std::memory_order_relaxed);
+}
+
+bool PublishFullRange(SwitchDynarmicJit& handle, std::size_t offset,
+                      std::size_t size) noexcept {
+    auto* rw = static_cast<std::uint8_t*>(jitGetRwAddr(&handle.jit));
+    auto* rx = static_cast<std::uint8_t*>(jitGetRxAddr(&handle.jit));
+    if (size != 0) {
+        armDCacheFlush(rw + offset, size);
+        __asm__ volatile("dsb ish" ::: "memory");
+    }
+
+    const Result rc = jitTransitionToExecutable(&handle.jit);
+    if (R_FAILED(rc)) {
+        Log("jitTransitionToExecutable failed rc=0x%08x offset=%zu size=%zu",
+            rc, offset, size);
+        return false;
+    }
+
+    if (size != 0) {
+        armICacheInvalidate(rx + offset, size);
+        __asm__ volatile("dsb ish\nisb" ::: "memory");
+    }
+
+    full_publish_count.fetch_add(1, std::memory_order_relaxed);
+    bytes_flushed.fetch_add(size, std::memory_order_relaxed);
+    bytes_invalidated.fetch_add(size, std::memory_order_relaxed);
+    return true;
+}
+
 }  // namespace
 
 extern "C" void* azahar_switch_dynarmic_jit_create(std::size_t size,
@@ -312,8 +364,10 @@ extern "C" bool azahar_switch_dynarmic_jit_begin_write(void* opaque) noexcept {
         return false;
     }
 
-    // Mirror Oaknut's CodeBlock::unprotect() semantics on Switch: transition the
-    // JIT backing store to writable before emitting new host code.
+    if (handle->jit.type == JitType_CodeMemory) {
+        return true;
+    }
+
     const Result rc = jitTransitionToWritable(&handle->jit);
     if (R_FAILED(rc)) {
         Log("jitTransitionToWritable failed rc=0x%08x", rc);
@@ -334,27 +388,16 @@ extern "C" bool azahar_switch_dynarmic_jit_end_write(void* opaque,
     offset = std::min(offset, total_size);
     size = std::min(size, total_size - offset);
 
-    auto* rw = static_cast<std::uint8_t*>(jitGetRwAddr(&handle->jit));
-    auto* rx = static_cast<std::uint8_t*>(jitGetRxAddr(&handle->jit));
+    const bool complete_allocation = offset == 0 && size == total_size;
 
-    if (size != 0) {
-        armDCacheFlush(rw + offset, size);
+#if defined(AZAHAR_SWITCH_JIT_PARTIAL_PUBLISH)
+    if (handle->jit.type == JitType_CodeMemory && !complete_allocation) {
+        PublishPartialRange(*handle, offset, size);
+        return true;
     }
+#endif
 
-    // Mirror Oaknut's CodeBlock::protect() semantics on Switch: transition the
-    // JIT backing store back to executable after emitting and publishing code.
-    const Result rc = jitTransitionToExecutable(&handle->jit);
-    if (R_FAILED(rc)) {
-        Log("jitTransitionToExecutable failed rc=0x%08x offset=%zu size=%zu",
-            rc, offset, size);
-        return false;
-    }
-
-    if (size != 0) {
-        armICacheInvalidate(rx + offset, size);
-    }
-
-    return true;
+    return PublishFullRange(*handle, offset, size);
 }
 
 extern "C" void azahar_switch_dynarmic_jit_destroy(void* opaque) noexcept {
@@ -440,6 +483,38 @@ extern "C" void azahar_switch_dynarmic_jit_log_message(
         return;
     }
     LogTaggedMessage(tag, message);
+}
+
+extern "C" void azahar_switch_dynarmic_jit_record_cache_clear() noexcept {
+    cache_clear_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+extern "C" void azahar_switch_dynarmic_jit_record_block_compiled() noexcept {
+    compiled_block_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+extern "C" void azahar_switch_dynarmic_jit_take_publish_stats(
+    std::uint64_t* partial_publishes, std::uint64_t* full_publishes,
+    std::uint64_t* flushed, std::uint64_t* invalidated,
+    std::uint64_t* cache_clears, std::uint64_t* blocks_compiled) noexcept {
+    if (partial_publishes != nullptr) {
+        *partial_publishes = partial_publish_count.exchange(0, std::memory_order_relaxed);
+    }
+    if (full_publishes != nullptr) {
+        *full_publishes = full_publish_count.exchange(0, std::memory_order_relaxed);
+    }
+    if (flushed != nullptr) {
+        *flushed = bytes_flushed.exchange(0, std::memory_order_relaxed);
+    }
+    if (invalidated != nullptr) {
+        *invalidated = bytes_invalidated.exchange(0, std::memory_order_relaxed);
+    }
+    if (cache_clears != nullptr) {
+        *cache_clears = cache_clear_count.exchange(0, std::memory_order_relaxed);
+    }
+    if (blocks_compiled != nullptr) {
+        *blocks_compiled = compiled_block_count.exchange(0, std::memory_order_relaxed);
+    }
 }
 
 extern "C" void azahar_switch_dynarmic_jit_set_breadcrumb_phase(

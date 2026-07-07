@@ -14,26 +14,21 @@
 namespace Pica {
 
 std::unique_ptr<ShaderEngine> CreateEngine(bool use_jit) {
-#if defined(__SWITCH__)
-    if (use_jit) {
-        static bool logged_shader_jit_fallback = false;
-        if (!logged_shader_jit_fallback) {
-            std::fprintf(stderr,
-                         "[Switch.PICA] native A64 shader JIT disabled; using interpreter\n");
-            std::fflush(stderr);
-            logged_shader_jit_fallback = true;
-        }
-    }
-    return std::make_unique<Shader::InterpreterEngine>();
-#else
 #if CITRA_ARCH(x86_64) || CITRA_ARCH(arm64)
     if (use_jit) {
+#if defined(__SWITCH__)
+        static bool logged_shader_jit_active = false;
+        if (!logged_shader_jit_active) {
+            std::fprintf(stderr, "[Switch.PICA] AArch64 shader JIT active\n");
+            std::fflush(stderr);
+            logged_shader_jit_active = true;
+        }
+#endif
         return std::make_unique<Shader::JitEngine>();
     }
 #endif
 
     return std::make_unique<Shader::InterpreterEngine>();
-#endif
 }
 
 } // namespace Pica

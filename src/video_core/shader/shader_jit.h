@@ -14,6 +14,7 @@
 
 namespace Pica::Shader {
 
+class InterpreterEngine;
 class JitShader;
 
 class JitEngine final : public ShaderEngine {
@@ -25,7 +26,9 @@ public:
     void Run(const ShaderSetup& setup, ShaderUnit& state) const override;
 
 private:
+    std::unique_ptr<InterpreterEngine> fallback;
     std::unordered_map<u64, std::unique_ptr<JitShader>> cache;
+    bool fallback_active = false;
 };
 
 } // namespace Pica::Shader

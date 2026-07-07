@@ -41,6 +41,15 @@ extern "C" void azahar_switch_dynarmic_jit_record_run(
 #endif
 
 namespace Core {
+namespace {
+
+#ifdef __SWITCH__
+constexpr std::size_t SwitchDynarmicCodeCacheSize = 8 * 1024 * 1024;
+constexpr Dynarmic::OptimizationFlag SwitchDynarmicOptimizations =
+    Dynarmic::all_safe_optimizations & ~Dynarmic::OptimizationFlag::ReturnStackBuffer;
+#endif
+
+} // namespace
 
 class DynarmicUserCallbacks final : public Dynarmic::A32::UserCallbacks {
 public:
@@ -367,20 +376,26 @@ void ARM_Dynarmic::Run() {
     const u64 ticks_to_run = static_cast<u64>(downcount <= 0 ? 0 : downcount);
     Dynarmic::A32::SwitchCycleBudget::SetRequestedTicks(ticks_to_run);
     Dynarmic::A32::SwitchCycleBudget::SetExecutedTicks(0);
+#if defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS)
     const auto jit_start = std::chrono::steady_clock::now();
+#endif
 #endif
 
     jit->Run();
     cb->ReportPendingUnmappedAccess();
 
 #ifdef __SWITCH__
-    const auto jit_end = std::chrono::steady_clock::now();
     const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
+#if defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS)
+    const auto jit_end = std::chrono::steady_clock::now();
     const auto host_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                              jit_end - jit_start)
                              .count();
     azahar_switch_dynarmic_jit_record_run(static_cast<std::uint64_t>(host_ns),
                                           ticks_to_run, ticks_executed);
+#else
+    azahar_switch_dynarmic_jit_record_run(0, ticks_to_run, ticks_executed);
+#endif
     GetTimer().AddTicks(ticks_executed);
 
     // Account for guest execution before the HLE syscall can reschedule or
@@ -397,20 +412,26 @@ void ARM_Dynarmic::Step() {
 #ifdef __SWITCH__
     Dynarmic::A32::SwitchCycleBudget::SetRequestedTicks(1);
     Dynarmic::A32::SwitchCycleBudget::SetExecutedTicks(0);
+#if defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS)
     const auto jit_start = std::chrono::steady_clock::now();
+#endif
 #endif
 
     jit->Step();
     cb->ReportPendingUnmappedAccess();
 
 #ifdef __SWITCH__
-    const auto jit_end = std::chrono::steady_clock::now();
     const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
+#if defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS)
+    const auto jit_end = std::chrono::steady_clock::now();
     const auto host_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                              jit_end - jit_start)
                              .count();
     azahar_switch_dynarmic_jit_record_run(static_cast<std::uint64_t>(host_ns), 1,
                                           ticks_executed);
+#else
+    azahar_switch_dynarmic_jit_record_run(0, 1, ticks_executed);
+#endif
     GetTimer().AddTicks(ticks_executed);
     cb->HandlePendingSVC();
 #endif
@@ -580,15 +601,31 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     config.global_monitor = &exclusive_monitor.monitor;
 #ifdef __SWITCH__
     // AZAHAR_SWITCH_DUAL_ALIAS_JIT_V3
-    // The Switch JIT path has proven unstable with Dynarmic's safe
-    // optimization set on Horizon's dual-alias code memory, so disable it
-    // entirely for now and rely on the conservative dispatcher path.
-    config.code_cache_size = 8 * 1024 * 1024;
+    // Keep the normal Switch path conservative. The safe optimization set still
+    // crashes during early block emission on Horizon and must be opt-in until
+    // the failing flag is isolated on-device.
+    config.code_cache_size = SwitchDynarmicCodeCacheSize;
+#if defined(AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS)
+    config.optimizations = SwitchDynarmicOptimizations;
+#else
     config.optimizations = Dynarmic::no_optimizations;
+#endif
     config.fastmem_pointer = std::nullopt;
     config.recompile_on_fastmem_failure = false;
     config.fastmem_exclusive_access = false;
     config.recompile_on_exclusive_fastmem_failure = false;
+
+    static bool logged_switch_jit_config = false;
+    if (!logged_switch_jit_config) {
+        logged_switch_jit_config = true;
+#if defined(AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS)
+        LOG_INFO(Core_ARM11, "Switch ARM JIT: safe optimizations active, RSB disabled");
+#else
+        LOG_INFO(Core_ARM11,
+                 "Switch ARM JIT: conservative no-optimization mode active; safe optimizations "
+                 "available behind AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS");
+#endif
+    }
 #endif
 
     return std::make_unique<Dynarmic::A32::Jit>(config);

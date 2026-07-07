@@ -1022,9 +1022,8 @@ void JitShader::Compile(const std::array<u32, MAX_PROGRAM_CODE_LENGTH>* program_
     // Copy to executable memory
     std::memcpy(code_mem->wptr(), code_vec.data(), code_vec.size() * sizeof(u32));
 
-    // Memory is ready to execute
-    code_mem->invalidate_all();
-    code_mem->protect();
+    // Publish only the generated shader body through the executable alias.
+    code_mem->FinalizeCodeRange(code_mem->wptr(), code_size);
 
     // code_vec is no longer needed
     code_vec.clear();

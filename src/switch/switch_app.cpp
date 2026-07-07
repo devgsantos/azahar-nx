@@ -308,13 +308,16 @@ int SwitchApp::LaunchGame(const std::string& path) {
             if (now - last_perf_sample >= std::chrono::seconds(1)) {
                 const auto perf = system.GetAndResetPerfStats();
                 const auto jit_stats = TakeJitRunStats();
+                const auto jit_publish_stats = TakeJitPublishStats();
                 last_perf_sample = now;
 
                 LOG_INFO(Frontend,
                          "Switch performance: FPS {:.2f} SystemFPS {:.2f} Speed {:.2f}% "
                          "vblank {:.2f}ms hle_svc {:.2f}ms hle_ipc {:.2f}ms gpu {:.2f}ms "
                          "swap {:.2f}ms other {:.2f}ms jit_ms {:.2f} jit_calls {} "
-                         "jit_req {} jit_exec {} jit_zero {}",
+                         "jit_req {} jit_exec {} jit_zero {} jit_publish_partial {} "
+                         "jit_publish_full {} jit_publish_bytes {} jit_publish_invalidated {} "
+                         "jit_cache_clears {} jit_blocks_compiled {}",
                          perf.game_fps, perf.system_fps, perf.emulation_speed * 100.0,
                          perf.time_vblank_interval * 1000.0,
                          perf.time_hle_svc * 1000.0,
@@ -324,12 +327,21 @@ int SwitchApp::LaunchGame(const std::string& path) {
                          perf.time_remaining * 1000.0,
                          static_cast<double>(jit_stats.host_ns) / 1'000'000.0,
                          jit_stats.calls, jit_stats.requested_ticks,
-                         jit_stats.executed_ticks, jit_stats.zero_tick_calls);
+                         jit_stats.executed_ticks, jit_stats.zero_tick_calls,
+                         jit_publish_stats.partial_publishes,
+                         jit_publish_stats.full_publishes,
+                         jit_publish_stats.bytes_flushed,
+                         jit_publish_stats.bytes_invalidated,
+                         jit_publish_stats.cache_clears,
+                         jit_publish_stats.blocks_compiled);
                 SWITCH_EARLY_LOGF(
                     "performance fps=%.2f system_fps=%.2f speed=%.2f%% "
                     "vblank=%.2fms hle_svc=%.2fms hle_ipc=%.2fms gpu=%.2fms "
                     "swap=%.2fms other=%.2fms jit_ms=%.2f jit_calls=%llu "
-                    "jit_req=%llu jit_exec=%llu jit_zero=%llu",
+                    "jit_req=%llu jit_exec=%llu jit_zero=%llu "
+                    "jit_publish_partial=%llu jit_publish_full=%llu "
+                    "jit_publish_bytes=%llu jit_publish_invalidated=%llu "
+                    "jit_cache_clears=%llu jit_blocks_compiled=%llu",
                     perf.game_fps, perf.system_fps, perf.emulation_speed * 100.0,
                     perf.time_vblank_interval * 1000.0,
                     perf.time_hle_svc * 1000.0, perf.time_hle_ipc * 1000.0,
@@ -339,7 +351,13 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     static_cast<unsigned long long>(jit_stats.calls),
                     static_cast<unsigned long long>(jit_stats.requested_ticks),
                     static_cast<unsigned long long>(jit_stats.executed_ticks),
-                    static_cast<unsigned long long>(jit_stats.zero_tick_calls));
+                    static_cast<unsigned long long>(jit_stats.zero_tick_calls),
+                    static_cast<unsigned long long>(jit_publish_stats.partial_publishes),
+                    static_cast<unsigned long long>(jit_publish_stats.full_publishes),
+                    static_cast<unsigned long long>(jit_publish_stats.bytes_flushed),
+                    static_cast<unsigned long long>(jit_publish_stats.bytes_invalidated),
+                    static_cast<unsigned long long>(jit_publish_stats.cache_clears),
+                    static_cast<unsigned long long>(jit_publish_stats.blocks_compiled));
             }
         }
     } catch (const std::exception& e) {
