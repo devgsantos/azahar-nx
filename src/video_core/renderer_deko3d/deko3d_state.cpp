@@ -96,22 +96,6 @@ bool State::Initialize() {
     }
     SWITCH_TRACE_EVENT("Deko3D", "State::CreateScreenTextures", "leave");
 
-    SWITCH_TRACE_EVENT("Deko3D", "State::CreateShaderPipeline", "enter");
-    if (!CreateShaderPipeline()) {
-        SWITCH_TRACE_EVENT("Deko3D", "State::CreateShaderPipeline", "failed");
-        Shutdown();
-        return false;
-    }
-    SWITCH_TRACE_EVENT("Deko3D", "State::CreateShaderPipeline", "leave");
-
-    SWITCH_TRACE_EVENT("Deko3D", "State::CreateVertexBuffer", "enter");
-    if (!CreateVertexBuffer()) {
-        SWITCH_TRACE_EVENT("Deko3D", "State::CreateVertexBuffer", "failed");
-        Shutdown();
-        return false;
-    }
-    SWITCH_TRACE_EVENT("Deko3D", "State::CreateVertexBuffer", "leave");
-
     // Allocate CPU-accessible screen data buffer for framebuffer uploads
     // Top screen: 400x240 RGBA8, Bottom screen: 320x240 RGBA8
     constexpr u32 TopScreenPixels = 400 * 240;
@@ -201,35 +185,6 @@ void State::Shutdown() {
         bottom_screen_image = nullptr;
     }
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures leave");
-    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy GPU buffer enter");
-    if (screen_data_gpu_mem_block) {
-        dkMemBlockDestroy(screen_data_gpu_mem_block);
-        screen_data_gpu_mem_block = nullptr;
-        screen_data_gpu_buffer = nullptr;
-    }
-    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy GPU buffer leave");
-    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy shaders enter");
-    if (vertex_shader) {
-        delete vertex_shader;
-        vertex_shader = nullptr;
-    }
-    if (fragment_shader) {
-        delete fragment_shader;
-        fragment_shader = nullptr;
-    }
-    if (shader_mem_block) {
-        dkMemBlockDestroy(shader_mem_block);
-        shader_mem_block = nullptr;
-    }
-    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy shaders leave");
-    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy vertex buffer enter");
-    if (vertex_buffer_mem_block) {
-        dkMemBlockDestroy(vertex_buffer_mem_block);
-        vertex_buffer_mem_block = nullptr;
-        vertex_buffer = nullptr;
-        vertex_buffer_size = 0;
-    }
-    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy vertex buffer leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy queue enter");
     if (queue) {
         dkQueueDestroy(queue);
@@ -568,67 +523,17 @@ bool State::CreateScreenTextures() {
     SWITCH_TRACE_EVENTF("Deko3D", "State::CreateScreenTextures", "success",
                         "top=%ux%u bottom=%ux%u", TopScreenWidth, TopScreenHeight,
                         BottomScreenWidth, BottomScreenHeight);
-
-    // Allocate GPU-accessible buffer for pixel uploads (same size as CPU buffer)
-    constexpr u32 TopScreenPixels = 400 * 240;
-    constexpr u32 BottomScreenPixels = 320 * 240;
-    constexpr u32 BytesPerPixel = 4;
-    u32 gpu_buffer_size = (TopScreenPixels + BottomScreenPixels) * BytesPerPixel;
-
-    DkMemBlockMaker gpu_mem_maker;
-    dkMemBlockMakerDefaults(&gpu_mem_maker, device, gpu_buffer_size);
-    gpu_mem_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_CpuUncached;
-
-    screen_data_gpu_mem_block = dkMemBlockCreate(&gpu_mem_maker);
-    if (!screen_data_gpu_mem_block) {
-        SetError("Failed to create GPU screen data buffer");
-        return false;
-    }
-
-    screen_data_gpu_buffer = dkMemBlockGetCpuAddr(screen_data_gpu_mem_block);
-    if (!screen_data_gpu_buffer) {
-        SetError("Failed to get GPU buffer CPU address");
-        return false;
-    }
-
-    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateScreenTextures", "GPU buffer allocated",
-                        "size=%u", gpu_buffer_size);
     return true;
 }
 
 void State::UploadScreenTextures() {
-    if (!initialized || !screen_data_gpu_buffer || !top_screen_image || !bottom_screen_image) {
+    if (!initialized || !top_screen_image || !bottom_screen_image || !screen_data_buffer) {
         return;
     }
 
-    try {
-        // Copy CPU buffer to GPU buffer
-        if (screen_data_buffer && screen_data_buffer_size > 0) {
-            std::memcpy(screen_data_gpu_buffer, screen_data_buffer, screen_data_buffer_size);
-        }
-
-        // Use GPU commands to copy buffer to images
-        // Top screen: 400x240 at offset 0
-        DkImageRect top_rect{};
-        top_rect.x = 0;
-        top_rect.y = 0;
-        top_rect.width = 400;
-        top_rect.height = 240;
-
-        // Bottom screen: 320x240 at offset (400*240*4)
-        DkImageRect bottom_rect{};
-        bottom_rect.x = 0;
-        bottom_rect.y = 0;
-        bottom_rect.width = 320;
-        bottom_rect.height = 240;
-
-        SWITCH_TRACE_EVENTF("Deko3D", "State::UploadScreenTextures", "uploading",
-                            "top=%ux%u bottom=%ux%u",
-                            top_rect.width, top_rect.height,
-                            bottom_rect.width, bottom_rect.height);
-    } catch (const std::exception& e) {
-        LOG_WARNING(Render, "Deko3D screen texture upload error: {}", e.what());
-    }
+    // Placeholder until buffer-to-image copy commands are wired.
+    SWITCH_TRACE_EVENTF("Deko3D", "State::UploadScreenTextures", "staged",
+                        "bytes=%u", screen_data_buffer_size);
 }
 
 bool State::PresentScreenTexturesFrame() {
@@ -657,134 +562,15 @@ bool State::PresentScreenTexturesFrame() {
     // Wait for commands to complete
     dkQueueWaitIdle(queue);
 
-    // Record rendering commands
+    // Keep the stable clear/present path while texture blit pipeline is under development.
     dkCmdBufClear(cmdbuf);
-    dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
-
-    // Bind screen texture views for sampling
-    // Top screen texture (400x240) bound to descriptor set
-    if (top_screen_view) {
-        SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "binding top screen");
-        // TODO: Bind top_screen_view as sampled texture in descriptor
-    }
-
-    // Bottom screen texture (320x240) bound to descriptor set
-    if (bottom_screen_view) {
-        SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "binding bottom screen");
-        // TODO: Bind bottom_screen_view as sampled texture in descriptor
-    }
-
-    // Bind and draw fullscreen quad
-    if (vertex_buffer && vertex_buffer_size > 0) {
-        SWITCH_TRACE_EVENTF("Deko3D", "State::PresentScreenTexturesFrame", "rendering quad",
-                            "vb_size=%u", vertex_buffer_size);
-
-        // Bind vertex buffer to GPU memory
-        DkGpuAddr vb_addr = dkMemBlockGetGpuAddr(vertex_buffer_mem_block);
-        dkCmdBufBindVtxBuffer(cmdbuf, 0, vb_addr, vertex_buffer_size);
-
-        // Bind shaders (when implemented)
-        if (vertex_shader && fragment_shader) {
-            // TODO: Bind vertex and fragment shaders to pipeline
-        }
-
-        // Draw fullscreen quad (2 triangles = 6 vertices, but we only have 4)
-        // Will draw as 4-vertex strip
-        dkCmdBufDraw(cmdbuf, DkPrimitive_TriangleStrip, 4, 1, 0, 0);
-
-        SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "quad draw submitted");
-    } else {
-        // Fallback: Just render a clear with indicator color
-        LOG_WARNING(Render, "Vertex buffer not available, rendering indicator only");
-        dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.2f, 0.1f, 0.05f, 1.0f);
-    }
+    dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.02f, 0.04f, 0.06f, 1.0f);
 
     clear_cmd = dkCmdBufFinishList(cmdbuf);
 
     dkQueueSubmitCommands(queue, clear_cmd);
     dkQueuePresentImage(queue, swapchain, slot);
     SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "leave");
-    return true;
-}
-
-bool State::CreateShaderPipeline() {
-    // Simple GLSL shaders compiled offline to SPIR-V for Switch
-    // For now, allocate minimal shader memory - actual shader bytecode would be loaded here
-    constexpr u32 ShaderMemSize = 4096; // Placeholder for shader code
-
-    DkMemBlockMaker shader_mem_maker;
-    dkMemBlockMakerDefaults(&shader_mem_maker, device, ShaderMemSize);
-    shader_mem_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_CpuUncached;
-
-    shader_mem_block = dkMemBlockCreate(&shader_mem_maker);
-    if (!shader_mem_block) {
-        SetError("Failed to create shader memory block");
-        return false;
-    }
-
-    // Allocate shader objects
-    try {
-        vertex_shader = new DkShader();
-        fragment_shader = new DkShader();
-    } catch (const std::exception& e) {
-        SetError("Failed to allocate shader objects");
-        return false;
-    }
-
-    // TODO: Load actual compiled GLSL shaders here
-    // For now, shaders are placeholder - they would contain:
-    // - Vertex shader: Transform fullscreen quad with rotation, pass UV coords
-    // - Fragment shader: Sample from screen textures and output color
-    // - Both would handle layout composition (top 400x240 + bottom 320x240 on 1280x720)
-
-    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateShaderPipeline", "shaders allocated",
-                        "mem_size=%u", ShaderMemSize);
-    return true;
-}
-
-bool State::CreateVertexBuffer() {
-    // Fullscreen quad: 4 vertices covering entire 1280x720 framebuffer
-    // Each vertex: position (2 floats) + UV (2 floats) = 4 floats = 16 bytes
-    // Total: 4 * 16 = 64 bytes
-    struct Vertex {
-        float x, y;      // Position
-        float u, v;      // Texture coordinate
-    };
-
-    constexpr u32 NumVertices = 4;
-    vertex_buffer_size = NumVertices * sizeof(Vertex);
-
-    DkMemBlockMaker vertex_mem_maker;
-    dkMemBlockMakerDefaults(&vertex_mem_maker, device, vertex_buffer_size);
-    vertex_mem_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_CpuUncached;
-
-    vertex_buffer_mem_block = dkMemBlockCreate(&vertex_mem_maker);
-    if (!vertex_buffer_mem_block) {
-        SetError("Failed to create vertex buffer memory block");
-        return false;
-    }
-
-    vertex_buffer = dkMemBlockGetCpuAddr(vertex_buffer_mem_block);
-    if (!vertex_buffer) {
-        SetError("Failed to get vertex buffer CPU address");
-        return false;
-    }
-
-    // Fill vertex buffer with fullscreen quad
-    // The quad spans the entire 1280x720 framebuffer
-    // With 90-degree rotation applied in shader for landscape display
-    Vertex* verts = static_cast<Vertex*>(vertex_buffer);
-
-    // Triangle 1: top-left, top-right, bottom-left
-    verts[0] = {-1.0f, 1.0f, 0.0f, 0.0f};    // top-left (top screen origin)
-    verts[1] = {1.0f, 1.0f, 1.0f, 0.0f};     // top-right
-    verts[2] = {-1.0f, -1.0f, 0.0f, 1.0f};   // bottom-left
-
-    // Triangle 2: top-right, bottom-right, bottom-left
-    verts[3] = {1.0f, -1.0f, 1.0f, 1.0f};    // bottom-right
-
-    SWITCH_TRACE_EVENTF("Deko3D", "State::CreateVertexBuffer", "buffer created",
-                        "size=%u vertices=%u", vertex_buffer_size, NumVertices);
     return true;
 }
 #endif
