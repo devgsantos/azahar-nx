@@ -307,12 +307,39 @@ int SwitchApp::LaunchGame(const std::string& path) {
             const auto now = std::chrono::steady_clock::now();
             if (now - last_perf_sample >= std::chrono::seconds(1)) {
                 const auto perf = system.GetAndResetPerfStats();
+                const auto jit_stats = TakeJitRunStats();
                 last_perf_sample = now;
 
-                LOG_INFO(Frontend, "Switch performance: FPS {:.2f} Speed {:.2f}%",
-                         perf.game_fps, perf.emulation_speed * 100.0);
-                SWITCH_EARLY_LOGF("performance fps=%.2f speed=%.2f%%", perf.game_fps,
-                                  perf.emulation_speed * 100.0);
+                LOG_INFO(Frontend,
+                         "Switch performance: FPS {:.2f} SystemFPS {:.2f} Speed {:.2f}% "
+                         "vblank {:.2f}ms hle_svc {:.2f}ms hle_ipc {:.2f}ms gpu {:.2f}ms "
+                         "swap {:.2f}ms other {:.2f}ms jit_ms {:.2f} jit_calls {} "
+                         "jit_req {} jit_exec {} jit_zero {}",
+                         perf.game_fps, perf.system_fps, perf.emulation_speed * 100.0,
+                         perf.time_vblank_interval * 1000.0,
+                         perf.time_hle_svc * 1000.0,
+                         perf.time_hle_ipc * 1000.0,
+                         perf.time_gpu * 1000.0,
+                         perf.time_swap * 1000.0,
+                         perf.time_remaining * 1000.0,
+                         static_cast<double>(jit_stats.host_ns) / 1'000'000.0,
+                         jit_stats.calls, jit_stats.requested_ticks,
+                         jit_stats.executed_ticks, jit_stats.zero_tick_calls);
+                SWITCH_EARLY_LOGF(
+                    "performance fps=%.2f system_fps=%.2f speed=%.2f%% "
+                    "vblank=%.2fms hle_svc=%.2fms hle_ipc=%.2fms gpu=%.2fms "
+                    "swap=%.2fms other=%.2fms jit_ms=%.2f jit_calls=%llu "
+                    "jit_req=%llu jit_exec=%llu jit_zero=%llu",
+                    perf.game_fps, perf.system_fps, perf.emulation_speed * 100.0,
+                    perf.time_vblank_interval * 1000.0,
+                    perf.time_hle_svc * 1000.0, perf.time_hle_ipc * 1000.0,
+                    perf.time_gpu * 1000.0, perf.time_swap * 1000.0,
+                    perf.time_remaining * 1000.0,
+                    static_cast<double>(jit_stats.host_ns) / 1'000'000.0,
+                    static_cast<unsigned long long>(jit_stats.calls),
+                    static_cast<unsigned long long>(jit_stats.requested_ticks),
+                    static_cast<unsigned long long>(jit_stats.executed_ticks),
+                    static_cast<unsigned long long>(jit_stats.zero_tick_calls));
             }
         }
     } catch (const std::exception& e) {

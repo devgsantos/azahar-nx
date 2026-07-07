@@ -134,6 +134,25 @@ void LogLine(const char* tag, const char* message) noexcept {
     LogTaggedMessage(tag, message);
 }
 
+bool IsErrorLikeMessage(const char* message) noexcept {
+    if (message == nullptr) {
+        return false;
+    }
+
+    return std::strstr(message, "error") != nullptr ||
+           std::strstr(message, "Error") != nullptr ||
+           std::strstr(message, "failed") != nullptr ||
+           std::strstr(message, "Failed") != nullptr ||
+           std::strstr(message, "invalid") != nullptr ||
+           std::strstr(message, "Invalid") != nullptr ||
+           std::strstr(message, "abort") != nullptr ||
+           std::strstr(message, "Abort") != nullptr ||
+           std::strstr(message, "exception") != nullptr ||
+           std::strstr(message, "Exception") != nullptr ||
+           std::strstr(message, "unmapped") != nullptr ||
+           std::strstr(message, "Unmapped") != nullptr;
+}
+
 void RegisterRange(SwitchDynarmicJit& handle, std::uint32_t* rw,
                    std::uint32_t* rx, const char* owner) noexcept {
     handle.id = next_jit_id++;
@@ -381,6 +400,7 @@ extern "C" std::uint32_t azahar_switch_dynarmic_jit_get_range_id(
 
 extern "C" void azahar_switch_dynarmic_jit_log_prelude_target(
     const char* name, std::uintptr_t address) noexcept {
+#if defined(AZAHAR_SWITCH_DYNARMIC_VERBOSE_TEXT_LOGS)
     const JitAddressInfo info = ClassifyAddress(address);
     if (address == 0) {
         Log("prelude name=%s address=null class=host-side-callback id=0 offset=0x0",
@@ -391,6 +411,10 @@ extern "C" void azahar_switch_dynarmic_jit_log_prelude_target(
         name != nullptr ? name : "unknown",
         static_cast<unsigned long long>(address), ClassName(info.address_class),
         info.id, info.offset);
+#else
+    (void)name;
+    (void)address;
+#endif
 }
 
 extern "C" void azahar_switch_dynarmic_jit_log_run_entry(
@@ -411,6 +435,10 @@ extern "C" std::uintptr_t azahar_switch_dynarmic_jit_get_run_entry() noexcept {
 
 extern "C" void azahar_switch_dynarmic_jit_log_message(
     const char* tag, const char* message) noexcept {
+    if (tag != nullptr && std::strcmp(tag, "Dynarmic.Block") == 0 &&
+        !IsErrorLikeMessage(message)) {
+        return;
+    }
     LogTaggedMessage(tag, message);
 }
 

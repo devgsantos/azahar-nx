@@ -3,6 +3,8 @@
 // Refer to the license.txt file included.
 
 #include <csignal>
+#include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <dynarmic/interface/A32/a32.h>
 #ifdef __SWITCH__
@@ -30,6 +32,12 @@ constexpr u32 SIGILL = 4;
 
 #ifndef SIGTRAP
 constexpr u32 SIGTRAP = 5;
+#endif
+
+#ifdef __SWITCH__
+extern "C" void azahar_switch_dynarmic_jit_record_run(
+    std::uint64_t host_ns, std::uint64_t requested_ticks,
+    std::uint64_t executed_ticks) noexcept;
 #endif
 
 namespace Core {
@@ -359,13 +367,20 @@ void ARM_Dynarmic::Run() {
     const u64 ticks_to_run = static_cast<u64>(downcount <= 0 ? 0 : downcount);
     Dynarmic::A32::SwitchCycleBudget::SetRequestedTicks(ticks_to_run);
     Dynarmic::A32::SwitchCycleBudget::SetExecutedTicks(0);
+    const auto jit_start = std::chrono::steady_clock::now();
 #endif
 
     jit->Run();
     cb->ReportPendingUnmappedAccess();
 
 #ifdef __SWITCH__
+    const auto jit_end = std::chrono::steady_clock::now();
     const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
+    const auto host_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             jit_end - jit_start)
+                             .count();
+    azahar_switch_dynarmic_jit_record_run(static_cast<std::uint64_t>(host_ns),
+                                          ticks_to_run, ticks_executed);
     GetTimer().AddTicks(ticks_executed);
 
     // Account for guest execution before the HLE syscall can reschedule or
@@ -382,13 +397,20 @@ void ARM_Dynarmic::Step() {
 #ifdef __SWITCH__
     Dynarmic::A32::SwitchCycleBudget::SetRequestedTicks(1);
     Dynarmic::A32::SwitchCycleBudget::SetExecutedTicks(0);
+    const auto jit_start = std::chrono::steady_clock::now();
 #endif
 
     jit->Step();
     cb->ReportPendingUnmappedAccess();
 
 #ifdef __SWITCH__
+    const auto jit_end = std::chrono::steady_clock::now();
     const u64 ticks_executed = Dynarmic::A32::SwitchCycleBudget::TakeExecutedTicks();
+    const auto host_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             jit_end - jit_start)
+                             .count();
+    azahar_switch_dynarmic_jit_record_run(static_cast<std::uint64_t>(host_ns), 1,
+                                          ticks_executed);
     GetTimer().AddTicks(ticks_executed);
     cb->HandlePendingSVC();
 #endif

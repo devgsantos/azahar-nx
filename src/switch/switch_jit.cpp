@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 
 // IMPORTANT:
 // Keep this translation unit isolated from Azahar common headers.
@@ -24,6 +25,11 @@ constexpr std::size_t JitTestBufferSize = 0x1000;
 constexpr std::uint64_t JitExpectedResult = 42;
 constexpr const char* JitLogPath =
     "sdmc:/switch/azahar/logs/azahar-switch-early.log";
+std::atomic<std::uint64_t> jit_run_calls{0};
+std::atomic<std::uint64_t> jit_run_host_ns{0};
+std::atomic<std::uint64_t> jit_run_requested_ticks{0};
+std::atomic<std::uint64_t> jit_run_executed_ticks{0};
+std::atomic<std::uint64_t> jit_run_zero_tick_calls{0};
 
 void AppendJitLog(const char* format, ...) {
     FILE* file = std::fopen(JitLogPath, "a");
@@ -57,7 +63,7 @@ bool LogResultFailure(const char* operation, Result result) {
 } // namespace
 
 bool RunJitSelfTest() {
-    AppendJitLog("diagnostics_version=21 persistent_switch_trace=enabled full_jit_cache_maintenance=enabled callback_safe_unmapped_memory=enabled call_free_cycle_budget=enabled thread_local_breadcrumbs=enabled quiet_dynarmic_text_logs=enabled quiet_run_entry_logs=enabled filtered_trace_formatting=disabled quiet_runloop_early_logs=enabled cached_deko3d_present_background=enabled quiet_deko3d_source_diagnostics=enabled");
+    AppendJitLog("diagnostics_version=29 persistent_switch_trace=enabled full_jit_cache_maintenance=enabled callback_safe_unmapped_memory=enabled call_free_cycle_budget=enabled thread_local_breadcrumbs=enabled quiet_dynarmic_text_logs=enabled quiet_run_entry_logs=enabled quiet_prelude_logs=enabled quiet_dynarmic_block_trace=enabled filtered_trace_formatting=enabled quiet_runloop_early_logs=enabled cached_deko3d_present_background=enabled quiet_deko3d_source_diagnostics=enabled switch_perf_buckets=enabled switch_jit_run_stats=enabled");
     AppendJitLog("Switch JIT self-test enter");
 
     Jit jit{};
@@ -132,6 +138,28 @@ bool RunJitSelfTest() {
     AppendJitLog("Switch JIT self-test leave result=%s",
                  passed ? "passed" : "failed");
     return passed;
+}
+
+JitRunStats TakeJitRunStats() {
+    return {
+        jit_run_calls.exchange(0, std::memory_order_relaxed),
+        jit_run_host_ns.exchange(0, std::memory_order_relaxed),
+        jit_run_requested_ticks.exchange(0, std::memory_order_relaxed),
+        jit_run_executed_ticks.exchange(0, std::memory_order_relaxed),
+        jit_run_zero_tick_calls.exchange(0, std::memory_order_relaxed),
+    };
+}
+
+extern "C" void azahar_switch_dynarmic_jit_record_run(
+    std::uint64_t host_ns, std::uint64_t requested_ticks,
+    std::uint64_t executed_ticks) noexcept {
+    jit_run_calls.fetch_add(1, std::memory_order_relaxed);
+    jit_run_host_ns.fetch_add(host_ns, std::memory_order_relaxed);
+    jit_run_requested_ticks.fetch_add(requested_ticks, std::memory_order_relaxed);
+    jit_run_executed_ticks.fetch_add(executed_ticks, std::memory_order_relaxed);
+    if (executed_ticks == 0) {
+        jit_run_zero_tick_calls.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 } // namespace Azahar::Switch
