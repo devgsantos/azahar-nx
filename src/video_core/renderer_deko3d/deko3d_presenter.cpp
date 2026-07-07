@@ -79,7 +79,7 @@ bool Presenter::PresentFrame() {
         LOG_WARNING(Render, "Deko3D Presenter framebuffer access error: {}", e.what());
     }
 
-    const bool presented = state.PresentClearFrame(0.02f, 0.04f, 0.06f, 1.0f);
+    const bool presented = state.PresentScreenTexturesFrame();
     if (presented && !presented_frame) {
         LOG_INFO(Render, "Deko3D first frame presented");
         SWITCH_TRACE_EVENT("Deko3D", "Presenter::PresentFrame", "first frame presented");

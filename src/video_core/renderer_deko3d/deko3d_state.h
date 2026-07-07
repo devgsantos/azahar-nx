@@ -36,6 +36,7 @@ public:
     }
 
     bool PresentClearFrame(float red, float green, float blue, float alpha);
+    bool PresentScreenTexturesFrame();
     void WaitIdle();
 
     // Accessors for screen textures (used by Presenter for CPU framebuffer upload)
@@ -46,6 +47,9 @@ public:
     [[nodiscard]] u32 GetScreenDataSize() const {
         return screen_data_buffer_size;
     }
+
+    // Upload pixel data from CPU buffer to GPU textures
+    void UploadScreenTextures();
 
     [[nodiscard]] const DkImage* GetTopScreenImage() const {
         return top_screen_image;
@@ -65,6 +69,8 @@ private:
     bool CreateQueue();
     bool RecordStaticCommands();
     bool CreateScreenTextures();
+    bool CreateShaderPipeline();
+    bool CreateVertexBuffer();
 
     DkDevice device{};
     DkQueue queue{};
@@ -84,6 +90,20 @@ private:
     DkImage* bottom_screen_image = nullptr;  // 320x240 RGBA8
     DkImageView* top_screen_view = nullptr;
     DkImageView* bottom_screen_view = nullptr;
+
+    // GPU-accessible buffer for uploading screen texture data
+    DkMemBlock screen_data_gpu_mem_block{};
+    void* screen_data_gpu_buffer = nullptr;
+
+    // Shader pipeline for texture blitting
+    DkShader* vertex_shader = nullptr;
+    DkShader* fragment_shader = nullptr;
+    DkMemBlock shader_mem_block{};
+
+    // Vertex buffer for fullscreen quad
+    DkMemBlock vertex_buffer_mem_block{};
+    void* vertex_buffer = nullptr;
+    u32 vertex_buffer_size = 0;
 
     // Screen texture data buffer for CPU framebuffer upload
     void* screen_data_buffer = nullptr;
