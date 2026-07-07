@@ -3,6 +3,7 @@
 
 #include "video_core/renderer_deko3d/deko3d_state.h"
 
+#include <cstring>
 #include <limits>
 
 #include "common/logging/log.h"
@@ -151,6 +152,8 @@ void State::Shutdown() {
     if (framebuffer_mem_block) {
         dkMemBlockDestroy(framebuffer_mem_block);
         framebuffer_mem_block = nullptr;
+        framebuffer_cpu_buffer = nullptr;
+        framebuffer_image_stride = 0;
     }
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy framebuffer memory leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy command buffers enter");
@@ -336,6 +339,17 @@ bool State::CreateFramebuffers() {
         SetError("Deko3D framebuffer memory allocation failed");
         return false;
     }
+
+    framebuffer_cpu_buffer = dkMemBlockGetCpuAddr(framebuffer_mem_block);
+    if (!framebuffer_cpu_buffer) {
+        SetError("Deko3D framebuffer memory CPU mapping failed");
+        return false;
+    }
+    if (image_stride > std::numeric_limits<u32>::max()) {
+        SetError("Deko3D framebuffer image stride too large");
+        return false;
+    }
+    framebuffer_image_stride = static_cast<u32>(image_stride);
 
     for (u32 index = 0; index < FramebufferCount; ++index) {
         const u64 image_offset = image_stride * index;
@@ -538,7 +552,8 @@ void State::UploadScreenTextures() {
 
 bool State::PresentScreenTexturesFrame() {
     SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "enter");
-    if (!initialized || !queue || !swapchain) {
+    if (!initialized || !queue || !swapchain || !framebuffer_cpu_buffer ||
+        framebuffer_image_stride == 0 || !screen_data_buffer) {
         SetError("Deko3D present requested before initialization");
         SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "failed_not_initialized");
         return false;
@@ -556,19 +571,34 @@ bool State::PresentScreenTexturesFrame() {
     }
     SWITCH_TRACE_EVENTF("Deko3D", "State::PresentScreenTexturesFrame", "acquired", "slot=%d", slot);
 
-    // Bind framebuffer
-    dkQueueSubmitCommands(queue, bind_framebuffer_cmds[slot]);
-
-    // Wait for commands to complete
+    // Ensure GPU is idle before writing CPU-composed pixels into swapchain memory.
     dkQueueWaitIdle(queue);
 
-    // Keep the stable clear/present path while texture blit pipeline is under development.
-    dkCmdBufClear(cmdbuf);
-    dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.02f, 0.04f, 0.06f, 1.0f);
+    u8* const frame_ptr = static_cast<u8*>(framebuffer_cpu_buffer) +
+                          (static_cast<u32>(slot) * framebuffer_image_stride);
+    constexpr u32 frame_width = FramebufferWidth;
+    constexpr u32 frame_height = FramebufferHeight;
+    constexpr u32 frame_pitch = FramebufferWidth * 4;
+    std::memset(frame_ptr, 0, frame_pitch * frame_height);
 
-    clear_cmd = dkCmdBufFinishList(cmdbuf);
+    const u8* const top_src = static_cast<const u8*>(screen_data_buffer);
+    const u8* const bottom_src = top_src + (400 * 240 * 4);
 
-    dkQueueSubmitCommands(queue, clear_cmd);
+    auto blit_rgba = [&](const u8* src, u32 src_w, u32 src_h, u32 dst_x, u32 dst_y) {
+        for (u32 y = 0; y < src_h; ++y) {
+            if ((dst_y + y) >= frame_height) {
+                break;
+            }
+            u8* const dst_row = frame_ptr + ((dst_y + y) * frame_pitch) + (dst_x * 4);
+            const u8* const src_row = src + (y * src_w * 4);
+            std::memcpy(dst_row, src_row, src_w * 4);
+        }
+    };
+
+    // Place top and bottom 3DS screens centered on Switch output.
+    blit_rgba(top_src, 400, 240, (frame_width - 400) / 2, 40);
+    blit_rgba(bottom_src, 320, 240, (frame_width - 320) / 2, 320);
+
     dkQueuePresentImage(queue, swapchain, slot);
     SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "leave");
     return true;

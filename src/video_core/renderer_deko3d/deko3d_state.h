@@ -76,6 +76,8 @@ private:
     std::array<DkImage, FramebufferCount> framebuffers{};
     std::array<DkImageView, FramebufferCount> framebuffer_views{};
     std::array<const DkImage*, FramebufferCount> swapchain_images{};
+    void* framebuffer_cpu_buffer = nullptr;
+    u32 framebuffer_image_stride = 0;
     DkSwapchain swapchain{};
     DkMemBlock cmdbuf_mem_block{};
     DkCmdBuf cmdbuf{};
