@@ -328,7 +328,18 @@ int SwitchApp::LaunchGame(const std::string& path) {
                          "deko_render_target_cache_hits {} deko_render_target_cache_misses {} "
                          "deko_render_target_readbacks {} deko_render_target_readback_bytes {} "
                          "deko_unsupported_texture_format {} deko_unsupported_tev {} "
-                         "deko_unsupported_blend {} deko_unsupported_depth {} deko_ring_waits {}",
+                         "deko_unsupported_blend {} deko_unsupported_depth {} deko_ring_waits {} "
+                         "deko_hw_draws_submitted {} deko_hw_draws_completed {} "
+                         "deko_hw_triangles_submitted {} deko_hw_triangles_completed {} "
+                         "deko_fence_poll_successes {} deko_fence_waits {} "
+                         "deko_fence_timeouts {} deko_max_fence_wait_ms {} "
+                         "deko_queue_errors {} deko_queue_flushes {} "
+                         "deko_fallback_textures_enabled {} deko_fallback_depth_enabled {} "
+                         "deko_fallback_stencil_enabled {} deko_fallback_blend_enabled {} "
+                         "deko_fallback_alpha_test {} deko_fallback_logic_op {} "
+                         "deko_fallback_geometry_shader {} deko_fallback_wrong_render_target {} "
+                         "deko_fallback_framebuffer_format {} deko_fallback_topology {} "
+                         "deko_fallback_shadow {} deko_fallback_unsupported_state {}",
                          perf.game_fps, perf.system_fps, perf.emulation_speed * 100.0,
                          perf.time_vblank_interval * 1000.0,
                          perf.time_hle_svc * 1000.0,
@@ -364,7 +375,29 @@ int SwitchApp::LaunchGame(const std::string& path) {
                          deko_stats.unsupported_tev,
                          deko_stats.unsupported_blend,
                          deko_stats.unsupported_depth,
-                         deko_stats.ring_waits);
+                         deko_stats.ring_waits,
+                         deko_stats.hw_draws_submitted,
+                         deko_stats.hw_draws_completed,
+                         deko_stats.hw_triangles_submitted,
+                         deko_stats.hw_triangles_completed,
+                         deko_stats.fence_poll_successes,
+                         deko_stats.fence_waits,
+                         deko_stats.fence_timeouts,
+                         deko_stats.max_fence_wait_ms,
+                         deko_stats.queue_errors,
+                         deko_stats.queue_flushes,
+                         deko_stats.fallback_textures_enabled,
+                         deko_stats.fallback_depth_enabled,
+                         deko_stats.fallback_stencil_enabled,
+                         deko_stats.fallback_blend_enabled,
+                         deko_stats.fallback_alpha_test,
+                         deko_stats.fallback_logic_op,
+                         deko_stats.fallback_geometry_shader,
+                         deko_stats.fallback_wrong_render_target,
+                         deko_stats.fallback_framebuffer_format,
+                         deko_stats.fallback_topology,
+                         deko_stats.fallback_shadow,
+                         deko_stats.fallback_unsupported_state);
                 SWITCH_EARLY_LOGF(
                     "performance fps=%.2f system_fps=%.2f speed=%.2f%% "
                     "vblank=%.2fms hle_svc=%.2fms hle_ipc=%.2fms gpu=%.2fms "
@@ -383,7 +416,19 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     "deko_render_target_readback_bytes=%llu "
                     "deko_unsupported_texture_format=%llu deko_unsupported_tev=%llu "
                     "deko_unsupported_blend=%llu deko_unsupported_depth=%llu "
-                    "deko_ring_waits=%llu",
+                    "deko_ring_waits=%llu "
+                    "deko_hw_draws_submitted=%llu deko_hw_draws_completed=%llu "
+                    "deko_hw_triangles_submitted=%llu deko_hw_triangles_completed=%llu "
+                    "deko_fence_poll_successes=%llu deko_fence_waits=%llu "
+                    "deko_fence_timeouts=%llu deko_max_fence_wait_ms=%llu "
+                    "deko_queue_errors=%llu deko_queue_flushes=%llu "
+                    "deko_fallback_textures_enabled=%llu deko_fallback_depth_enabled=%llu "
+                    "deko_fallback_stencil_enabled=%llu deko_fallback_blend_enabled=%llu "
+                    "deko_fallback_alpha_test=%llu deko_fallback_logic_op=%llu "
+                    "deko_fallback_geometry_shader=%llu "
+                    "deko_fallback_wrong_render_target=%llu "
+                    "deko_fallback_framebuffer_format=%llu deko_fallback_topology=%llu "
+                    "deko_fallback_shadow=%llu deko_fallback_unsupported_state=%llu",
                     perf.game_fps, perf.system_fps, perf.emulation_speed * 100.0,
                     perf.time_vblank_interval * 1000.0,
                     perf.time_hle_svc * 1000.0, perf.time_hle_ipc * 1000.0,
@@ -419,7 +464,29 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     static_cast<unsigned long long>(deko_stats.unsupported_tev),
                     static_cast<unsigned long long>(deko_stats.unsupported_blend),
                     static_cast<unsigned long long>(deko_stats.unsupported_depth),
-                    static_cast<unsigned long long>(deko_stats.ring_waits));
+                    static_cast<unsigned long long>(deko_stats.ring_waits),
+                    static_cast<unsigned long long>(deko_stats.hw_draws_submitted),
+                    static_cast<unsigned long long>(deko_stats.hw_draws_completed),
+                    static_cast<unsigned long long>(deko_stats.hw_triangles_submitted),
+                    static_cast<unsigned long long>(deko_stats.hw_triangles_completed),
+                    static_cast<unsigned long long>(deko_stats.fence_poll_successes),
+                    static_cast<unsigned long long>(deko_stats.fence_waits),
+                    static_cast<unsigned long long>(deko_stats.fence_timeouts),
+                    static_cast<unsigned long long>(deko_stats.max_fence_wait_ms),
+                    static_cast<unsigned long long>(deko_stats.queue_errors),
+                    static_cast<unsigned long long>(deko_stats.queue_flushes),
+                    static_cast<unsigned long long>(deko_stats.fallback_textures_enabled),
+                    static_cast<unsigned long long>(deko_stats.fallback_depth_enabled),
+                    static_cast<unsigned long long>(deko_stats.fallback_stencil_enabled),
+                    static_cast<unsigned long long>(deko_stats.fallback_blend_enabled),
+                    static_cast<unsigned long long>(deko_stats.fallback_alpha_test),
+                    static_cast<unsigned long long>(deko_stats.fallback_logic_op),
+                    static_cast<unsigned long long>(deko_stats.fallback_geometry_shader),
+                    static_cast<unsigned long long>(deko_stats.fallback_wrong_render_target),
+                    static_cast<unsigned long long>(deko_stats.fallback_framebuffer_format),
+                    static_cast<unsigned long long>(deko_stats.fallback_topology),
+                    static_cast<unsigned long long>(deko_stats.fallback_shadow),
+                    static_cast<unsigned long long>(deko_stats.fallback_unsupported_state));
             }
         }
     } catch (const std::exception& e) {

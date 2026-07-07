@@ -87,6 +87,8 @@ private:
     bool CreateQueue();
     bool RecordStaticCommands();
     bool CreateScreenTextures();
+    bool QueueHasError(const char* context);
+    void FlushQueue();
 
     DkDevice device{};
     DkQueue queue{};

@@ -39,6 +39,7 @@ endif()
 
 option(ENABLE_LIBRETRO "Build as a LibRetro core" OFF)
 option(ENABLE_SWITCH_FRONTEND "Build the native Nintendo Switch frontend" OFF)
+option(AZAHAR_DEKO3D_VALIDATION "Use Deko3D debug validation library and callback" OFF)
 
 # Some submodules like to pick their own default build type if not specified.
 # Make sure we default to Release build type always, unless the generator has custom types.

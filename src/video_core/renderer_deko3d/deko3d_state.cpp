@@ -8,6 +8,7 @@
 
 #include "common/logging/log.h"
 #include "common/switch_trace.h"
+#include "video_core/renderer_deko3d/deko3d_stats.h"
 
 #ifdef __SWITCH__
 typedef struct NWindow NWindow;
@@ -21,6 +22,15 @@ namespace {
 #ifdef __SWITCH__
 u64 AlignUp(u64 value, u64 alignment) {
     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+}
+#endif
+
+#ifdef __SWITCH__
+void Deko3DDebugCallback(void* user_data, const char* context, DkResult result,
+                         const char* message) {
+    LOG_ERROR(Render, "Deko3D validation: user_data={} context={} result={} message={}",
+              user_data, context ? context : "", static_cast<int>(result),
+              message ? message : "");
 }
 #endif
 
@@ -299,6 +309,11 @@ bool State::PresentClearFrame(float red, float green, float blue, float alpha) {
 bool State::CreateDevice() {
     DkDeviceMaker device_maker;
     dkDeviceMakerDefaults(&device_maker);
+#ifdef AZAHAR_DEKO3D_VALIDATION
+    device_maker.userData = this;
+    device_maker.cbDebug = Deko3DDebugCallback;
+    LOG_INFO(Render, "Deko3D validation callback enabled");
+#endif
     device = dkDeviceCreate(&device_maker);
     if (!device) {
         SetError("dkDeviceCreate failed");
@@ -306,6 +321,22 @@ bool State::CreateDevice() {
     }
     LOG_INFO(Render, "Deko3D device created");
     return true;
+}
+
+bool State::QueueHasError(const char* context) {
+    if (queue && dkQueueIsInErrorState(queue)) {
+        RecordQueueError();
+        LOG_ERROR(Render, "Deko3D queue entered error state {}", context ? context : "");
+        return true;
+    }
+    return false;
+}
+
+void State::FlushQueue() {
+    if (queue) {
+        dkQueueFlush(queue);
+        RecordQueueFlush();
+    }
 }
 
 bool State::CreateFramebuffers() {
@@ -607,19 +638,39 @@ bool State::PresentScreenTexturesFrame() {
     if (!screen_data_buffer || !upload_cpu_buffer || upload_gpu_addr == 0) {
         // Fallback path when the GPU upload path is unavailable.
         dkQueueSubmitCommands(queue, bind_framebuffer_cmds[slot]);
+        if (QueueHasError("after fallback framebuffer bind submit")) {
+            return false;
+        }
+        FlushQueue();
         dkQueueWaitIdle(queue);
         dkCmdBufClear(cmdbuf);
         dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.02f, 0.04f, 0.06f, 1.0f);
         clear_cmd = dkCmdBufFinishList(cmdbuf);
         dkQueueSubmitCommands(queue, clear_cmd);
+        if (QueueHasError("after fallback clear submit")) {
+            return false;
+        }
+        FlushQueue();
         dkQueuePresentImage(queue, swapchain, slot);
         return true;
     }
 
     if (present_fence_pending) {
-        constexpr s64 FenceWaitTimeoutNs = 10'000'000'000LL;
+        FlushQueue();
+        const DkResult poll_result = dkFenceWait(&present_fence, 0);
+        if (poll_result == DkResult_Success) {
+            RecordFencePollSuccess();
+            present_fence_pending = false;
+        }
+    }
+    if (present_fence_pending) {
+        RecordFenceWait();
+        constexpr s64 FenceWaitTimeoutNs = 1'000'000'000LL;
         const DkResult result = dkFenceWait(&present_fence, FenceWaitTimeoutNs);
         if (result != DkResult_Success) {
+            if (result == DkResult_Timeout) {
+                RecordFenceTimeout();
+            }
             SetError("Deko3D present fence wait failed");
             return false;
         }
@@ -658,6 +709,7 @@ bool State::PresentScreenTexturesFrame() {
     DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
     if (top_screen_gpu_dirty && top_screen_view) {
         DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
+        dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
         dkCmdBufBlitImage(cmdbuf, top_screen_view, &top_copy_src, &framebuffer_views[slot],
                           &top_copy_dst, DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
     } else {
@@ -678,7 +730,17 @@ bool State::PresentScreenTexturesFrame() {
     }
 
     dkQueueSubmitCommands(queue, copy_cmd);
+    if (QueueHasError("after present copy submit")) {
+        return false;
+    }
     dkQueueSignalFence(queue, &present_fence, true);
+    if (QueueHasError("after present fence signal")) {
+        return false;
+    }
+    FlushQueue();
+    if (QueueHasError("after present flush")) {
+        return false;
+    }
     present_fence_pending = true;
     dkQueuePresentImage(queue, swapchain, slot);
     return true;

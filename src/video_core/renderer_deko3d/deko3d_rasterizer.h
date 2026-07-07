@@ -8,6 +8,7 @@
 
 #include "video_core/pica/output_vertex.h"
 #include "video_core/rasterizer_accelerated.h"
+#include "video_core/renderer_deko3d/deko3d_stats.h"
 #include "video_core/renderer_software/sw_rasterizer.h"
 
 #ifdef __SWITCH__
@@ -64,16 +65,25 @@ private:
         u32 uniform_size = 0;
         DkFence fence{};
         bool fence_pending = false;
+        std::size_t pending_vertices = 0;
+    };
+
+    struct HardwareEligibility {
+        bool supported = false;
+        FallbackReason reason = FallbackReason::UnsupportedState;
     };
 
     bool InitializeGpuResources();
     void ShutdownGpuResources();
     FrameSlice& CurrentFrameSlice();
     bool WaitForFrameSlice(FrameSlice& slice);
-    bool TryDrawHardwareBatch();
+    HardwareEligibility EvaluateHardwareEligibility() const;
+    bool TryDrawHardwareBatch(std::size_t& submitted_vertices);
     bool SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex, std::size_t vertex_count);
+    bool QueueHasError(const char* context);
+    void FlushQueue();
 #endif
-    void DrawSoftwareFallback();
+    void DrawSoftwareFallback(std::size_t first_vertex = 0);
 
     State& state;
     TextureCache& texture_cache;

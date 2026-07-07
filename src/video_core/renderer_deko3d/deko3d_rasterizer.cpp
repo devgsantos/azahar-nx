@@ -4,6 +4,7 @@
 #include "video_core/renderer_deko3d/deko3d_rasterizer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 
@@ -218,19 +219,100 @@ bool Rasterizer::WaitForFrameSlice(FrameSlice& slice) {
         return true;
     }
 
-    RecordRingWait();
-    constexpr s64 FenceWaitTimeoutNs = 10'000'000'000LL;
-    const DkResult result = dkFenceWait(&slice.fence, FenceWaitTimeoutNs);
-    if (result != DkResult_Success) {
-        LOG_WARNING(Render, "Deko3D rasterizer frame-slice fence wait failed result={}",
-                    static_cast<int>(result));
+    if (QueueHasError("before frame-slice fence wait")) {
         return false;
     }
+
+    FlushQueue();
+    const DkResult poll_result = dkFenceWait(&slice.fence, 0);
+    if (poll_result == DkResult_Success) {
+        RecordFencePollSuccess();
+        RecordHardwareDrawCompleted(slice.pending_vertices / 3);
+        slice.fence_pending = false;
+        slice.pending_vertices = 0;
+        return true;
+    }
+
+    RecordRingWait();
+    RecordFenceWait();
+    constexpr s64 FenceWaitTimeoutNs = 1'000'000'000LL;
+    const auto wait_start = std::chrono::steady_clock::now();
+    const DkResult result = dkFenceWait(&slice.fence, FenceWaitTimeoutNs);
+    const auto wait_end = std::chrono::steady_clock::now();
+    const auto wait_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(wait_end - wait_start).count();
+    RecordFenceWaitDurationMs(static_cast<std::uint64_t>(std::max<s64>(wait_ms, 0)));
+    if (result != DkResult_Success) {
+        if (result == DkResult_Timeout) {
+            RecordFenceTimeout();
+        }
+        LOG_WARNING(Render, "Deko3D rasterizer frame-slice fence wait failed result={} wait_ms={}",
+                    static_cast<int>(result), wait_ms);
+        return false;
+    }
+    RecordHardwareDrawCompleted(slice.pending_vertices / 3);
     slice.fence_pending = false;
+    slice.pending_vertices = 0;
     return true;
 }
 
-bool Rasterizer::TryDrawHardwareBatch() {
+Rasterizer::HardwareEligibility Rasterizer::EvaluateHardwareEligibility() const {
+    using ColorFormat = Pica::FramebufferRegs::ColorFormat;
+    using LogicOp = Pica::FramebufferRegs::LogicOp;
+    using CompareFunc = Pica::FramebufferRegs::CompareFunc;
+    using TriangleTopology = Pica::PipelineRegs::TriangleTopology;
+    using UseGS = Pica::PipelineRegs::UseGS;
+
+    const auto& fb = regs.framebuffer;
+    if (regs.pipeline.triangle_topology != TriangleTopology::List) {
+        return {false, FallbackReason::Topology};
+    }
+    if (regs.pipeline.use_gs != UseGS::No) {
+        return {false, FallbackReason::GeometryShader};
+    }
+    if (fb.IsShadowRendering()) {
+        return {false, FallbackReason::Shadow};
+    }
+    if (fb.framebuffer.color_format != ColorFormat::RGBA8) {
+        return {false, FallbackReason::FramebufferFormat};
+    }
+    if (fb.framebuffer.GetWidth() != 400 || fb.framebuffer.GetHeight() != 240) {
+        return {false, FallbackReason::WrongRenderTarget};
+    }
+    if (fb.output_merger.depth_test_enable != 0 || fb.output_merger.depth_write_enable != 0) {
+        return {false, FallbackReason::DepthEnabled};
+    }
+    if (fb.output_merger.stencil_test.enable != 0) {
+        return {false, FallbackReason::StencilEnabled};
+    }
+    if (fb.output_merger.alphablend_enable != 0) {
+        return {false, FallbackReason::BlendEnabled};
+    }
+    if (fb.output_merger.alpha_test.enable != 0 &&
+        fb.output_merger.alpha_test.func != CompareFunc::Always) {
+        return {false, FallbackReason::AlphaTest};
+    }
+    if (fb.output_merger.logic_op != LogicOp::Copy) {
+        return {false, FallbackReason::LogicOp};
+    }
+    if (fb.framebuffer.allow_color_write == 0 || fb.output_merger.red_enable == 0 ||
+        fb.output_merger.green_enable == 0 || fb.output_merger.blue_enable == 0 ||
+        fb.output_merger.alpha_enable == 0) {
+        return {false, FallbackReason::UnsupportedState};
+    }
+
+    const auto pica_textures = regs.texturing.GetTextures();
+    for (const auto& texture : pica_textures) {
+        if (texture.enabled != 0) {
+            return {false, FallbackReason::TexturesEnabled};
+        }
+    }
+
+    return {true, FallbackReason::UnsupportedState};
+}
+
+bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
+    submitted_vertices = 0;
     if (!initialized || !device || !queue || !command_buffer || !vertex_cpu_buffer ||
         vertex_gpu_addr == 0) {
         return false;
@@ -240,6 +322,12 @@ bool Rasterizer::TryDrawHardwareBatch() {
     const DkShader* const fragment_shader = shader_cache.GetColorFragmentShader();
     const DkImageView* const color_target = state.GetTopScreenRenderTargetView();
     if (!vertex_shader || !fragment_shader || !color_target) {
+        return false;
+    }
+
+    const auto eligibility = EvaluateHardwareEligibility();
+    if (!eligibility.supported) {
+        RecordFallbackReason(eligibility.reason);
         return false;
     }
 
@@ -266,9 +354,9 @@ bool Rasterizer::TryDrawHardwareBatch() {
         if (!SubmitHardwareChunk(slice, base_vertex, aligned_vertex_count)) {
             return false;
         }
+        submitted_vertices += aligned_vertex_count;
     }
 
-    state.MarkTopScreenGpuDirty();
     return true;
 }
 
@@ -351,9 +439,34 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex,
     }
 
     dkQueueSubmitCommands(queue, draw_cmd);
+    if (QueueHasError("after draw submit")) {
+        return false;
+    }
+    FlushQueue();
+    if (QueueHasError("after draw flush")) {
+        return false;
+    }
     slice.fence_pending = true;
-    RecordHardwareDraw(vertex_count / 3);
+    slice.pending_vertices = vertex_count;
+    state.MarkTopScreenGpuDirty();
+    RecordHardwareDrawSubmitted(vertex_count / 3);
     return true;
+}
+
+bool Rasterizer::QueueHasError(const char* context) {
+    if (queue && dkQueueIsInErrorState(queue)) {
+        RecordQueueError();
+        LOG_ERROR(Render, "Deko3D queue entered error state {}", context ? context : "");
+        return true;
+    }
+    return false;
+}
+
+void Rasterizer::FlushQueue() {
+    if (queue) {
+        dkQueueFlush(queue);
+        RecordQueueFlush();
+    }
 }
 #endif
 
@@ -372,24 +485,30 @@ void Rasterizer::DrawTriangles() {
 
 #ifdef __SWITCH__
     RecordHardwareDrawAttempt();
-    if (TryDrawHardwareBatch()) {
+    std::size_t submitted_vertices = 0;
+    if (TryDrawHardwareBatch(submitted_vertices)) {
         vertex_batch.clear();
         fallback_vertex_batch.clear();
         return;
     }
-    RecordHardwareDrawFailure();
+    if (submitted_vertices != 0) {
+        RecordHardwareDrawFailure();
+        DrawSoftwareFallback(submitted_vertices);
+        return;
+    }
 #endif
 
     DrawSoftwareFallback();
 }
 
-void Rasterizer::DrawSoftwareFallback() {
+void Rasterizer::DrawSoftwareFallback(std::size_t first_vertex) {
     LogSoftwareBridgeOnce();
-    for (std::size_t index = 0; index + 2 < fallback_vertex_batch.size(); index += 3) {
+    first_vertex -= first_vertex % 3;
+    for (std::size_t index = first_vertex; index + 2 < fallback_vertex_batch.size(); index += 3) {
         software_fallback.AddTriangle(fallback_vertex_batch[index], fallback_vertex_batch[index + 1],
                                       fallback_vertex_batch[index + 2]);
     }
-    RecordSoftwareFallback(fallback_vertex_batch.size() / 3);
+    RecordSoftwareFallback((fallback_vertex_batch.size() - first_vertex) / 3);
     vertex_batch.clear();
     fallback_vertex_batch.clear();
     software_fallback.DrawTriangles();
