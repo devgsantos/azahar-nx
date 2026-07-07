@@ -59,6 +59,16 @@ public:
         return bottom_screen_image;
     }
 
+#ifdef __SWITCH__
+    [[nodiscard]] DkDevice GetDevice() const {
+        return device;
+    }
+
+    [[nodiscard]] DkQueue GetQueue() const {
+        return queue;
+    }
+#endif
+
 private:
     void SetError(const char* message);
 

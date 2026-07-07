@@ -20,6 +20,7 @@
 #include "switch_nxlink.h"
 #include "switch_paths.h"
 #include "switch_rom_browser.h"
+#include "video_core/renderer_deko3d/deko3d_stats.h"
 
 namespace Azahar::Switch {
 namespace {
@@ -309,6 +310,7 @@ int SwitchApp::LaunchGame(const std::string& path) {
                 const auto perf = system.GetAndResetPerfStats();
                 const auto jit_stats = TakeJitRunStats();
                 const auto jit_publish_stats = TakeJitPublishStats();
+                const auto deko_stats = VideoCore::Deko3D::TakePerfStats();
                 last_perf_sample = now;
 
                 LOG_INFO(Frontend,
@@ -317,7 +319,14 @@ int SwitchApp::LaunchGame(const std::string& path) {
                          "swap {:.2f}ms other {:.2f}ms jit_ms {:.2f} jit_calls {} "
                          "jit_req {} jit_exec {} jit_zero {} jit_publish_partial {} "
                          "jit_publish_full {} jit_publish_bytes {} jit_publish_invalidated {} "
-                         "jit_cache_clears {} jit_blocks_compiled {}",
+                         "jit_cache_clears {} jit_blocks_compiled {} "
+                         "deko_hw_draws {} deko_hw_triangles {} deko_sw_fallback_draws {} "
+                         "deko_sw_fallback_triangles {} deko_texture_cache_hits {} "
+                         "deko_texture_cache_misses {} deko_texture_upload_bytes {} "
+                         "deko_render_target_cache_hits {} deko_render_target_cache_misses {} "
+                         "deko_render_target_readbacks {} deko_render_target_readback_bytes {} "
+                         "deko_unsupported_texture_format {} deko_unsupported_tev {} "
+                         "deko_unsupported_blend {} deko_unsupported_depth {} deko_ring_waits {}",
                          perf.game_fps, perf.system_fps, perf.emulation_speed * 100.0,
                          perf.time_vblank_interval * 1000.0,
                          perf.time_hle_svc * 1000.0,
@@ -333,7 +342,23 @@ int SwitchApp::LaunchGame(const std::string& path) {
                          jit_publish_stats.bytes_flushed,
                          jit_publish_stats.bytes_invalidated,
                          jit_publish_stats.cache_clears,
-                         jit_publish_stats.blocks_compiled);
+                         jit_publish_stats.blocks_compiled,
+                         deko_stats.hw_draws,
+                         deko_stats.hw_triangles,
+                         deko_stats.sw_fallback_draws,
+                         deko_stats.sw_fallback_triangles,
+                         deko_stats.texture_cache_hits,
+                         deko_stats.texture_cache_misses,
+                         deko_stats.texture_upload_bytes,
+                         deko_stats.render_target_cache_hits,
+                         deko_stats.render_target_cache_misses,
+                         deko_stats.render_target_readbacks,
+                         deko_stats.render_target_readback_bytes,
+                         deko_stats.unsupported_texture_format,
+                         deko_stats.unsupported_tev,
+                         deko_stats.unsupported_blend,
+                         deko_stats.unsupported_depth,
+                         deko_stats.ring_waits);
                 SWITCH_EARLY_LOGF(
                     "performance fps=%.2f system_fps=%.2f speed=%.2f%% "
                     "vblank=%.2fms hle_svc=%.2fms hle_ipc=%.2fms gpu=%.2fms "
@@ -341,7 +366,16 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     "jit_req=%llu jit_exec=%llu jit_zero=%llu "
                     "jit_publish_partial=%llu jit_publish_full=%llu "
                     "jit_publish_bytes=%llu jit_publish_invalidated=%llu "
-                    "jit_cache_clears=%llu jit_blocks_compiled=%llu",
+                    "jit_cache_clears=%llu jit_blocks_compiled=%llu "
+                    "deko_hw_draws=%llu deko_hw_triangles=%llu "
+                    "deko_sw_fallback_draws=%llu deko_sw_fallback_triangles=%llu "
+                    "deko_texture_cache_hits=%llu deko_texture_cache_misses=%llu "
+                    "deko_texture_upload_bytes=%llu deko_render_target_cache_hits=%llu "
+                    "deko_render_target_cache_misses=%llu deko_render_target_readbacks=%llu "
+                    "deko_render_target_readback_bytes=%llu "
+                    "deko_unsupported_texture_format=%llu deko_unsupported_tev=%llu "
+                    "deko_unsupported_blend=%llu deko_unsupported_depth=%llu "
+                    "deko_ring_waits=%llu",
                     perf.game_fps, perf.system_fps, perf.emulation_speed * 100.0,
                     perf.time_vblank_interval * 1000.0,
                     perf.time_hle_svc * 1000.0, perf.time_hle_ipc * 1000.0,
@@ -357,7 +391,23 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     static_cast<unsigned long long>(jit_publish_stats.bytes_flushed),
                     static_cast<unsigned long long>(jit_publish_stats.bytes_invalidated),
                     static_cast<unsigned long long>(jit_publish_stats.cache_clears),
-                    static_cast<unsigned long long>(jit_publish_stats.blocks_compiled));
+                    static_cast<unsigned long long>(jit_publish_stats.blocks_compiled),
+                    static_cast<unsigned long long>(deko_stats.hw_draws),
+                    static_cast<unsigned long long>(deko_stats.hw_triangles),
+                    static_cast<unsigned long long>(deko_stats.sw_fallback_draws),
+                    static_cast<unsigned long long>(deko_stats.sw_fallback_triangles),
+                    static_cast<unsigned long long>(deko_stats.texture_cache_hits),
+                    static_cast<unsigned long long>(deko_stats.texture_cache_misses),
+                    static_cast<unsigned long long>(deko_stats.texture_upload_bytes),
+                    static_cast<unsigned long long>(deko_stats.render_target_cache_hits),
+                    static_cast<unsigned long long>(deko_stats.render_target_cache_misses),
+                    static_cast<unsigned long long>(deko_stats.render_target_readbacks),
+                    static_cast<unsigned long long>(deko_stats.render_target_readback_bytes),
+                    static_cast<unsigned long long>(deko_stats.unsupported_texture_format),
+                    static_cast<unsigned long long>(deko_stats.unsupported_tev),
+                    static_cast<unsigned long long>(deko_stats.unsupported_blend),
+                    static_cast<unsigned long long>(deko_stats.unsupported_depth),
+                    static_cast<unsigned long long>(deko_stats.ring_waits));
             }
         }
     } catch (const std::exception& e) {

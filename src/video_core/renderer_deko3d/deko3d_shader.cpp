@@ -3,21 +3,136 @@
 
 #include "video_core/renderer_deko3d/deko3d_shader.h"
 
+#include <cstring>
+#include <span>
+
 #include "common/logging/log.h"
 #include "common/switch_trace.h"
+#include "video_core/renderer_deko3d/deko3d_state.h"
+
+#ifdef __SWITCH__
+#include "renderer_deko3d/generated/deko3d_builtin_shaders.h"
+#endif
 
 namespace VideoCore::Deko3D {
+namespace {
 
-bool ShaderCache::Initialize() {
+#ifdef __SWITCH__
+u32 AlignUp(u32 value, u32 alignment) {
+    return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+}
+#endif
+
+} // namespace
+
+bool ShaderCache::Initialize(State& state) {
     SWITCH_TRACE_EVENT("Deko3D", "ShaderCache::Initialize", "enter");
+#ifdef __SWITCH__
+    if (!LoadBuiltInShaders(state.GetDevice())) {
+        Shutdown();
+        SWITCH_TRACE_EVENT("Deko3D", "ShaderCache::Initialize", "failed");
+        return false;
+    }
     initialized = true;
-    LOG_WARNING(Render,
-                "Deko3D shader cache initialized without DKSH programs; hardware rasterizer "
-                "pipeline is not active");
-    SWITCH_TRACE_EVENT("Deko3D", "ShaderCache::Initialize",
-                       "no DKSH shader programs loaded");
+    LOG_INFO(Render, "Deko3D shader cache initialized with built-in vertex-color DKSH programs");
+#else
+    initialized = true;
+#endif
     SWITCH_TRACE_EVENT("Deko3D", "ShaderCache::Initialize", "leave");
     return true;
 }
+
+void ShaderCache::Shutdown() {
+#ifdef __SWITCH__
+    if (shader_code_mem_block) {
+        dkMemBlockDestroy(shader_code_mem_block);
+        shader_code_mem_block = nullptr;
+    }
+    shader_code_cpu = nullptr;
+    shader_code_offset = 0;
+    color_vertex_shader = {};
+    color_fragment_shader = {};
+    color_vertex_shader_valid = false;
+    color_fragment_shader_valid = false;
+#endif
+    initialized = false;
+}
+
+#ifdef __SWITCH__
+bool ShaderCache::LoadBuiltInShaders(DkDevice device) {
+    if (!device) {
+        LOG_ERROR(Render, "Deko3D shader cache cannot initialize without a device");
+        return false;
+    }
+
+    const u32 code_size =
+        DK_SHADER_CODE_UNUSABLE_SIZE +
+        AlignUp(static_cast<u32>(BuiltinShaders::PicaColorVshSize), DK_SHADER_CODE_ALIGNMENT) +
+        AlignUp(static_cast<u32>(BuiltinShaders::PicaColorFshSize), DK_SHADER_CODE_ALIGNMENT);
+
+    DkMemBlockMaker shader_mem_maker;
+    dkMemBlockMakerDefaults(&shader_mem_maker, device, AlignUp(code_size, DK_MEMBLOCK_ALIGNMENT));
+    shader_mem_maker.flags =
+        DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code;
+    shader_code_mem_block = dkMemBlockCreate(&shader_mem_maker);
+    if (!shader_code_mem_block) {
+        LOG_ERROR(Render, "Deko3D shader code memory allocation failed");
+        return false;
+    }
+    shader_code_cpu = dkMemBlockGetCpuAddr(shader_code_mem_block);
+    if (!shader_code_cpu) {
+        LOG_ERROR(Render, "Deko3D shader code memory mapping failed");
+        return false;
+    }
+
+    shader_code_offset = DK_SHADER_CODE_UNUSABLE_SIZE;
+
+    u32 vertex_offset = 0;
+    if (!CopyShader({BuiltinShaders::PicaColorVsh, BuiltinShaders::PicaColorVshSize},
+                    vertex_offset, color_vertex_shader)) {
+        LOG_ERROR(Render, "Deko3D vertex-color vertex shader initialization failed");
+        return false;
+    }
+    color_vertex_shader_valid = dkShaderIsValid(&color_vertex_shader);
+
+    u32 fragment_offset = 0;
+    if (!CopyShader({BuiltinShaders::PicaColorFsh, BuiltinShaders::PicaColorFshSize},
+                    fragment_offset, color_fragment_shader)) {
+        LOG_ERROR(Render, "Deko3D vertex-color fragment shader initialization failed");
+        return false;
+    }
+    color_fragment_shader_valid = dkShaderIsValid(&color_fragment_shader);
+
+    if (!color_vertex_shader_valid || !color_fragment_shader_valid) {
+        LOG_ERROR(Render, "Deko3D built-in shader validation failed vertex={} fragment={}",
+                  color_vertex_shader_valid, color_fragment_shader_valid);
+        return false;
+    }
+
+    LOG_INFO(Render, "Deko3D built-in shaders loaded vertex_offset={} fragment_offset={}",
+             vertex_offset, fragment_offset);
+    return true;
+}
+
+bool ShaderCache::CopyShader(std::span<const u8> shader_code, u32& offset_out,
+                             DkShader& shader_out) {
+    if (shader_code.empty() || !shader_code_cpu || !shader_code_mem_block) {
+        return false;
+    }
+
+    const u32 aligned_offset = AlignUp(shader_code_offset, DK_SHADER_CODE_ALIGNMENT);
+    std::memcpy(static_cast<u8*>(shader_code_cpu) + aligned_offset, shader_code.data(),
+                shader_code.size());
+
+    DkShaderMaker shader_maker;
+    dkShaderMakerDefaults(&shader_maker, shader_code_mem_block, aligned_offset);
+    dkShaderInitialize(&shader_out, &shader_maker);
+
+    offset_out = aligned_offset;
+    shader_code_offset =
+        aligned_offset + AlignUp(static_cast<u32>(shader_code.size()), DK_SHADER_CODE_ALIGNMENT);
+    return true;
+}
+#endif
 
 } // namespace VideoCore::Deko3D

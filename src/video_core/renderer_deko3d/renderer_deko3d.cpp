@@ -16,7 +16,8 @@ namespace VideoCore::Deko3D {
 RendererDeko3D::RendererDeko3D(Core::System& system_, Pica::PicaCore& pica,
                                Frontend::EmuWindow& window,
                                Frontend::EmuWindow* secondary_window)
-    : RendererBase{system_, window, secondary_window}, rasterizer{system_.Memory(), pica},
+    : RendererBase{system_, window, secondary_window},
+      rasterizer{system_.Memory(), pica, state, texture_cache, shader_cache},
       presenter{state, system_} {
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D", "enter");
     LOG_INFO(Render, "Renderer backend selected: Deko3D");
@@ -38,13 +39,18 @@ RendererDeko3D::RendererDeko3D(Core::System& system_, Pica::PicaCore& pica,
     LOG_INFO(Render, "Deko3D texture cache creation");
 
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.ShaderCache", "enter");
-    if (!shader_cache.Initialize()) {
+    if (!shader_cache.Initialize(state)) {
         SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.ShaderCache", "failed");
         throw std::runtime_error("Deko3D shader cache initialization failed");
     }
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.ShaderCache", "shader cache creation");
     LOG_INFO(Render, "Deko3D shader cache creation");
 
+    SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.Rasterizer", "enter");
+    if (!rasterizer.Initialize()) {
+        SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.Rasterizer", "failed");
+        throw std::runtime_error("Deko3D rasterizer initialization failed");
+    }
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.Rasterizer", "rasterizer creation");
     LOG_INFO(Render, "Deko3D rasterizer creation");
     initialized = true;
@@ -54,6 +60,8 @@ RendererDeko3D::RendererDeko3D(Core::System& system_, Pica::PicaCore& pica,
 }
 
 RendererDeko3D::~RendererDeko3D() {
+    rasterizer.Shutdown();
+    shader_cache.Shutdown();
     state.WaitIdle();
 }
 

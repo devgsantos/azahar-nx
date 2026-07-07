@@ -119,6 +119,11 @@ if (ENABLE_SOFTWARE_RENDERER)
     )
 endif()
 if (ENABLE_SWITCH_FRONTEND)
+    set(DEKO3D_SHADER_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/renderer_deko3d/generated")
+    set(DEKO3D_SHADER_HEADER "${DEKO3D_SHADER_GEN_DIR}/deko3d_builtin_shaders.h")
+    set(DEKO3D_COLOR_VSH "${DEKO3D_SHADER_GEN_DIR}/pica_color_vsh.dksh")
+    set(DEKO3D_COLOR_FSH "${DEKO3D_SHADER_GEN_DIR}/pica_color_fsh.dksh")
+
     target_sources(video_core PRIVATE
         renderer_software/sw_clipper.cpp
         renderer_software/sw_clipper.h
@@ -138,10 +143,15 @@ if (ENABLE_SWITCH_FRONTEND)
         renderer_deko3d/deko3d_rasterizer.h
         renderer_deko3d/deko3d_shader.cpp
         renderer_deko3d/deko3d_shader.h
+        renderer_deko3d/deko3d_stats.cpp
+        renderer_deko3d/deko3d_stats.h
         renderer_deko3d/deko3d_state.cpp
         renderer_deko3d/deko3d_state.h
         renderer_deko3d/deko3d_texture_cache.cpp
         renderer_deko3d/deko3d_texture_cache.h
+        renderer_deko3d/shaders/pica_color_vsh.glsl
+        renderer_deko3d/shaders/pica_color_fsh.glsl
+        ${DEKO3D_SHADER_HEADER}
         renderer_deko3d/renderer_deko3d.cpp
         renderer_deko3d/renderer_deko3d.h
     )
@@ -149,10 +159,34 @@ if (ENABLE_SWITCH_FRONTEND)
     if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
         find_path(DEKO3D_INCLUDE_DIR deko3d.h HINTS "$ENV{DEVKITPRO}/libnx/include")
         find_library(DEKO3D_LIBRARY deko3d HINTS "$ENV{DEVKITPRO}/libnx/lib")
+        find_program(UAM_EXECUTABLE uam HINTS "$ENV{DEVKITPRO}/tools/bin")
         if(NOT DEKO3D_INCLUDE_DIR OR NOT DEKO3D_LIBRARY)
             message(FATAL_ERROR "Deko3D headers/libs are required for ENABLE_SWITCH_FRONTEND")
         endif()
+        if(NOT UAM_EXECUTABLE)
+            message(FATAL_ERROR "uam is required to build Deko3D shader binaries")
+        endif()
+        add_custom_command(
+            OUTPUT ${DEKO3D_SHADER_HEADER}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${DEKO3D_SHADER_GEN_DIR}
+            COMMAND ${UAM_EXECUTABLE} -s vert -o ${DEKO3D_COLOR_VSH}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_color_vsh.glsl
+            COMMAND ${UAM_EXECUTABLE} -s frag -o ${DEKO3D_COLOR_FSH}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_color_fsh.glsl
+            COMMAND ${CMAKE_COMMAND}
+                    -DOUTPUT=${DEKO3D_SHADER_HEADER}
+                    -DVERT=${DEKO3D_COLOR_VSH}
+                    -DFRAG=${DEKO3D_COLOR_FSH}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/EmbedDeko3DShaders.cmake
+            DEPENDS
+                ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_color_vsh.glsl
+                ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_color_fsh.glsl
+                ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/EmbedDeko3DShaders.cmake
+            VERBATIM)
+        add_custom_target(deko3d_builtin_shaders DEPENDS ${DEKO3D_SHADER_HEADER})
+        add_dependencies(video_core deko3d_builtin_shaders)
         target_include_directories(video_core PRIVATE ${DEKO3D_INCLUDE_DIR})
+        target_include_directories(video_core PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
         target_link_libraries(video_core PUBLIC ${DEKO3D_LIBRARY})
     endif()
 endif()
