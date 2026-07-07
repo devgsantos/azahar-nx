@@ -342,14 +342,19 @@ bool State::CreateFramebuffers() {
 
     framebuffer_cpu_buffer = dkMemBlockGetCpuAddr(framebuffer_mem_block);
     if (!framebuffer_cpu_buffer) {
-        SetError("Deko3D framebuffer memory CPU mapping failed");
-        return false;
+        // Some Switch/Deko3D paths do not expose CPU mapping for image memory.
+        // Keep renderer alive and fall back to GPU clear/present path.
+        LOG_WARNING(Render, "Deko3D framebuffer memory CPU mapping unavailable; using clear fallback");
+        SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "framebuffer CPU mapping unavailable");
+        framebuffer_image_stride = 0;
     }
-    if (image_stride > std::numeric_limits<u32>::max()) {
+    if (framebuffer_cpu_buffer && image_stride > std::numeric_limits<u32>::max()) {
         SetError("Deko3D framebuffer image stride too large");
         return false;
     }
-    framebuffer_image_stride = static_cast<u32>(image_stride);
+    if (framebuffer_cpu_buffer) {
+        framebuffer_image_stride = static_cast<u32>(image_stride);
+    }
 
     for (u32 index = 0; index < FramebufferCount; ++index) {
         const u64 image_offset = image_stride * index;
@@ -552,8 +557,7 @@ void State::UploadScreenTextures() {
 
 bool State::PresentScreenTexturesFrame() {
     SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "enter");
-    if (!initialized || !queue || !swapchain || !framebuffer_cpu_buffer ||
-        framebuffer_image_stride == 0 || !screen_data_buffer) {
+    if (!initialized || !queue || !swapchain) {
         SetError("Deko3D present requested before initialization");
         SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "failed_not_initialized");
         return false;
@@ -570,6 +574,19 @@ bool State::PresentScreenTexturesFrame() {
         return false;
     }
     SWITCH_TRACE_EVENTF("Deko3D", "State::PresentScreenTexturesFrame", "acquired", "slot=%d", slot);
+
+    if (!framebuffer_cpu_buffer || framebuffer_image_stride == 0 || !screen_data_buffer) {
+        // Fallback path when CPU composition is not possible.
+        dkQueueSubmitCommands(queue, bind_framebuffer_cmds[slot]);
+        dkQueueWaitIdle(queue);
+        dkCmdBufClear(cmdbuf);
+        dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.02f, 0.04f, 0.06f, 1.0f);
+        clear_cmd = dkCmdBufFinishList(cmdbuf);
+        dkQueueSubmitCommands(queue, clear_cmd);
+        dkQueuePresentImage(queue, swapchain, slot);
+        SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "leave_fallback");
+        return true;
+    }
 
     // Ensure GPU is idle before writing CPU-composed pixels into swapchain memory.
     dkQueueWaitIdle(queue);
