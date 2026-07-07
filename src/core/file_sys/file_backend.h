@@ -16,7 +16,7 @@ namespace FileSys {
 
 class FileBackend : NonCopyable {
 public:
-    FileBackend() {}
+    FileBackend() : delay_generator(std::make_unique<DefaultDelayGenerator>()) {}
     virtual ~FileBackend() {}
 
     /**

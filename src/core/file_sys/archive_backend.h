@@ -119,6 +119,7 @@ static_assert(sizeof(ArchiveFormatInfo) == 16, "Invalid ArchiveFormatInfo size")
 
 class ArchiveBackend : NonCopyable {
 public:
+    ArchiveBackend() : delay_generator(std::make_unique<DefaultDelayGenerator>()) {}
     virtual ~ArchiveBackend() {}
 
     /**
