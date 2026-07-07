@@ -10,6 +10,9 @@ namespace {
 
 std::atomic<std::uint64_t> hw_draws{0};
 std::atomic<std::uint64_t> hw_triangles{0};
+std::atomic<std::uint64_t> hw_draw_attempts{0};
+std::atomic<std::uint64_t> hw_draw_successes{0};
+std::atomic<std::uint64_t> hw_draw_failures{0};
 std::atomic<std::uint64_t> sw_fallback_draws{0};
 std::atomic<std::uint64_t> sw_fallback_triangles{0};
 std::atomic<std::uint64_t> texture_cache_hits{0};
@@ -33,7 +36,16 @@ std::uint64_t Take(std::atomic<std::uint64_t>& value) {
 
 void RecordHardwareDraw(std::uint64_t triangles) {
     hw_draws.fetch_add(1, std::memory_order_relaxed);
+    hw_draw_successes.fetch_add(1, std::memory_order_relaxed);
     hw_triangles.fetch_add(triangles, std::memory_order_relaxed);
+}
+
+void RecordHardwareDrawAttempt() {
+    hw_draw_attempts.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordHardwareDrawFailure() {
+    hw_draw_failures.fetch_add(1, std::memory_order_relaxed);
 }
 
 void RecordSoftwareFallback(std::uint64_t triangles) {
@@ -49,8 +61,17 @@ PerfStats TakePerfStats() {
     PerfStats stats{};
     stats.hw_draws = Take(hw_draws);
     stats.hw_triangles = Take(hw_triangles);
+    stats.hw_draw_attempts = Take(hw_draw_attempts);
+    stats.hw_draw_successes = Take(hw_draw_successes);
+    stats.hw_draw_failures = Take(hw_draw_failures);
     stats.sw_fallback_draws = Take(sw_fallback_draws);
     stats.sw_fallback_triangles = Take(sw_fallback_triangles);
+    const std::uint64_t total_triangles = stats.hw_triangles + stats.sw_fallback_triangles;
+    if (total_triangles != 0) {
+        stats.hw_coverage_percent =
+            (static_cast<double>(stats.hw_triangles) * 100.0) /
+            static_cast<double>(total_triangles);
+    }
     stats.texture_cache_hits = Take(texture_cache_hits);
     stats.texture_cache_misses = Take(texture_cache_misses);
     stats.texture_upload_bytes = Take(texture_upload_bytes);

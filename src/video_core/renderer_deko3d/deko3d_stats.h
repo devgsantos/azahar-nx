@@ -10,6 +10,10 @@ namespace VideoCore::Deko3D {
 struct PerfStats {
     std::uint64_t hw_draws = 0;
     std::uint64_t hw_triangles = 0;
+    std::uint64_t hw_draw_attempts = 0;
+    std::uint64_t hw_draw_successes = 0;
+    std::uint64_t hw_draw_failures = 0;
+    double hw_coverage_percent = 0.0;
     std::uint64_t sw_fallback_draws = 0;
     std::uint64_t sw_fallback_triangles = 0;
     std::uint64_t texture_cache_hits = 0;
@@ -27,6 +31,8 @@ struct PerfStats {
 };
 
 void RecordHardwareDraw(std::uint64_t triangles);
+void RecordHardwareDrawAttempt();
+void RecordHardwareDrawFailure();
 void RecordSoftwareFallback(std::uint64_t triangles);
 void RecordRingWait();
 PerfStats TakePerfStats();

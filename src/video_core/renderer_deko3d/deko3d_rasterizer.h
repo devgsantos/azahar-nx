@@ -4,7 +4,9 @@
 #pragma once
 
 #include <array>
+#include <vector>
 
+#include "video_core/pica/output_vertex.h"
 #include "video_core/rasterizer_accelerated.h"
 #include "video_core/renderer_software/sw_rasterizer.h"
 
@@ -54,6 +56,8 @@ private:
     static constexpr u32 DescriptorBufferSize = 64 * 1024;
 
     struct FrameSlice {
+        u32 command_offset = 0;
+        u32 command_size = 0;
         u32 vertex_offset = 0;
         u32 vertex_size = 0;
         u32 uniform_offset = 0;
@@ -66,12 +70,16 @@ private:
     void ShutdownGpuResources();
     FrameSlice& CurrentFrameSlice();
     bool WaitForFrameSlice(FrameSlice& slice);
+    bool TryDrawHardwareBatch();
+    bool SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex, std::size_t vertex_count);
 #endif
+    void DrawSoftwareFallback();
 
     State& state;
     TextureCache& texture_cache;
     ShaderCache& shader_cache;
     SwRenderer::RasterizerSoftware software_fallback;
+    std::vector<Pica::OutputVertex> fallback_vertex_batch;
     bool initialized = false;
 
 #ifdef __SWITCH__

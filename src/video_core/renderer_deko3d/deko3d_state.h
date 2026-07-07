@@ -67,6 +67,14 @@ public:
     [[nodiscard]] DkQueue GetQueue() const {
         return queue;
     }
+
+    [[nodiscard]] const DkImageView* GetTopScreenRenderTargetView() const {
+        return top_screen_view;
+    }
+
+    void MarkTopScreenGpuDirty() {
+        top_screen_gpu_dirty = true;
+    }
 #endif
 
 private:
@@ -99,6 +107,9 @@ private:
     DkGpuAddr upload_gpu_addr = 0;
     u32 upload_buffer_size = 0;
     std::array<bool, FramebufferCount> swapchain_background_initialized{};
+    DkFence present_fence{};
+    bool present_fence_pending = false;
+    bool top_screen_gpu_dirty = false;
 
     // Screen textures for CPU framebuffer display (400x240 top, 320x240 bottom)
     DkMemBlock screen_tex_mem_block{};

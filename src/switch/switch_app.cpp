@@ -320,7 +320,9 @@ int SwitchApp::LaunchGame(const std::string& path) {
                          "jit_req {} jit_exec {} jit_zero {} jit_publish_partial {} "
                          "jit_publish_full {} jit_publish_bytes {} jit_publish_invalidated {} "
                          "jit_cache_clears {} jit_blocks_compiled {} "
-                         "deko_hw_draws {} deko_hw_triangles {} deko_sw_fallback_draws {} "
+                         "deko_hw_draws {} deko_hw_triangles {} deko_hw_draw_attempts {} "
+                         "deko_hw_draw_successes {} deko_hw_draw_failures {} "
+                         "deko_hw_coverage_percent {:.2f} deko_sw_fallback_draws {} "
                          "deko_sw_fallback_triangles {} deko_texture_cache_hits {} "
                          "deko_texture_cache_misses {} deko_texture_upload_bytes {} "
                          "deko_render_target_cache_hits {} deko_render_target_cache_misses {} "
@@ -345,6 +347,10 @@ int SwitchApp::LaunchGame(const std::string& path) {
                          jit_publish_stats.blocks_compiled,
                          deko_stats.hw_draws,
                          deko_stats.hw_triangles,
+                         deko_stats.hw_draw_attempts,
+                         deko_stats.hw_draw_successes,
+                         deko_stats.hw_draw_failures,
+                         deko_stats.hw_coverage_percent,
                          deko_stats.sw_fallback_draws,
                          deko_stats.sw_fallback_triangles,
                          deko_stats.texture_cache_hits,
@@ -368,6 +374,8 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     "jit_publish_bytes=%llu jit_publish_invalidated=%llu "
                     "jit_cache_clears=%llu jit_blocks_compiled=%llu "
                     "deko_hw_draws=%llu deko_hw_triangles=%llu "
+                    "deko_hw_draw_attempts=%llu deko_hw_draw_successes=%llu "
+                    "deko_hw_draw_failures=%llu deko_hw_coverage_percent=%.2f "
                     "deko_sw_fallback_draws=%llu deko_sw_fallback_triangles=%llu "
                     "deko_texture_cache_hits=%llu deko_texture_cache_misses=%llu "
                     "deko_texture_upload_bytes=%llu deko_render_target_cache_hits=%llu "
@@ -394,6 +402,10 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     static_cast<unsigned long long>(jit_publish_stats.blocks_compiled),
                     static_cast<unsigned long long>(deko_stats.hw_draws),
                     static_cast<unsigned long long>(deko_stats.hw_triangles),
+                    static_cast<unsigned long long>(deko_stats.hw_draw_attempts),
+                    static_cast<unsigned long long>(deko_stats.hw_draw_successes),
+                    static_cast<unsigned long long>(deko_stats.hw_draw_failures),
+                    deko_stats.hw_coverage_percent,
                     static_cast<unsigned long long>(deko_stats.sw_fallback_draws),
                     static_cast<unsigned long long>(deko_stats.sw_fallback_triangles),
                     static_cast<unsigned long long>(deko_stats.texture_cache_hits),

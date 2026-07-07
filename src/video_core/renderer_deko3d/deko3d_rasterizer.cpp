@@ -3,6 +3,10 @@
 
 #include "video_core/renderer_deko3d/deko3d_rasterizer.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstring>
+
 #include "common/logging/log.h"
 #include "video_core/renderer_deko3d/deko3d_shader.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
@@ -85,8 +89,7 @@ bool Rasterizer::InitializeGpuResources() {
         LOG_ERROR(Render, "Deko3D rasterizer command buffer creation failed");
         return false;
     }
-    dkCmdBufAddMemory(command_buffer, command_mem_block, 0, RasterCommandMemorySize);
-
+    const u32 command_slice_size = RasterCommandMemorySize / FrameSliceCount;
     DkMemBlockMaker vertex_mem_maker;
     dkMemBlockMakerDefaults(&vertex_mem_maker, device,
                             AlignUp(VertexBufferSize, DK_MEMBLOCK_ALIGNMENT));
@@ -139,6 +142,10 @@ bool Rasterizer::InitializeGpuResources() {
     const u32 uniform_slice_size = UniformBufferSize / FrameSliceCount;
     for (u32 index = 0; index < FrameSliceCount; ++index) {
         auto& slice = frame_slices[index];
+        slice.command_offset = index * command_slice_size;
+        slice.command_size =
+            index == FrameSliceCount - 1 ? RasterCommandMemorySize - slice.command_offset
+                                         : command_slice_size;
         slice.vertex_offset = index * vertex_slice_size;
         slice.vertex_size =
             index == FrameSliceCount - 1 ? VertexBufferSize - slice.vertex_offset
@@ -222,21 +229,169 @@ bool Rasterizer::WaitForFrameSlice(FrameSlice& slice) {
     slice.fence_pending = false;
     return true;
 }
+
+bool Rasterizer::TryDrawHardwareBatch() {
+    if (!initialized || !device || !queue || !command_buffer || !vertex_cpu_buffer ||
+        vertex_gpu_addr == 0) {
+        return false;
+    }
+
+    const DkShader* const vertex_shader = shader_cache.GetColorVertexShader();
+    const DkShader* const fragment_shader = shader_cache.GetColorFragmentShader();
+    const DkImageView* const color_target = state.GetTopScreenRenderTargetView();
+    if (!vertex_shader || !fragment_shader || !color_target) {
+        return false;
+    }
+
+    const std::size_t vertices_per_slice =
+        3 * (static_cast<std::size_t>(frame_slices[0].vertex_size) /
+             (3 * sizeof(HardwareVertex)));
+    if (vertices_per_slice < 3) {
+        return false;
+    }
+
+    for (std::size_t base_vertex = 0; base_vertex < vertex_batch.size();
+         base_vertex += vertices_per_slice) {
+        const std::size_t remaining = vertex_batch.size() - base_vertex;
+        const std::size_t vertex_count = std::min(vertices_per_slice, remaining);
+        const std::size_t aligned_vertex_count = vertex_count - (vertex_count % 3);
+        if (aligned_vertex_count == 0) {
+            return false;
+        }
+
+        FrameSlice& slice = CurrentFrameSlice();
+        if (!WaitForFrameSlice(slice)) {
+            return false;
+        }
+        if (!SubmitHardwareChunk(slice, base_vertex, aligned_vertex_count)) {
+            return false;
+        }
+    }
+
+    state.MarkTopScreenGpuDirty();
+    return true;
+}
+
+bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex,
+                                     std::size_t vertex_count) {
+    const std::size_t vertex_bytes = vertex_count * sizeof(HardwareVertex);
+    if (vertex_bytes > slice.vertex_size) {
+        return false;
+    }
+
+    std::memcpy(static_cast<u8*>(vertex_cpu_buffer) + slice.vertex_offset,
+                vertex_batch.data() + base_vertex, vertex_bytes);
+
+    const DkShader* const shaders[] = {shader_cache.GetColorVertexShader(),
+                                       shader_cache.GetColorFragmentShader()};
+    if (!shaders[0] || !shaders[1]) {
+        return false;
+    }
+
+    const DkVtxAttribState attribs[] = {
+        {0, 0, offsetof(HardwareVertex, position), DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
+        {0, 0, offsetof(HardwareVertex, color), DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
+        {0, 0, offsetof(HardwareVertex, tex_coord0), DkVtxAttribSize_2x32, DkVtxAttribType_Float,
+         0},
+        {0, 0, offsetof(HardwareVertex, tex_coord1), DkVtxAttribSize_2x32, DkVtxAttribType_Float,
+         0},
+        {0, 0, offsetof(HardwareVertex, tex_coord2), DkVtxAttribSize_2x32, DkVtxAttribType_Float,
+         0},
+        {0, 0, offsetof(HardwareVertex, tex_coord0_w), DkVtxAttribSize_1x32,
+         DkVtxAttribType_Float, 0},
+        {0, 0, offsetof(HardwareVertex, normquat), DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
+        {0, 0, offsetof(HardwareVertex, view), DkVtxAttribSize_3x32, DkVtxAttribType_Float, 0},
+    };
+    const DkVtxBufferState vtx_buffer_state[] = {{sizeof(HardwareVertex), 0}};
+
+    DkRasterizerState rasterizer_state;
+    DkMultisampleState multisample_state;
+    DkColorState color_state;
+    DkColorWriteState color_write_state;
+    DkDepthStencilState depth_stencil_state;
+    dkRasterizerStateDefaults(&rasterizer_state);
+    dkMultisampleStateDefaults(&multisample_state);
+    dkColorStateDefaults(&color_state);
+    dkColorWriteStateDefaults(&color_write_state);
+    dkDepthStencilStateDefaults(&depth_stencil_state);
+    rasterizer_state.cullMode = DkFace_None;
+    depth_stencil_state.depthTestEnable = false;
+    depth_stencil_state.depthWriteEnable = false;
+
+    constexpr u32 TopScreenWidth = 400;
+    constexpr u32 TopScreenHeight = 240;
+    const DkViewport viewport = {0.0f, 0.0f, static_cast<float>(TopScreenWidth),
+                                 static_cast<float>(TopScreenHeight), 0.0f, 1.0f};
+    const DkScissor scissor = {0, 0, TopScreenWidth, TopScreenHeight};
+
+    dkCmdBufClear(command_buffer);
+    dkCmdBufAddMemory(command_buffer, command_mem_block, slice.command_offset,
+                      slice.command_size);
+    dkCmdBufBindRenderTarget(command_buffer, state.GetTopScreenRenderTargetView(), nullptr);
+    dkCmdBufSetViewports(command_buffer, 0, &viewport, 1);
+    dkCmdBufSetScissors(command_buffer, 0, &scissor, 1);
+    dkCmdBufBindShaders(command_buffer, DkStageFlag_GraphicsMask, shaders, 2);
+    dkCmdBufBindRasterizerState(command_buffer, &rasterizer_state);
+    dkCmdBufBindMultisampleState(command_buffer, &multisample_state);
+    dkCmdBufBindColorState(command_buffer, &color_state);
+    dkCmdBufBindColorWriteState(command_buffer, &color_write_state);
+    dkCmdBufBindDepthStencilState(command_buffer, &depth_stencil_state);
+    dkCmdBufBindVtxAttribState(command_buffer, attribs,
+                               sizeof(attribs) / sizeof(attribs[0]));
+    dkCmdBufBindVtxBufferState(command_buffer, vtx_buffer_state,
+                               sizeof(vtx_buffer_state) / sizeof(vtx_buffer_state[0]));
+    dkCmdBufBindVtxBuffer(command_buffer, 0, vertex_gpu_addr + slice.vertex_offset,
+                          static_cast<u32>(vertex_bytes));
+    dkCmdBufDraw(command_buffer, DkPrimitive_Triangles, static_cast<u32>(vertex_count), 1, 0, 0);
+    dkCmdBufSignalFence(command_buffer, &slice.fence, true);
+
+    const DkCmdList draw_cmd = dkCmdBufFinishList(command_buffer);
+    if (!draw_cmd) {
+        return false;
+    }
+
+    dkQueueSubmitCommands(queue, draw_cmd);
+    slice.fence_pending = true;
+    RecordHardwareDraw(vertex_count / 3);
+    return true;
+}
 #endif
 
 void Rasterizer::AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
                              const Pica::OutputVertex& v2) {
-    LogSoftwareBridgeOnce();
     RasterizerAccelerated::AddTriangle(v0, v1, v2);
-    software_fallback.AddTriangle(v0, v1, v2);
+    fallback_vertex_batch.push_back(v0);
+    fallback_vertex_batch.push_back(v1);
+    fallback_vertex_batch.push_back(v2);
 }
 
 void Rasterizer::DrawTriangles() {
     if (vertex_batch.empty()) {
         return;
     }
-    RecordSoftwareFallback(vertex_batch.size() / 3);
+
+#ifdef __SWITCH__
+    RecordHardwareDrawAttempt();
+    if (TryDrawHardwareBatch()) {
+        vertex_batch.clear();
+        fallback_vertex_batch.clear();
+        return;
+    }
+    RecordHardwareDrawFailure();
+#endif
+
+    DrawSoftwareFallback();
+}
+
+void Rasterizer::DrawSoftwareFallback() {
+    LogSoftwareBridgeOnce();
+    for (std::size_t index = 0; index + 2 < fallback_vertex_batch.size(); index += 3) {
+        software_fallback.AddTriangle(fallback_vertex_batch[index], fallback_vertex_batch[index + 1],
+                                      fallback_vertex_batch[index + 2]);
+    }
+    RecordSoftwareFallback(fallback_vertex_batch.size() / 3);
     vertex_batch.clear();
+    fallback_vertex_batch.clear();
     software_fallback.DrawTriangles();
 }
 
@@ -258,6 +413,7 @@ void Rasterizer::FlushAndInvalidateRegion(PAddr addr, u32 size) {
 
 void Rasterizer::ClearAll(bool flush) {
     vertex_batch.clear();
+    fallback_vertex_batch.clear();
     software_fallback.ClearAll(flush);
 }
 

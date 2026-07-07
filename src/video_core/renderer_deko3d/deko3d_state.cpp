@@ -197,6 +197,9 @@ void State::Shutdown() {
     upload_gpu_addr = 0;
     upload_buffer_size = 0;
     swapchain_background_initialized = {};
+    present_fence = {};
+    present_fence_pending = false;
+    top_screen_gpu_dirty = false;
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures enter");
     if (screen_tex_mem_block) {
@@ -507,7 +510,8 @@ bool State::CreateScreenTextures() {
     DkImageLayoutMaker layout_maker;
     dkImageLayoutMakerDefaults(&layout_maker, device);
     layout_maker.type = DkImageType_2D;
-    layout_maker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent;
+    layout_maker.flags =
+        DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine;
     layout_maker.format = DkImageFormat_RGBA8_Unorm;
 
     // Calculate total allocation needed for both screen textures
@@ -612,8 +616,15 @@ bool State::PresentScreenTexturesFrame() {
         return true;
     }
 
-    // Ensure GPU is idle before reusing staging and command memory.
-    dkQueueWaitIdle(queue);
+    if (present_fence_pending) {
+        constexpr s64 FenceWaitTimeoutNs = 10'000'000'000LL;
+        const DkResult result = dkFenceWait(&present_fence, FenceWaitTimeoutNs);
+        if (result != DkResult_Success) {
+            SetError("Deko3D present fence wait failed");
+            return false;
+        }
+        present_fence_pending = false;
+    }
 
     u8* const upload_ptr = static_cast<u8*>(upload_cpu_buffer);
     constexpr u32 frame_width = FramebufferWidth;
@@ -642,11 +653,18 @@ bool State::PresentScreenTexturesFrame() {
         swapchain_background_initialized[slot] = true;
     }
 
-    // Place top and bottom 3DS screens centered on Switch output.  Copy only the native
-    // screen rectangles instead of rebuilding/uploading a full 1280x720 image every frame.
-    DkCopyBuf top_copy_src = {upload_gpu_addr, 0, 0};
+    // Place top and bottom 3DS screens centered on Switch output.  Hardware-rasterized top
+    // screen output stays on the GPU and is blitted directly; CPU upload remains the fallback.
     DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
-    dkCmdBufCopyBufferToImage(cmdbuf, &top_copy_src, &framebuffer_views[slot], &top_copy_dst, 0);
+    if (top_screen_gpu_dirty && top_screen_view) {
+        DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
+        dkCmdBufBlitImage(cmdbuf, top_screen_view, &top_copy_src, &framebuffer_views[slot],
+                          &top_copy_dst, DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
+    } else {
+        DkCopyBuf top_copy_src = {upload_gpu_addr, 0, 0};
+        dkCmdBufCopyBufferToImage(cmdbuf, &top_copy_src, &framebuffer_views[slot], &top_copy_dst,
+                                  0);
+    }
 
     DkCopyBuf bottom_copy_src = {upload_gpu_addr + top_bytes, 0, 0};
     DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
@@ -660,6 +678,8 @@ bool State::PresentScreenTexturesFrame() {
     }
 
     dkQueueSubmitCommands(queue, copy_cmd);
+    dkQueueSignalFence(queue, &present_fence, true);
+    present_fence_pending = true;
     dkQueuePresentImage(queue, swapchain, slot);
     return true;
 }
