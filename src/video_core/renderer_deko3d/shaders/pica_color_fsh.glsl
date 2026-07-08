@@ -149,11 +149,11 @@ void main()
     vec4 previousBuffer = uniforms.initialCombinerBuffer;
 
     for (uint stage = 0u; stage < 6u; ++stage) {
-        uvec4 packed = uniforms.stages[stage];
-        uint sources = packed.x;
-        uint modifiers = packed.y;
-        uint operations = packed.z;
-        uint scales = packed.w;
+        uvec4 stageData = uniforms.stages[stage];
+        uint sources = stageData.x;
+        uint modifiers = stageData.y;
+        uint operations = stageData.z;
+        uint scales = stageData.w;
 
         vec4 source0 = sourceValue((sources >> 0u) & 0xFu, previous, previousBuffer,
                                    uniforms.constants[stage]);
