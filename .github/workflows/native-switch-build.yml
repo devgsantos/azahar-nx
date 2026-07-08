@@ -33,6 +33,8 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git submodule sync >/dev/null
           git submodule update --init --depth 1 >/tmp/submodules.log 2>&1
+          git -C externals/dynarmic submodule sync --recursive >>/tmp/submodules.log 2>&1
+          git -C externals/dynarmic submodule update --init --recursive --depth 1 >>/tmp/submodules.log 2>&1
 
       - name: Install Switch build tools
         shell: bash
