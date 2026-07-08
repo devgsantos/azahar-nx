@@ -98,6 +98,10 @@ private:
     static DkSampler BuildSampler(const Pica::TexturingRegs::TextureConfig& config);
     static u32 TextureByteSize(const TextureKey& key);
 
+    static void RecordTextureCacheHit() {}
+    static void RecordTextureCacheMiss() {}
+    static void RecordTextureUploadBytes(u64) {}
+
     State* state = nullptr;
     Memory::MemorySystem* memory = nullptr;
     DkDevice device{};
