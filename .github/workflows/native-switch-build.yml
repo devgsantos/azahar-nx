@@ -27,12 +27,18 @@ jobs:
           submodules: false
           fetch-depth: 1
 
-      - name: Checkout submodules
+      - name: Checkout required submodules
         shell: bash
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git submodule sync --recursive >/dev/null
           while read -r _ path; do
+            case "$path" in
+              externals/httplib|externals/libressl)
+                echo "Skipping optional web-service submodule: $path"
+                continue
+                ;;
+            esac
             log_file="/tmp/submodule-$(echo "$path" | tr '/' '_').log"
             if ! git submodule update --init --recursive --depth 1 -- "$path" >"$log_file" 2>&1; then
               echo "FAILED_SUBMODULE=$path"
