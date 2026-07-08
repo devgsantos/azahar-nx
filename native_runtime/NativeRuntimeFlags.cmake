@@ -1,0 +1,1 @@
+set(AZAHAR_NATIVE_RUNTIME_BRANCH ON CACHE BOOL "Native Deko3D runtime branch" FORCE)
