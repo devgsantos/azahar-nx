@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - deko3d-native-runtime-test
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
