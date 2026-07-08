@@ -119,7 +119,9 @@ private:
     bool SubmitHardwareBatch();
     bool SubmitHardwareChunk(FrameContext& context, State::CachedRenderTarget& color_target,
                              const DkImageView* depth_target, std::size_t base_vertex,
-                             std::size_t vertex_count);
+                             std::size_t vertex_count,
+                             const std::array<DkResHandle, 3>& texture_handles,
+                             const FragmentUniforms& fragment_uniforms);
     DepthSurface* GetOrCreateDepthSurface();
     FragmentUniforms BuildFragmentUniforms(u32 texture_enable_mask) const;
     bool QueueHasError(const char* context);
