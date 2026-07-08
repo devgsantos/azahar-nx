@@ -13,6 +13,7 @@
 #include "video_core/rasterizer_accelerated.h"
 #include "video_core/renderer_deko3d/deko3d_state.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
+#include "video_core/renderer_deko3d/deko3d_texture_cache.h"
 
 #ifdef __SWITCH__
 #include <deko3d.h>
@@ -29,7 +30,6 @@ class PicaCore;
 namespace VideoCore::Deko3D {
 
 class ShaderCache;
-class TextureCache;
 
 class Rasterizer final : public VideoCore::RasterizerAccelerated {
 public:
