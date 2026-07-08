@@ -45,6 +45,7 @@ jobs:
         run: |
           export DEVKITPRO=/opt/devkitpro
           export DEVKITA64=/opt/devkitpro/devkitA64
+          set +e
           cmake -S . -B build-switch -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/Switch.cmake \
             -DCMAKE_BUILD_TYPE=Release \
@@ -60,11 +61,19 @@ jobs:
             -DENABLE_LTO=OFF \
             -DAZAHAR_DEKO3D_VALIDATION=ON \
             -DCMAKE_PROJECT_INCLUDE=$GITHUB_WORKSPACE/native_runtime/NativeRuntimeFinal.cmake \
-            >native-configure.log 2>&1
+            >/tmp/native-configure.log 2>&1
+          status=$?
+          set -e
+          exit $status
 
       - name: Build NRO
         shell: bash
-        run: cmake --build build-switch --target azahar_switch -j2 >native-build.log 2>&1
+        run: |
+          set +e
+          cmake --build build-switch --target azahar_switch -j2 >/tmp/native-build.log 2>&1
+          status=$?
+          set -e
+          exit $status
 
       - name: Upload diagnostics
         if: always()
@@ -72,8 +81,8 @@ jobs:
         with:
           name: azahar-native-build-logs
           path: |
-            native-configure.log
-            native-build.log
+            /tmp/native-configure.log
+            /tmp/native-build.log
             /tmp/submodules.log
             /tmp/devkitpro-install.log
           if-no-files-found: ignore
