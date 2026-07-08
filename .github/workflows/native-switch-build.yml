@@ -15,18 +15,23 @@ jobs:
     container:
       image: devkitpro/devkita64:latest
     steps:
+      - name: Bootstrap container tools
+        shell: bash
+        run: |
+          dkp-pacman -Syu --noconfirm --needed git ca-certificates
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Install build tools
+      - name: Install Switch build tools
         shell: bash
         run: |
           dkp-pacman -Syu --noconfirm --needed \
             switch-dev switch-cmake switch-tools deko3d \
-            cmake ninja git python
+            cmake ninja python
 
       - name: Configure
         shell: bash
