@@ -1,0 +1,60 @@
+name: Native Switch build
+
+on:
+  push:
+    branches:
+      - deko3d-native-runtime-test
+  workflow_dispatch:
+
+jobs:
+  build-switch:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          dkp-pacman -Syu --noconfirm --needed \
+            switch-dev switch-cmake switch-tools deko3d \
+            cmake ninja git python
+
+      - name: Configure
+        shell: bash
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export DEVKITA64=/opt/devkitpro/devkitA64
+          cmake -S . -B build-switch -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/Switch.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_SWITCH_FRONTEND=ON \
+            -DENABLE_QT=OFF \
+            -DENABLE_OPENGL=OFF \
+            -DENABLE_VULKAN=OFF \
+            -DENABLE_WEB_SERVICE=OFF \
+            -DENABLE_SCRIPTING=OFF \
+            -DENABLE_GDBSTUB=OFF \
+            -DENABLE_TESTS=OFF \
+            -DCITRA_USE_PRECOMPILED_HEADERS=OFF \
+            -DENABLE_LTO=OFF \
+            -DAZAHAR_DEKO3D_VALIDATION=ON \
+            -DCMAKE_PROJECT_INCLUDE=$GITHUB_WORKSPACE/native_runtime/NativeRuntimeFinal.cmake
+
+      - name: Build NRO
+        shell: bash
+        run: cmake --build build-switch --target azahar_switch -j2
+
+      - name: Upload NRO
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-native-switch
+          path: |
+            build-switch/bin/Release/azahar.nro
+            build-switch/bin/Release/azahar_switch.elf
+          if-no-files-found: error
