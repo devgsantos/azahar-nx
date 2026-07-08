@@ -133,10 +133,18 @@ bool Presenter::PresentFrame() {
                                                         : framebuffer_config[1].address_left2;
         top_changed = !have_last_addrs || last_top_addr != fb0_addr;
         bottom_changed = !have_last_addrs || last_bottom_addr != fb1_addr;
-        frame_changed = top_changed || bottom_changed || state.IsTopScreenGpuDirty();
-        source = state.IsTopScreenGpuDirty() ? PresentSource::DekoRenderTarget
-                                             : (frame_changed ? PresentSource::CpuFramebufferUpload
-                                                              : PresentSource::RepeatedPreviousFrame);
+        state.SelectPresentRenderTarget(fb0_addr);
+        const auto* const cached_target = state.GetSelectedPresentRenderTarget();
+        frame_changed = top_changed || bottom_changed || cached_target != nullptr ||
+                        state.IsTopScreenGpuDirty();
+        if (cached_target) {
+            source = PresentSource::CachedRenderTargetBlit;
+        } else {
+            source = state.IsTopScreenGpuDirty()
+                         ? PresentSource::DekoRenderTarget
+                         : (frame_changed ? PresentSource::CpuFramebufferUpload
+                                          : PresentSource::RepeatedPreviousFrame);
+        }
 
         auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
         if (!screen_buffer ||

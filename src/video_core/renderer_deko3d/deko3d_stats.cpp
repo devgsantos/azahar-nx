@@ -37,6 +37,26 @@ namespace {
     X(transformed_vertices_completed)                                                              \
     X(direct_batch_checks)                                                                         \
     X(direct_batch_rejected)                                                                       \
+    X(transformed_blocker_invalid_batch)                                                           \
+    X(transformed_blocker_missing_gpu_resources)                                                    \
+    X(transformed_blocker_shader_unavailable)                                                       \
+    X(transformed_blocker_wrong_render_target)                                                      \
+    X(transformed_blocker_framebuffer_format)                                                       \
+    X(transformed_blocker_framebuffer_dimensions)                                                   \
+    X(transformed_blocker_textures_enabled)                                                         \
+    X(transformed_blocker_depth_test_enabled)                                                       \
+    X(transformed_blocker_depth_write_enabled)                                                      \
+    X(transformed_blocker_stencil_enabled)                                                          \
+    X(transformed_blocker_blending_enabled)                                                         \
+    X(transformed_blocker_alpha_test)                                                               \
+    X(transformed_blocker_logic_op)                                                                 \
+    X(transformed_blocker_color_mask)                                                               \
+    X(direct_blocker_unimplemented)                                                                \
+    X(direct_blocker_topology)                                                                      \
+    X(direct_blocker_geometry_shader)                                                               \
+    X(direct_blocker_vertex_format)                                                                \
+    X(direct_blocker_index_format)                                                                 \
+    X(direct_blocker_other)                                                                        \
     X(blocker_invalid_batch)                                                                       \
     X(blocker_missing_gpu_resources)                                                               \
     X(blocker_shader_unavailable)                                                                  \
@@ -82,6 +102,14 @@ namespace {
     X(gsp_interrupts_requested)                                                                    \
     X(gsp_interrupts_delivered)                                                                    \
     X(gsp_interrupts_dropped)                                                                      \
+    X(gsp_logical_interrupts_raised)                                                               \
+    X(gsp_thread_delivery_attempts)                                                                \
+    X(gsp_interrupts_ignored_no_active_thread)                                                      \
+    X(gsp_interrupts_ignored_unregistered_thread)                                                   \
+    X(gsp_interrupts_ignored_no_event)                                                             \
+    X(gsp_interrupts_queue_full)                                                                   \
+    X(gsp_interrupts_stale_scheduled_event)                                                        \
+    X(gsp_interrupts_actual_dropped)                                                               \
     X(top_framebuffer_address_changes)                                                             \
     X(bottom_framebuffer_address_changes)                                                          \
     X(framebuffer_format_changes)                                                                  \
@@ -99,6 +127,9 @@ namespace {
     X(present_source_display_transfer)                                                             \
     X(present_source_memory_fill)                                                                  \
     X(present_source_framebuffer_change)                                                           \
+    X(present_source_cached_render_target)                                                         \
+    X(present_source_cached_render_target_blit)                                                     \
+    X(present_source_cached_render_target_readback)                                                 \
     X(present_source_repeated_frame)                                                               \
     X(present_source_clear_fallback)                                                               \
     X(emulated_system_frames)                                                                      \
@@ -108,7 +139,15 @@ namespace {
     X(repeated_presented_frames)                                                                   \
     X(hardware_raster_frames)                                                                      \
     X(software_raster_frames)                                                                      \
-    X(transfer_only_frames)
+    X(transfer_only_frames)                                                                        \
+    X(deko_blend_state_supported)                                                                  \
+    X(deko_blend_state_unsupported)                                                                \
+    X(deko_blend_pipeline_cache_hits)                                                              \
+    X(deko_blend_pipeline_cache_misses)                                                            \
+    X(deko_depth_state_supported)                                                                  \
+    X(deko_depth_state_unsupported)                                                                \
+    X(deko_state_signature_count)                                                                  \
+    X(deko_state_signature_id)
 
 #define ATOMIC_COUNTER(name) std::atomic<std::uint64_t> name{0};
 
@@ -128,6 +167,11 @@ std::atomic<std::uint64_t> texture_cache_misses{0};
 std::atomic<std::uint64_t> texture_upload_bytes{0};
 std::atomic<std::uint64_t> render_target_cache_hits{0};
 std::atomic<std::uint64_t> render_target_cache_misses{0};
+std::atomic<std::uint64_t> render_target_cache_creations{0};
+std::atomic<std::uint64_t> render_target_cache_evictions{0};
+std::atomic<std::uint64_t> render_target_cache_bytes{0};
+std::atomic<std::uint64_t> render_target_gpu_dirty{0};
+std::atomic<std::uint64_t> render_target_cpu_dirty{0};
 std::atomic<std::uint64_t> render_target_readbacks{0};
 std::atomic<std::uint64_t> render_target_readback_bytes{0};
 std::atomic<std::uint64_t> unsupported_texture_format{0};
@@ -157,6 +201,74 @@ DEKO_EXTRA_COUNTERS(ATOMIC_COUNTER)
 
 std::uint64_t Take(std::atomic<std::uint64_t>& value) {
     return value.exchange(0, std::memory_order_relaxed);
+}
+
+void AddStats(PerfStats& total, const PerfStats& interval) {
+    total.hw_draws += interval.hw_draws;
+    total.hw_triangles += interval.hw_triangles;
+    total.hw_draw_attempts += interval.hw_draw_attempts;
+    total.hw_draw_successes += interval.hw_draw_successes;
+    total.hw_draw_failures += interval.hw_draw_failures;
+    total.hw_draws_submitted += interval.hw_draws_submitted;
+    total.hw_draws_completed += interval.hw_draws_completed;
+    total.hw_triangles_submitted += interval.hw_triangles_submitted;
+    total.hw_triangles_completed += interval.hw_triangles_completed;
+    total.sw_fallback_draws += interval.sw_fallback_draws;
+    total.sw_fallback_triangles += interval.sw_fallback_triangles;
+    total.texture_cache_hits += interval.texture_cache_hits;
+    total.texture_cache_misses += interval.texture_cache_misses;
+    total.texture_upload_bytes += interval.texture_upload_bytes;
+    total.render_target_cache_hits += interval.render_target_cache_hits;
+    total.render_target_cache_misses += interval.render_target_cache_misses;
+    total.render_target_cache_creations += interval.render_target_cache_creations;
+    total.render_target_cache_evictions += interval.render_target_cache_evictions;
+    total.render_target_cache_bytes = interval.render_target_cache_bytes;
+    total.render_target_gpu_dirty += interval.render_target_gpu_dirty;
+    total.render_target_cpu_dirty += interval.render_target_cpu_dirty;
+    total.render_target_readbacks += interval.render_target_readbacks;
+    total.render_target_readback_bytes += interval.render_target_readback_bytes;
+    total.unsupported_texture_format += interval.unsupported_texture_format;
+    total.unsupported_tev += interval.unsupported_tev;
+    total.unsupported_blend += interval.unsupported_blend;
+    total.unsupported_depth += interval.unsupported_depth;
+    total.ring_waits += interval.ring_waits;
+    total.fence_poll_successes += interval.fence_poll_successes;
+    total.fence_waits += interval.fence_waits;
+    total.fence_timeouts += interval.fence_timeouts;
+    total.max_fence_wait_ms = std::max(total.max_fence_wait_ms, interval.max_fence_wait_ms);
+    total.queue_errors += interval.queue_errors;
+    total.queue_flushes += interval.queue_flushes;
+    total.fallback_textures_enabled += interval.fallback_textures_enabled;
+    total.fallback_depth_enabled += interval.fallback_depth_enabled;
+    total.fallback_stencil_enabled += interval.fallback_stencil_enabled;
+    total.fallback_blend_enabled += interval.fallback_blend_enabled;
+    total.fallback_alpha_test += interval.fallback_alpha_test;
+    total.fallback_logic_op += interval.fallback_logic_op;
+    total.fallback_geometry_shader += interval.fallback_geometry_shader;
+    total.fallback_wrong_render_target += interval.fallback_wrong_render_target;
+    total.fallback_framebuffer_format += interval.fallback_framebuffer_format;
+    total.fallback_topology += interval.fallback_topology;
+    total.fallback_shadow += interval.fallback_shadow;
+    total.fallback_unsupported_state += interval.fallback_unsupported_state;
+    const auto previous_raster_max = total.raster_max_fence_wait_us;
+    const auto previous_present_max = total.present_max_fence_wait_us;
+#define ADD_EXTRA_COUNTER(name) total.name += interval.name;
+    DEKO_EXTRA_COUNTERS(ADD_EXTRA_COUNTER)
+#undef ADD_EXTRA_COUNTER
+    total.raster_max_fence_wait_us =
+        std::max(previous_raster_max, interval.raster_max_fence_wait_us);
+    total.present_max_fence_wait_us =
+        std::max(previous_present_max, interval.present_max_fence_wait_us);
+    total.deko_state_signature_id = interval.deko_state_signature_id != 0
+                                        ? interval.deko_state_signature_id
+                                        : total.deko_state_signature_id;
+    const std::uint64_t total_triangles =
+        total.hw_triangles_completed + total.sw_fallback_triangles;
+    total.hw_coverage_percent =
+        total_triangles == 0
+            ? 0.0
+            : (static_cast<double>(total.hw_triangles) * 100.0) /
+                  static_cast<double>(total_triangles);
 }
 
 } // namespace
@@ -365,6 +477,10 @@ void RecordFallbackInvalidTransformedBatch() {
 }
 
 void RecordBlocker(std::uint32_t blocker_mask) {
+    RecordTransformedBlocker(blocker_mask);
+}
+
+void RecordTransformedBlocker(std::uint32_t blocker_mask) {
     constexpr std::uint32_t invalid_batch = 1U << 0;
     constexpr std::uint32_t missing_gpu = 1U << 1;
     constexpr std::uint32_t shader = 1U << 2;
@@ -391,19 +507,33 @@ void RecordBlocker(std::uint32_t blocker_mask) {
         }
     };
     add_if(invalid_batch, blocker_invalid_batch);
+    add_if(invalid_batch, transformed_blocker_invalid_batch);
     add_if(missing_gpu, blocker_missing_gpu_resources);
+    add_if(missing_gpu, transformed_blocker_missing_gpu_resources);
     add_if(shader, blocker_shader_unavailable);
+    add_if(shader, transformed_blocker_shader_unavailable);
     add_if(wrong_rt, blocker_wrong_render_target);
+    add_if(wrong_rt, transformed_blocker_wrong_render_target);
     add_if(format, blocker_framebuffer_format);
+    add_if(format, transformed_blocker_framebuffer_format);
     add_if(dimensions, blocker_framebuffer_dimensions);
+    add_if(dimensions, transformed_blocker_framebuffer_dimensions);
     add_if(textures, blocker_textures_enabled);
+    add_if(textures, transformed_blocker_textures_enabled);
     add_if(depth_test, blocker_depth_test_enabled);
+    add_if(depth_test, transformed_blocker_depth_test_enabled);
     add_if(depth_write, blocker_depth_write_enabled);
+    add_if(depth_write, transformed_blocker_depth_write_enabled);
     add_if(stencil, blocker_stencil_enabled);
+    add_if(stencil, transformed_blocker_stencil_enabled);
     add_if(blend, blocker_blending_enabled);
+    add_if(blend, transformed_blocker_blending_enabled);
     add_if(alpha, blocker_alpha_test);
+    add_if(alpha, transformed_blocker_alpha_test);
     add_if(logic, blocker_logic_op);
+    add_if(logic, transformed_blocker_logic_op);
     add_if(color_mask, blocker_color_mask);
+    add_if(color_mask, transformed_blocker_color_mask);
     add_if(cull, blocker_cull_mode);
     add_if(viewport, blocker_viewport);
     add_if(scissor, blocker_scissor);
@@ -412,6 +542,87 @@ void RecordBlocker(std::uint32_t blocker_mask) {
 
     if ((blocker_mask & (blocker_mask - 1)) != 0) {
         batches_with_multiple_blockers.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void RecordDirectBlocker(std::uint32_t blocker_mask) {
+    constexpr std::uint32_t unimplemented = 1U << 0;
+    constexpr std::uint32_t topology = 1U << 1;
+    constexpr std::uint32_t geometry_shader = 1U << 2;
+    constexpr std::uint32_t vertex_format = 1U << 3;
+    constexpr std::uint32_t index_format = 1U << 4;
+    constexpr std::uint32_t other = 1U << 5;
+
+    auto add_if = [blocker_mask](std::uint32_t bit, std::atomic<std::uint64_t>& counter) {
+        if ((blocker_mask & bit) != 0) {
+            counter.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    add_if(unimplemented, direct_blocker_unimplemented);
+    add_if(topology, direct_blocker_topology);
+    add_if(geometry_shader, direct_blocker_geometry_shader);
+    add_if(vertex_format, direct_blocker_vertex_format);
+    add_if(index_format, direct_blocker_index_format);
+    add_if(other, direct_blocker_other);
+}
+
+void RecordRenderTargetCacheHit() {
+    render_target_cache_hits.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordRenderTargetCacheMiss() {
+    render_target_cache_misses.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordRenderTargetCacheCreation(std::uint64_t bytes) {
+    render_target_cache_creations.fetch_add(1, std::memory_order_relaxed);
+    render_target_cache_bytes.fetch_add(bytes, std::memory_order_relaxed);
+}
+
+void RecordRenderTargetCacheEviction(std::uint64_t bytes) {
+    render_target_cache_evictions.fetch_add(1, std::memory_order_relaxed);
+    std::uint64_t current = render_target_cache_bytes.load(std::memory_order_relaxed);
+    while (current >= bytes &&
+           !render_target_cache_bytes.compare_exchange_weak(current, current - bytes,
+                                                            std::memory_order_relaxed)) {
+    }
+}
+
+void RecordRenderTargetGpuDirty() {
+    render_target_gpu_dirty.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordRenderTargetCpuDirty() {
+    render_target_cpu_dirty.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordBlendState(bool supported, bool cache_hit) {
+    if (supported) {
+        deko_blend_state_supported.fetch_add(1, std::memory_order_relaxed);
+        if (cache_hit) {
+            deko_blend_pipeline_cache_hits.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            deko_blend_pipeline_cache_misses.fetch_add(1, std::memory_order_relaxed);
+        }
+    } else {
+        deko_blend_state_unsupported.fetch_add(1, std::memory_order_relaxed);
+        unsupported_blend.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void RecordDepthState(bool supported) {
+    if (supported) {
+        deko_depth_state_supported.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        deko_depth_state_unsupported.fetch_add(1, std::memory_order_relaxed);
+        unsupported_depth.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void RecordStateSignature(std::uint64_t signature_id, bool is_new) {
+    deko_state_signature_id.store(signature_id, std::memory_order_relaxed);
+    if (is_new) {
+        deko_state_signature_count.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -481,6 +692,7 @@ void RecordPicaCacheInvalidation() {
 
 void RecordGspInterruptRequested() {
     gsp_interrupts_requested.fetch_add(1, std::memory_order_relaxed);
+    RecordGspLogicalInterruptRaised();
 }
 
 void RecordGspInterruptDelivered() {
@@ -489,6 +701,39 @@ void RecordGspInterruptDelivered() {
 
 void RecordGspInterruptDropped() {
     gsp_interrupts_dropped.fetch_add(1, std::memory_order_relaxed);
+    RecordGspInterruptActualDropped();
+}
+
+void RecordGspLogicalInterruptRaised() {
+    gsp_logical_interrupts_raised.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordGspThreadDeliveryAttempt() {
+    gsp_thread_delivery_attempts.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordGspInterruptIgnoredNoActiveThread() {
+    gsp_interrupts_ignored_no_active_thread.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordGspInterruptIgnoredUnregisteredThread() {
+    gsp_interrupts_ignored_unregistered_thread.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordGspInterruptIgnoredNoEvent() {
+    gsp_interrupts_ignored_no_event.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordGspInterruptQueueFull() {
+    gsp_interrupts_queue_full.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordGspInterruptStaleScheduledEvent() {
+    gsp_interrupts_stale_scheduled_event.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordGspInterruptActualDropped() {
+    gsp_interrupts_actual_dropped.fetch_add(1, std::memory_order_relaxed);
 }
 
 void RecordFramebufferChange(bool top, bool address, bool format, bool dimensions, bool stride) {
@@ -544,6 +789,17 @@ void RecordPresent(PresentSource source, bool changed, bool top_updated, bool bo
     case PresentSource::FramebufferAddressChange:
         present_source_framebuffer_change.fetch_add(1, std::memory_order_relaxed);
         break;
+    case PresentSource::CachedRenderTarget:
+        present_source_cached_render_target.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case PresentSource::CachedRenderTargetBlit:
+        present_source_cached_render_target.fetch_add(1, std::memory_order_relaxed);
+        present_source_cached_render_target_blit.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case PresentSource::CachedRenderTargetReadback:
+        present_source_cached_render_target.fetch_add(1, std::memory_order_relaxed);
+        present_source_cached_render_target_readback.fetch_add(1, std::memory_order_relaxed);
+        break;
     case PresentSource::RepeatedPreviousFrame:
         present_source_repeated_frame.fetch_add(1, std::memory_order_relaxed);
         break;
@@ -577,7 +833,7 @@ void RecordTransferOnlyFrame() {
     transfer_only_frames.fetch_add(1, std::memory_order_relaxed);
 }
 
-PerfStats TakePerfStats() {
+PerfStats TakePerfStats(PerfStats* total_stats) {
     PerfStats stats{};
     stats.hw_draws = Take(hw_draws);
     stats.hw_triangles = Take(hw_triangles);
@@ -601,6 +857,11 @@ PerfStats TakePerfStats() {
     stats.texture_upload_bytes = Take(texture_upload_bytes);
     stats.render_target_cache_hits = Take(render_target_cache_hits);
     stats.render_target_cache_misses = Take(render_target_cache_misses);
+    stats.render_target_cache_creations = Take(render_target_cache_creations);
+    stats.render_target_cache_evictions = Take(render_target_cache_evictions);
+    stats.render_target_cache_bytes = render_target_cache_bytes.load(std::memory_order_relaxed);
+    stats.render_target_gpu_dirty = Take(render_target_gpu_dirty);
+    stats.render_target_cpu_dirty = Take(render_target_cpu_dirty);
     stats.render_target_readbacks = Take(render_target_readbacks);
     stats.render_target_readback_bytes = Take(render_target_readback_bytes);
     stats.unsupported_texture_format = Take(unsupported_texture_format);
@@ -629,7 +890,16 @@ PerfStats TakePerfStats() {
 #define TAKE_EXTRA_COUNTER(name) stats.name = Take(name);
     DEKO_EXTRA_COUNTERS(TAKE_EXTRA_COUNTER)
 #undef TAKE_EXTRA_COUNTER
+    static PerfStats lifetime{};
+    AddStats(lifetime, stats);
+    if (total_stats) {
+        *total_stats = lifetime;
+    }
     return stats;
+}
+
+PerfStats TakePerfStats() {
+    return TakePerfStats(nullptr);
 }
 
 } // namespace VideoCore::Deko3D

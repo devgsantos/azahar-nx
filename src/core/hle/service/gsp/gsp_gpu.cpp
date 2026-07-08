@@ -362,7 +362,7 @@ void GSP_GPU::UnregisterInterruptRelayQueue(Kernel::HLERequestContext& ctx) {
 // #define SHOW_AVERAGE_TIME_PER_FRAME
 
 void GSP_GPU::SignalInterruptForThread(InterruptId interrupt_id, u32 thread_id, u64 wait_delay_ns) {
-    VideoCore::Deko3D::RecordGspInterruptRequested();
+    VideoCore::Deko3D::RecordGspThreadDeliveryAttempt();
 
     // Every gsp request takes a constant amount of time to be
     // processed and control returned to the application. This
@@ -455,7 +455,7 @@ void GSP_GPU::SignalInterruptForThread(InterruptId interrupt_id, u32 thread_id, 
             pending_interrupts.Push(std::make_pair(interrupt_id, thread_id));
         if (pending_interrupt_id == std::numeric_limits<size_t>::max()) {
             LOG_ERROR(Service_GSP, "Pending interrupts queue is full");
-            VideoCore::Deko3D::RecordGspInterruptDropped();
+            VideoCore::Deko3D::RecordGspInterruptQueueFull();
             ProcessPendingInterruptImpl(interrupt_id, thread_id);
         } else {
             system.Kernel().timing.ScheduleEvent(nsToCycles(wait_delay_ns),
@@ -470,7 +470,7 @@ void GSP_GPU::SignalInterruptForThread(InterruptId interrupt_id, u32 thread_id, 
 void Service::GSP::GSP_GPU::ProcessPendingInterrupt(size_t pending_interrupt_id) {
     auto pending_interrupt = pending_interrupts.Pop(pending_interrupt_id);
     if (!pending_interrupt.has_value()) {
-        VideoCore::Deko3D::RecordGspInterruptDropped();
+        VideoCore::Deko3D::RecordGspInterruptStaleScheduledEvent();
         return;
     }
     const auto& [interrupt_id, thread_id] = *pending_interrupt;
@@ -481,14 +481,14 @@ void Service::GSP::GSP_GPU::ProcessPendingInterrupt(size_t pending_interrupt_id)
 void Service::GSP::GSP_GPU::ProcessPendingInterruptImpl(InterruptId interrupt_id, u32 thread_id) {
     SessionData* session_data = FindRegisteredThreadData(thread_id);
     if (!session_data) {
-        VideoCore::Deko3D::RecordGspInterruptDropped();
+        VideoCore::Deko3D::RecordGspInterruptIgnoredUnregisteredThread();
         return;
     }
 
     auto interrupt_event = session_data->interrupt_event;
     if (interrupt_event == nullptr) {
         LOG_WARNING(Service_GSP, "cannot synchronize until GSP event has been created!");
-        VideoCore::Deko3D::RecordGspInterruptDropped();
+        VideoCore::Deko3D::RecordGspInterruptIgnoredNoEvent();
         return;
     }
 
@@ -498,7 +498,8 @@ void Service::GSP::GSP_GPU::ProcessPendingInterruptImpl(InterruptId interrupt_id
     auto queue_interrupt = [&]() {
         if (interrupt_relay_queue->number_interrupts >= InterruptRelayQueue::max_slots) {
             interrupt_relay_queue->error_code = InterruptRelayQueue::queue_full_error;
-            VideoCore::Deko3D::RecordGspInterruptDropped();
+            VideoCore::Deko3D::RecordGspInterruptQueueFull();
+            VideoCore::Deko3D::RecordGspInterruptActualDropped();
         } else {
             u8 next = interrupt_relay_queue->index;
             next += interrupt_relay_queue->number_interrupts;
@@ -543,9 +544,10 @@ void Service::GSP::GSP_GPU::ProcessPendingInterruptImpl(InterruptId interrupt_id
 }
 
 void GSP_GPU::SignalInterrupt(InterruptId interrupt_id, u64 wait_delay_ns) {
+    VideoCore::Deko3D::RecordGspInterruptRequested();
     if (nullptr == shared_memory) {
         LOG_WARNING(Service_GSP, "cannot synchronize until GSP shared memory has been created!");
-        VideoCore::Deko3D::RecordGspInterruptDropped();
+        VideoCore::Deko3D::RecordGspInterruptIgnoredNoEvent();
         return;
     }
 
@@ -561,7 +563,7 @@ void GSP_GPU::SignalInterrupt(InterruptId interrupt_id, u64 wait_delay_ns) {
 
     // For normal interrupts, don't do anything if no process has acquired the GPU right.
     if (active_thread_id == std::numeric_limits<u32>::max()) {
-        VideoCore::Deko3D::RecordGspInterruptDropped();
+        VideoCore::Deko3D::RecordGspInterruptIgnoredNoActiveThread();
         return;
     }
 

@@ -7,11 +7,15 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <functional>
+#include <optional>
+#include <unordered_set>
 
+#include "common/assert.h"
 #include "common/logging/log.h"
+#include "video_core/pica/pica_core.h"
 #include "video_core/renderer_deko3d/deko3d_shader.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
-#include "video_core/renderer_deko3d/deko3d_state.h"
 #include "video_core/renderer_deko3d/deko3d_texture_cache.h"
 
 namespace VideoCore::Deko3D {
@@ -20,6 +24,150 @@ namespace {
 #ifdef __SWITCH__
 u32 AlignUp(u32 value, u32 alignment) {
     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+}
+
+template <typename T>
+void HashCombine(std::size_t& seed, T value) {
+    seed ^= std::hash<T>{}(value) + 0x9e3779b9U + (seed << 6) + (seed >> 2);
+}
+
+DkBlendOp MapBlendEquation(Pica::FramebufferRegs::BlendEquation equation) {
+    using BlendEquation = Pica::FramebufferRegs::BlendEquation;
+    switch (equation) {
+    case BlendEquation::Add:
+        return DkBlendOp_Add;
+    case BlendEquation::Subtract:
+        return DkBlendOp_Sub;
+    case BlendEquation::ReverseSubtract:
+        return DkBlendOp_RevSub;
+    case BlendEquation::Min:
+        return DkBlendOp_Min;
+    case BlendEquation::Max:
+        return DkBlendOp_Max;
+    }
+    return DkBlendOp_Add;
+}
+
+std::optional<DkBlendFactor> MapBlendFactor(Pica::FramebufferRegs::BlendFactor factor) {
+    using BlendFactor = Pica::FramebufferRegs::BlendFactor;
+    switch (factor) {
+    case BlendFactor::Zero:
+        return DkBlendFactor_Zero;
+    case BlendFactor::One:
+        return DkBlendFactor_One;
+    case BlendFactor::SourceColor:
+        return DkBlendFactor_SrcColor;
+    case BlendFactor::OneMinusSourceColor:
+        return DkBlendFactor_InvSrcColor;
+    case BlendFactor::DestColor:
+        return DkBlendFactor_DstColor;
+    case BlendFactor::OneMinusDestColor:
+        return DkBlendFactor_InvDstColor;
+    case BlendFactor::SourceAlpha:
+        return DkBlendFactor_SrcAlpha;
+    case BlendFactor::OneMinusSourceAlpha:
+        return DkBlendFactor_InvSrcAlpha;
+    case BlendFactor::DestAlpha:
+        return DkBlendFactor_DstAlpha;
+    case BlendFactor::OneMinusDestAlpha:
+        return DkBlendFactor_InvDstAlpha;
+    case BlendFactor::ConstantColor:
+        return DkBlendFactor_ConstColor;
+    case BlendFactor::OneMinusConstantColor:
+        return DkBlendFactor_InvConstColor;
+    case BlendFactor::ConstantAlpha:
+        return DkBlendFactor_ConstAlpha;
+    case BlendFactor::OneMinusConstantAlpha:
+        return DkBlendFactor_InvConstAlpha;
+    case BlendFactor::SourceAlphaSaturate:
+        return DkBlendFactor_SrcAlphaSaturate;
+    }
+    return std::nullopt;
+}
+
+DkCompareOp MapCompare(Pica::FramebufferRegs::CompareFunc func) {
+    using CompareFunc = Pica::FramebufferRegs::CompareFunc;
+    switch (func) {
+    case CompareFunc::Never:
+        return DkCompareOp_Never;
+    case CompareFunc::Always:
+        return DkCompareOp_Always;
+    case CompareFunc::Equal:
+        return DkCompareOp_Equal;
+    case CompareFunc::NotEqual:
+        return DkCompareOp_NotEqual;
+    case CompareFunc::LessThan:
+        return DkCompareOp_Less;
+    case CompareFunc::LessThanOrEqual:
+        return DkCompareOp_Lequal;
+    case CompareFunc::GreaterThan:
+        return DkCompareOp_Greater;
+    case CompareFunc::GreaterThanOrEqual:
+        return DkCompareOp_Gequal;
+    }
+    return DkCompareOp_Always;
+}
+
+u32 ColorWriteMask(const Pica::FramebufferRegs& regs) {
+    u32 mask = 0;
+    if (regs.framebuffer.allow_color_write != 0 && regs.output_merger.red_enable != 0) {
+        mask |= DkColorMask_R;
+    }
+    if (regs.framebuffer.allow_color_write != 0 && regs.output_merger.green_enable != 0) {
+        mask |= DkColorMask_G;
+    }
+    if (regs.framebuffer.allow_color_write != 0 && regs.output_merger.blue_enable != 0) {
+        mask |= DkColorMask_B;
+    }
+    if (regs.framebuffer.allow_color_write != 0 && regs.output_merger.alpha_enable != 0) {
+        mask |= DkColorMask_A;
+    }
+    return mask;
+}
+
+std::size_t TransformedStateSignature(const Pica::PicaCore& pica,
+                                      const Pica::RegsInternal& regs) {
+    const auto& fb = regs.framebuffer;
+    const auto viewport = regs.rasterizer.GetViewportRect();
+    std::size_t seed = 0;
+    HashCombine(seed, fb.framebuffer.GetColorBufferPhysicalAddress());
+    HashCombine(seed, fb.framebuffer.GetDepthBufferPhysicalAddress());
+    HashCombine(seed, fb.framebuffer.GetWidth());
+    HashCombine(seed, fb.framebuffer.GetHeight());
+    HashCombine(seed, static_cast<u32>(fb.framebuffer.color_format.Value()));
+    HashCombine(seed, static_cast<u32>(fb.framebuffer.depth_format.Value()));
+    HashCombine(seed, static_cast<u32>(viewport.left));
+    HashCombine(seed, static_cast<u32>(viewport.top));
+    HashCombine(seed, static_cast<u32>(viewport.GetWidth()));
+    HashCombine(seed, static_cast<u32>(viewport.GetHeight()));
+    HashCombine(seed, regs.rasterizer.scissor_test.x1.Value());
+    HashCombine(seed, regs.rasterizer.scissor_test.y1.Value());
+    HashCombine(seed, regs.rasterizer.scissor_test.x2.Value());
+    HashCombine(seed, regs.rasterizer.scissor_test.y2.Value());
+    HashCombine(seed, fb.output_merger.alphablend_enable.Value());
+    HashCombine(seed, static_cast<u32>(fb.output_merger.alpha_blending.blend_equation_rgb.Value()));
+    HashCombine(seed, static_cast<u32>(fb.output_merger.alpha_blending.blend_equation_a.Value()));
+    HashCombine(seed, static_cast<u32>(fb.output_merger.alpha_blending.factor_source_rgb.Value()));
+    HashCombine(seed, static_cast<u32>(fb.output_merger.alpha_blending.factor_dest_rgb.Value()));
+    HashCombine(seed, static_cast<u32>(fb.output_merger.alpha_blending.factor_source_a.Value()));
+    HashCombine(seed, static_cast<u32>(fb.output_merger.alpha_blending.factor_dest_a.Value()));
+    HashCombine(seed, fb.output_merger.depth_test_enable.Value());
+    HashCombine(seed, fb.output_merger.depth_write_enable.Value());
+    HashCombine(seed, static_cast<u32>(fb.output_merger.depth_test_func.Value()));
+    HashCombine(seed, fb.output_merger.alpha_test.enable.Value());
+    HashCombine(seed, static_cast<u32>(fb.output_merger.alpha_test.func.Value()));
+    HashCombine(seed, fb.output_merger.alpha_test.ref.Value());
+
+    u32 texture_mask = 0;
+    const auto textures = regs.texturing.GetTextures();
+    for (u32 index = 0; index < textures.size(); ++index) {
+        if (textures[index].enabled != 0) {
+            texture_mask |= 1U << index;
+        }
+    }
+    HashCombine(seed, texture_mask);
+    (void)pica;
+    return seed;
 }
 #endif
 
@@ -201,6 +349,15 @@ void Rasterizer::ShutdownGpuResources() {
     }
     descriptor_cpu_buffer = nullptr;
     descriptor_gpu_addr = 0;
+    if (depth_mem_block) {
+        dkMemBlockDestroy(depth_mem_block);
+        depth_mem_block = nullptr;
+    }
+    depth_image = {};
+    depth_view = {};
+    depth_width = 0;
+    depth_height = 0;
+    depth_format = 0;
 
     frame_slices = {};
     current_frame_slice = 0;
@@ -270,13 +427,14 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
     using CompareFunc = Pica::FramebufferRegs::CompareFunc;
 
     const auto& fb = regs.framebuffer;
-    u32 blockers = 0;
-    if (vertex_batch.size() < 3 || (vertex_batch.size() % 3) != 0 ||
-        fallback_vertex_batch.size() != vertex_batch.size()) {
+    u32 blockers = None;
+    const bool batch_valid = vertex_batch.size() >= 3 && (vertex_batch.size() % 3) == 0 &&
+                             fallback_vertex_batch.size() == vertex_batch.size();
+    if (!batch_valid) {
         blockers |= InvalidBatch;
     }
     if (!initialized || !device || !queue || !command_buffer || !vertex_cpu_buffer ||
-        vertex_gpu_addr == 0 || !state.GetTopScreenRenderTargetView()) {
+        vertex_gpu_addr == 0) {
         blockers |= MissingGpuResources;
     }
     if (!shader_cache.GetColorVertexShader() || !shader_cache.GetColorFragmentShader()) {
@@ -288,31 +446,41 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
     if (fb.framebuffer.color_format != ColorFormat::RGBA8) {
         blockers |= FramebufferFormat;
     }
-    if (fb.framebuffer.GetWidth() != 400 || fb.framebuffer.GetHeight() != 240) {
+    if (fb.framebuffer.GetColorBufferPhysicalAddress() == 0 || fb.framebuffer.GetWidth() == 0 ||
+        fb.framebuffer.GetHeight() == 0) {
         blockers |= FramebufferDimensions;
     }
     if (fb.output_merger.depth_test_enable != 0) {
         blockers |= DepthTestEnabled;
     }
-    if (fb.output_merger.depth_write_enable != 0) {
+    if (fb.output_merger.depth_write_enable != 0 &&
+        (fb.output_merger.depth_test_enable != 0 ||
+         fb.framebuffer.allow_depth_stencil_write == 0 ||
+         fb.framebuffer.depth_format == Pica::FramebufferRegs::DepthFormat::D24S8)) {
         blockers |= DepthWriteEnabled;
     }
     if (fb.output_merger.stencil_test.enable != 0) {
         blockers |= StencilEnabled;
     }
+    bool blend_supported = true;
     if (fb.output_merger.alphablend_enable != 0) {
-        blockers |= BlendingEnabled;
+        const auto blend = fb.output_merger.alpha_blending;
+        blend_supported = MapBlendFactor(blend.factor_source_rgb).has_value() &&
+                          MapBlendFactor(blend.factor_dest_rgb).has_value() &&
+                          MapBlendFactor(blend.factor_source_a).has_value() &&
+                          MapBlendFactor(blend.factor_dest_a).has_value();
+        if (!blend_supported) {
+            blockers |= BlendingEnabled;
+        }
     }
     if (fb.output_merger.alpha_test.enable != 0 &&
         fb.output_merger.alpha_test.func != CompareFunc::Always) {
         blockers |= AlphaTestUnsupported;
     }
-    if (fb.output_merger.logic_op != LogicOp::Copy) {
+    if (fb.output_merger.alphablend_enable == 0 && fb.output_merger.logic_op != LogicOp::Copy) {
         blockers |= LogicOpUnsupported;
     }
-    if (fb.framebuffer.allow_color_write == 0 || fb.output_merger.red_enable == 0 ||
-        fb.output_merger.green_enable == 0 || fb.output_merger.blue_enable == 0 ||
-        fb.output_merger.alpha_enable == 0) {
+    if (fb.framebuffer.allow_color_write == 0 || ColorWriteMask(fb) == 0) {
         blockers |= ColorMaskUnsupported;
     }
 
@@ -321,6 +489,41 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
         if (texture.enabled != 0) {
             blockers |= TexturesEnabled;
         }
+    }
+
+    ASSERT_MSG(batch_valid || (blockers & InvalidBatch) != 0,
+               "Transformed batch validity did not set InvalidBatch blocker");
+    ASSERT_MSG(!batch_valid || (blockers & InvalidBatch) == 0,
+               "Valid transformed batch incorrectly set InvalidBatch blocker");
+
+    const auto signature_id = TransformedStateSignature(pica, regs);
+    static std::unordered_set<std::size_t> observed_signatures;
+    const bool new_signature = observed_signatures.insert(signature_id).second;
+    RecordStateSignature(signature_id, new_signature);
+    if (new_signature && observed_signatures.size() <= 8) {
+        LOG_INFO(Render,
+                 "Deko3D transformed state signature: id={} color=0x{:08x} depth=0x{:08x} "
+                 "color_size={}x{} depth_size={}x{} color_format={} depth_format={} "
+                 "blend={} depth_test={} depth_write={} alpha_test={} blockers=0x{:08x} "
+                 "display_match={}",
+                 static_cast<unsigned long long>(signature_id),
+                 fb.framebuffer.GetColorBufferPhysicalAddress(),
+                 fb.framebuffer.GetDepthBufferPhysicalAddress(), fb.framebuffer.GetWidth(),
+                 fb.framebuffer.GetHeight(), fb.framebuffer.GetWidth(), fb.framebuffer.GetHeight(),
+                 static_cast<u32>(fb.framebuffer.color_format.Value()),
+                 static_cast<u32>(fb.framebuffer.depth_format.Value()),
+                 fb.output_merger.alphablend_enable.Value(),
+                 fb.output_merger.depth_test_enable.Value(),
+                 fb.output_merger.depth_write_enable.Value(), fb.output_merger.alpha_test.enable.Value(),
+                 blockers, "unknown_guest_vram");
+    } else if ((blockers & FramebufferDimensions) != 0) {
+        LOG_INFO(Render,
+                 "Deko3D framebuffer dimension rejection: id={} color=0x{:08x} size={}x{} "
+                 "format={} blockers=0x{:08x}",
+                 static_cast<unsigned long long>(signature_id),
+                 fb.framebuffer.GetColorBufferPhysicalAddress(), fb.framebuffer.GetWidth(),
+                 fb.framebuffer.GetHeight(), static_cast<u32>(fb.framebuffer.color_format.Value()),
+                 blockers);
     }
 
     FallbackReason primary = FallbackReason::UnsupportedState;
@@ -354,16 +557,16 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateDirectBatchEligibility(bool 
     using TriangleTopology = Pica::PipelineRegs::TriangleTopology;
     using UseGS = Pica::PipelineRegs::UseGS;
 
-    u32 blockers = 0;
+    u32 blockers = DirectUnimplemented;
     if (regs.pipeline.triangle_topology != TriangleTopology::List) {
-        blockers |= InvalidBatch;
+        blockers |= DirectTopology;
     }
     if (regs.pipeline.use_gs != UseGS::No) {
-        blockers |= ShaderUnavailable;
+        blockers |= DirectGeometryShader;
     }
     (void)is_indexed;
-    return {blockers == 0, blockers & InvalidBatch ? FallbackReason::Topology
-                                                   : FallbackReason::GeometryShader,
+    return {false, blockers & DirectTopology ? FallbackReason::Topology
+                                             : FallbackReason::UnsupportedState,
             blockers};
 }
 
@@ -376,18 +579,37 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
 
     const DkShader* const vertex_shader = shader_cache.GetColorVertexShader();
     const DkShader* const fragment_shader = shader_cache.GetColorFragmentShader();
-    const DkImageView* const color_target = state.GetTopScreenRenderTargetView();
-    if (!vertex_shader || !fragment_shader || !color_target) {
+    if (!vertex_shader || !fragment_shader) {
         return false;
     }
 
     const auto eligibility = EvaluateTransformedBatchEligibility();
-    RecordBlocker(eligibility.blockers);
+    RecordTransformedBlocker(eligibility.blockers);
     if (!eligibility.supported) {
         if ((eligibility.blockers & InvalidBatch) != 0) {
             RecordFallbackInvalidTransformedBatch();
         }
         RecordFallbackReason(eligibility.reason);
+        return false;
+    }
+
+    const auto& fb = regs.framebuffer.framebuffer;
+    State::RenderTargetKey color_key{
+        .color_address = fb.GetColorBufferPhysicalAddress(),
+        .width = fb.GetWidth(),
+        .height = fb.GetHeight(),
+        .format = static_cast<u32>(fb.color_format.Value()),
+    };
+    State::CachedRenderTarget* color_target = state.GetOrCreateRenderTarget(color_key);
+    if (!color_target) {
+        RecordTransformedBlocker(MissingGpuResources);
+        RecordFallbackReason(FallbackReason::WrongRenderTarget);
+        return false;
+    }
+    const DkImageView* const depth_target = GetOrCreateDepthTarget();
+    if (regs.framebuffer.output_merger.depth_write_enable != 0 && !depth_target) {
+        RecordDepthState(false);
+        RecordFallbackReason(FallbackReason::DepthEnabled);
         return false;
     }
     RecordTransformedBatchEligible();
@@ -412,7 +634,8 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         if (!WaitForFrameSlice(slice)) {
             return false;
         }
-        if (!SubmitHardwareChunk(slice, base_vertex, aligned_vertex_count)) {
+        if (!SubmitHardwareChunk(slice, *color_target, depth_target, base_vertex,
+                                 aligned_vertex_count)) {
             return false;
         }
         submitted_vertices += aligned_vertex_count;
@@ -421,7 +644,75 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
     return true;
 }
 
-bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex,
+const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
+    const auto& fb = regs.framebuffer;
+    if (fb.output_merger.depth_write_enable == 0) {
+        return nullptr;
+    }
+    const u32 width = fb.framebuffer.GetWidth();
+    const u32 height = fb.framebuffer.GetHeight();
+    const u32 format = static_cast<u32>(fb.framebuffer.depth_format.Value());
+    if (depth_mem_block && depth_width == width && depth_height == height &&
+        depth_format == format) {
+        RecordDepthState(true);
+        return &depth_view;
+    }
+    if (depth_mem_block) {
+        dkMemBlockDestroy(depth_mem_block);
+        depth_mem_block = nullptr;
+        depth_image = {};
+        depth_view = {};
+    }
+
+    DkImageFormat dk_format = DkImageFormat_None;
+    switch (fb.framebuffer.depth_format) {
+    case Pica::FramebufferRegs::DepthFormat::D16:
+        dk_format = DkImageFormat_Z16;
+        break;
+    case Pica::FramebufferRegs::DepthFormat::D24:
+        dk_format = DkImageFormat_Z24X8;
+        break;
+    case Pica::FramebufferRegs::DepthFormat::D24S8:
+        RecordDepthState(false);
+        return nullptr;
+    }
+
+    DkImageLayoutMaker layout_maker;
+    dkImageLayoutMakerDefaults(&layout_maker, device);
+    layout_maker.type = DkImageType_2D;
+    layout_maker.flags = DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine;
+    layout_maker.format = dk_format;
+    layout_maker.dimensions[0] = width;
+    layout_maker.dimensions[1] = height;
+    DkImageLayout layout;
+    dkImageLayoutInitialize(&layout, &layout_maker);
+    const u32 size = AlignUp(static_cast<u32>(dkImageLayoutGetSize(&layout)),
+                             dkImageLayoutGetAlignment(&layout));
+    DkMemBlockMaker mem_block_maker;
+    dkMemBlockMakerDefaults(&mem_block_maker, device, size);
+    mem_block_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+    depth_mem_block = dkMemBlockCreate(&mem_block_maker);
+    if (!depth_mem_block) {
+        RecordDepthState(false);
+        return nullptr;
+    }
+    dkImageInitialize(&depth_image, &layout, depth_mem_block, 0);
+    dkImageViewDefaults(&depth_view, &depth_image);
+    depth_width = width;
+    depth_height = height;
+    depth_format = format;
+    RecordDepthState(true);
+    LOG_INFO(Render,
+             "Deko3D depth target create: addr=0x{:08x} size={}x{} format={} compare={} "
+             "write_mask={}",
+             fb.framebuffer.GetDepthBufferPhysicalAddress(), width, height, format,
+             static_cast<u32>(fb.output_merger.depth_test_func.Value()),
+             fb.framebuffer.allow_depth_stencil_write.Value());
+    return &depth_view;
+}
+
+bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
+                                     const DkImageView* depth_target, std::size_t base_vertex,
                                      std::size_t vertex_count) {
     const std::size_t vertex_bytes = vertex_count * sizeof(HardwareVertex);
     if (vertex_bytes > slice.vertex_size) {
@@ -464,19 +755,56 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex,
     dkColorWriteStateDefaults(&color_write_state);
     dkDepthStencilStateDefaults(&depth_stencil_state);
     rasterizer_state.cullMode = DkFace_None;
-    depth_stencil_state.depthTestEnable = false;
-    depth_stencil_state.depthWriteEnable = false;
+    dkColorStateSetBlendEnable(&color_state, 0, regs.framebuffer.output_merger.alphablend_enable != 0);
+    dkColorWriteStateSetMask(&color_write_state, 0, ColorWriteMask(regs.framebuffer));
+    DkBlendState blend_state;
+    dkBlendStateDefaults(&blend_state);
+    if (regs.framebuffer.output_merger.alphablend_enable != 0) {
+        const auto blend = regs.framebuffer.output_merger.alpha_blending;
+        const auto src_rgb = MapBlendFactor(blend.factor_source_rgb);
+        const auto dst_rgb = MapBlendFactor(blend.factor_dest_rgb);
+        const auto src_a = MapBlendFactor(blend.factor_source_a);
+        const auto dst_a = MapBlendFactor(blend.factor_dest_a);
+        if (!src_rgb || !dst_rgb || !src_a || !dst_a) {
+            return false;
+        }
+        dkBlendStateSetOps(&blend_state, MapBlendEquation(blend.blend_equation_rgb),
+                           MapBlendEquation(blend.blend_equation_a));
+        dkBlendStateSetFactors(&blend_state, *src_rgb, *dst_rgb, *src_a, *dst_a);
+        std::size_t blend_signature = 0;
+        HashCombine(blend_signature, static_cast<u32>(blend.blend_equation_rgb.Value()));
+        HashCombine(blend_signature, static_cast<u32>(blend.blend_equation_a.Value()));
+        HashCombine(blend_signature, static_cast<u32>(blend.factor_source_rgb.Value()));
+        HashCombine(blend_signature, static_cast<u32>(blend.factor_dest_rgb.Value()));
+        HashCombine(blend_signature, static_cast<u32>(blend.factor_source_a.Value()));
+        HashCombine(blend_signature, static_cast<u32>(blend.factor_dest_a.Value()));
+        HashCombine(blend_signature, regs.framebuffer.output_merger.blend_const.raw);
+        static std::unordered_set<std::size_t> blend_signatures;
+        const bool cache_hit = !blend_signatures.insert(blend_signature).second;
+        RecordBlendState(true, cache_hit);
+    }
+    depth_stencil_state.depthTestEnable =
+        regs.framebuffer.output_merger.depth_test_enable != 0 ||
+        regs.framebuffer.output_merger.depth_write_enable != 0;
+    depth_stencil_state.depthWriteEnable =
+        regs.framebuffer.framebuffer.allow_depth_stencil_write != 0 &&
+        regs.framebuffer.output_merger.depth_write_enable != 0;
+    depth_stencil_state.depthCompareOp =
+        regs.framebuffer.output_merger.depth_test_enable != 0
+            ? MapCompare(regs.framebuffer.output_merger.depth_test_func)
+            : DkCompareOp_Always;
+    depth_stencil_state.stencilTestEnable = false;
 
-    constexpr u32 TopScreenWidth = 400;
-    constexpr u32 TopScreenHeight = 240;
-    const DkViewport viewport = {0.0f, 0.0f, static_cast<float>(TopScreenWidth),
-                                 static_cast<float>(TopScreenHeight), 0.0f, 1.0f};
-    const DkScissor scissor = {0, 0, TopScreenWidth, TopScreenHeight};
+    const u32 target_width = color_target.key.width;
+    const u32 target_height = color_target.key.height;
+    const DkViewport viewport = {0.0f, 0.0f, static_cast<float>(target_width),
+                                 static_cast<float>(target_height), 0.0f, 1.0f};
+    const DkScissor scissor = {0, 0, target_width, target_height};
 
     dkCmdBufClear(command_buffer);
     dkCmdBufAddMemory(command_buffer, command_mem_block, slice.command_offset,
                       slice.command_size);
-    dkCmdBufBindRenderTarget(command_buffer, state.GetTopScreenRenderTargetView(), nullptr);
+    dkCmdBufBindRenderTarget(command_buffer, &color_target.view, depth_target);
     dkCmdBufSetViewports(command_buffer, 0, &viewport, 1);
     dkCmdBufSetScissors(command_buffer, 0, &scissor, 1);
     dkCmdBufBindShaders(command_buffer, DkStageFlag_GraphicsMask, shaders, 2);
@@ -484,6 +812,12 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex,
     dkCmdBufBindMultisampleState(command_buffer, &multisample_state);
     dkCmdBufBindColorState(command_buffer, &color_state);
     dkCmdBufBindColorWriteState(command_buffer, &color_write_state);
+    dkCmdBufBindBlendState(command_buffer, 0, &blend_state);
+    dkCmdBufSetBlendConst(command_buffer,
+                          regs.framebuffer.output_merger.blend_const.r.Value() / 255.0f,
+                          regs.framebuffer.output_merger.blend_const.g.Value() / 255.0f,
+                          regs.framebuffer.output_merger.blend_const.b.Value() / 255.0f,
+                          regs.framebuffer.output_merger.blend_const.a.Value() / 255.0f);
     dkCmdBufBindDepthStencilState(command_buffer, &depth_stencil_state);
     dkCmdBufBindVtxAttribState(command_buffer, attribs,
                                sizeof(attribs) / sizeof(attribs[0]));
@@ -510,7 +844,7 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex,
     }
     slice.fence_pending = true;
     slice.pending_vertices = vertex_count;
-    state.MarkTopScreenGpuDirty();
+    state.MarkRenderTargetGpuDirty(color_target);
     RecordHardwareRasterFrame();
     RecordHardwareDrawSubmitted(vertex_count / 3);
     RecordTransformedBatchSubmitted(vertex_count);
@@ -590,6 +924,12 @@ void Rasterizer::DrawSoftwareFallback(std::size_t first_vertex) {
     }
     RecordSoftwareFallback((fallback_vertex_batch.size() - first_vertex) / 3);
     RecordSoftwareRasterFrame();
+#ifdef __SWITCH__
+    const auto& fb = regs.framebuffer.framebuffer;
+    state.MarkRenderTargetSoftwareDirty(
+        fb.GetColorBufferPhysicalAddress(),
+        fb.GetWidth() * fb.GetHeight() * Pica::FramebufferRegs::BytesPerColorPixel(fb.color_format));
+#endif
     vertex_batch.clear();
     fallback_vertex_batch.clear();
     software_fallback.DrawTriangles();
@@ -600,14 +940,23 @@ void Rasterizer::FlushAll() {
 }
 
 void Rasterizer::FlushRegion(PAddr addr, u32 size) {
+#ifdef __SWITCH__
+    state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
+#endif
     software_fallback.FlushRegion(addr, size);
 }
 
 void Rasterizer::InvalidateRegion(PAddr addr, u32 size) {
+#ifdef __SWITCH__
+    state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
+#endif
     software_fallback.InvalidateRegion(addr, size);
 }
 
 void Rasterizer::FlushAndInvalidateRegion(PAddr addr, u32 size) {
+#ifdef __SWITCH__
+    state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
+#endif
     software_fallback.FlushAndInvalidateRegion(addr, size);
 }
 
@@ -626,7 +975,7 @@ bool Rasterizer::AccelerateDrawBatch(bool is_indexed) {
     // rasterizer milestone. The PICA frontend will emit triangles through AddTriangle(), keeping
     // the compatibility fallback correct while the native HardwareVertex path is added.
     const auto eligibility = EvaluateDirectBatchEligibility(is_indexed);
-    RecordBlocker(eligibility.blockers);
+    RecordDirectBlocker(eligibility.blockers);
     RecordFallbackReason(eligibility.reason);
     RecordDirectBatchRejected();
     (void)is_indexed;

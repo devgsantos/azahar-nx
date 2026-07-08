@@ -25,6 +25,21 @@ namespace {
 u64 AlignUp(u64 value, u64 alignment) {
     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
 }
+
+u64 RenderTargetBytes(const State::RenderTargetKey& key) {
+    return static_cast<u64>(key.width) * key.height * 4;
+}
+
+bool RangesOverlap(PAddr lhs, u64 lhs_size, PAddr rhs, u64 rhs_size) {
+    if (lhs_size == 0 || rhs_size == 0) {
+        return false;
+    }
+    const u64 lhs_begin = lhs;
+    const u64 lhs_end = lhs_begin + lhs_size;
+    const u64 rhs_begin = rhs;
+    const u64 rhs_end = rhs_begin + rhs_size;
+    return lhs_begin < rhs_end && rhs_begin < lhs_end;
+}
 #endif
 
 #ifdef __SWITCH__
@@ -212,7 +227,18 @@ void State::Shutdown() {
     present_fence = {};
     present_fence_pending = false;
     top_screen_gpu_dirty = false;
+    selected_present_render_target = nullptr;
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging leave");
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy render target cache enter");
+    for (auto& target : render_targets) {
+        if (target.mem_block) {
+            dkMemBlockDestroy(target.mem_block);
+            target.mem_block = nullptr;
+        }
+    }
+    render_targets.clear();
+    render_target_generation = 0;
+    SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy render target cache leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures enter");
     if (screen_tex_mem_block) {
         dkMemBlockDestroy(screen_tex_mem_block);
@@ -616,6 +642,114 @@ bool State::CreateScreenTextures() {
     return true;
 }
 
+State::CachedRenderTarget* State::GetOrCreateRenderTarget(const RenderTargetKey& key) {
+    if (!initialized || !device || key.color_address == 0 || key.width == 0 || key.height == 0) {
+        return nullptr;
+    }
+
+    for (auto& target : render_targets) {
+        if (target.key == key) {
+            RecordRenderTargetCacheHit();
+            return &target;
+        }
+    }
+
+    DkImageLayoutMaker layout_maker;
+    dkImageLayoutMakerDefaults(&layout_maker, device);
+    layout_maker.type = DkImageType_2D;
+    layout_maker.flags =
+        DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine | DkImageFlags_UsageLoadStore;
+    layout_maker.format = DkImageFormat_RGBA8_Unorm;
+    layout_maker.dimensions[0] = key.width;
+    layout_maker.dimensions[1] = key.height;
+
+    DkImageLayout layout;
+    dkImageLayoutInitialize(&layout, &layout_maker);
+    const u64 image_size = dkImageLayoutGetSize(&layout);
+    const u32 image_alignment = dkImageLayoutGetAlignment(&layout);
+    if (image_size == 0 || image_alignment == 0 ||
+        image_size > std::numeric_limits<u32>::max()) {
+        return nullptr;
+    }
+
+    DkMemBlockMaker mem_block_maker;
+    dkMemBlockMakerDefaults(&mem_block_maker, device,
+                            static_cast<u32>(AlignUp(image_size, image_alignment)));
+    mem_block_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
+    DkMemBlock mem_block = dkMemBlockCreate(&mem_block_maker);
+    if (!mem_block) {
+        return nullptr;
+    }
+
+    CachedRenderTarget target{};
+    target.key = key;
+    target.mem_block = mem_block;
+    target.allocation_bytes = AlignUp(image_size, image_alignment);
+    dkImageInitialize(&target.image, &layout, target.mem_block, 0);
+    dkImageViewDefaults(&target.view, &target.image);
+    render_targets.push_back(target);
+    RecordRenderTargetCacheMiss();
+    RecordRenderTargetCacheCreation(target.allocation_bytes);
+    LOG_INFO(Render,
+             "Deko3D render target cache create: addr=0x{:08x} size={}x{} format={} bytes={}",
+             key.color_address, key.width, key.height, key.format,
+             static_cast<unsigned long long>(target.allocation_bytes));
+    return &render_targets.back();
+}
+
+const State::CachedRenderTarget* State::FindGpuDirtyRenderTarget(PAddr address) const {
+    for (const auto& target : render_targets) {
+        if (target.key.color_address == address && target.gpu_dirty) {
+            return &target;
+        }
+    }
+    return nullptr;
+}
+
+const State::CachedRenderTarget* State::GetSelectedPresentRenderTarget() const {
+    return selected_present_render_target;
+}
+
+void State::SelectPresentRenderTarget(PAddr address) {
+    selected_present_render_target = FindGpuDirtyRenderTarget(address);
+}
+
+void State::MarkRenderTargetGpuDirty(CachedRenderTarget& target) {
+    target.owner = SurfaceOwner::Deko3D;
+    target.gpu_dirty = true;
+    target.cpu_dirty = false;
+    target.deko_generation = ++render_target_generation;
+    top_screen_gpu_dirty = true;
+    RecordRenderTargetGpuDirty();
+}
+
+void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner) {
+    if (address == 0 || bytes == 0) {
+        return;
+    }
+    for (auto& target : render_targets) {
+        if (!RangesOverlap(address, bytes, target.key.color_address, RenderTargetBytes(target.key))) {
+            continue;
+        }
+        target.owner = owner;
+        target.gpu_dirty = false;
+        target.cpu_dirty = true;
+        target.guest_memory_generation = ++render_target_generation;
+        RecordRenderTargetCpuDirty();
+        if (selected_present_render_target == &target) {
+            selected_present_render_target = nullptr;
+        }
+    }
+}
+
+void State::MarkRenderTargetSoftwareDirty(PAddr address, u32 bytes) {
+    InvalidateRenderTargetsOverlapping(address, bytes, SurfaceOwner::SoftwareRasterizer);
+}
+
+void State::MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes) {
+    InvalidateRenderTargetsOverlapping(address, bytes, SurfaceOwner::DisplayTransfer);
+}
+
 void State::UploadScreenTextures() {
     if (!initialized || !top_screen_image || !bottom_screen_image || !screen_data_buffer) {
         return;
@@ -719,10 +853,27 @@ bool State::PresentScreenTexturesFrame() {
         swapchain_background_initialized[slot] = true;
     }
 
-    // Place top and bottom 3DS screens centered on Switch output.  Hardware-rasterized top
-    // screen output stays on the GPU and is blitted directly; CPU upload remains the fallback.
+    // Place top and bottom 3DS screens centered on Switch output.  Hardware-rasterized guest
+    // render targets stay on the GPU and are blitted directly; CPU upload remains the fallback.
     DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
-    if (top_screen_gpu_dirty && top_screen_view) {
+    const CachedRenderTarget* const cached_present = selected_present_render_target;
+    if (cached_present && cached_present->gpu_dirty) {
+        DkImageRect top_copy_src = {0, 0, 0, cached_present->key.width,
+                                    cached_present->key.height, 1};
+        dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
+        dkCmdBufBlitImage(cmdbuf, &cached_present->view, &top_copy_src, &framebuffer_views[slot],
+                          &top_copy_dst, DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
+        LOG_INFO(Render,
+                 "Deko3D present cached render target: display_addr=0x{:08x} target={}x{} "
+                 "dst={}x{}+{},{} generation={} orientation={}",
+                 cached_present->key.color_address, cached_present->key.width,
+                 cached_present->key.height, top_copy_dst.width, top_copy_dst.height,
+                 top_copy_dst.x, top_copy_dst.y,
+                 static_cast<unsigned long long>(cached_present->deko_generation),
+                 cached_present->key.width == top_height && cached_present->key.height == top_width
+                     ? "portrait_to_landscape"
+                     : "direct_or_scaled");
+    } else if (top_screen_gpu_dirty && top_screen_view) {
         DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
         dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
         dkCmdBufBlitImage(cmdbuf, top_screen_view, &top_copy_src, &framebuffer_views[slot],

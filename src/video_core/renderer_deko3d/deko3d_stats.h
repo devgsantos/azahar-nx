@@ -15,6 +15,9 @@ enum class PresentSource {
     DisplayTransfer,
     MemoryFill,
     FramebufferAddressChange,
+    CachedRenderTarget,
+    CachedRenderTargetBlit,
+    CachedRenderTargetReadback,
     RepeatedPreviousFrame,
     ClearFallback,
 };
@@ -37,6 +40,11 @@ struct PerfStats {
     std::uint64_t texture_upload_bytes = 0;
     std::uint64_t render_target_cache_hits = 0;
     std::uint64_t render_target_cache_misses = 0;
+    std::uint64_t render_target_cache_creations = 0;
+    std::uint64_t render_target_cache_evictions = 0;
+    std::uint64_t render_target_cache_bytes = 0;
+    std::uint64_t render_target_gpu_dirty = 0;
+    std::uint64_t render_target_cpu_dirty = 0;
     std::uint64_t render_target_readbacks = 0;
     std::uint64_t render_target_readback_bytes = 0;
     std::uint64_t unsupported_texture_format = 0;
@@ -89,6 +97,26 @@ struct PerfStats {
     std::uint64_t transformed_vertices_completed = 0;
     std::uint64_t direct_batch_checks = 0;
     std::uint64_t direct_batch_rejected = 0;
+    std::uint64_t transformed_blocker_invalid_batch = 0;
+    std::uint64_t transformed_blocker_missing_gpu_resources = 0;
+    std::uint64_t transformed_blocker_shader_unavailable = 0;
+    std::uint64_t transformed_blocker_wrong_render_target = 0;
+    std::uint64_t transformed_blocker_framebuffer_format = 0;
+    std::uint64_t transformed_blocker_framebuffer_dimensions = 0;
+    std::uint64_t transformed_blocker_textures_enabled = 0;
+    std::uint64_t transformed_blocker_depth_test_enabled = 0;
+    std::uint64_t transformed_blocker_depth_write_enabled = 0;
+    std::uint64_t transformed_blocker_stencil_enabled = 0;
+    std::uint64_t transformed_blocker_blending_enabled = 0;
+    std::uint64_t transformed_blocker_alpha_test = 0;
+    std::uint64_t transformed_blocker_logic_op = 0;
+    std::uint64_t transformed_blocker_color_mask = 0;
+    std::uint64_t direct_blocker_unimplemented = 0;
+    std::uint64_t direct_blocker_topology = 0;
+    std::uint64_t direct_blocker_geometry_shader = 0;
+    std::uint64_t direct_blocker_vertex_format = 0;
+    std::uint64_t direct_blocker_index_format = 0;
+    std::uint64_t direct_blocker_other = 0;
     std::uint64_t blocker_invalid_batch = 0;
     std::uint64_t blocker_missing_gpu_resources = 0;
     std::uint64_t blocker_shader_unavailable = 0;
@@ -134,6 +162,14 @@ struct PerfStats {
     std::uint64_t gsp_interrupts_requested = 0;
     std::uint64_t gsp_interrupts_delivered = 0;
     std::uint64_t gsp_interrupts_dropped = 0;
+    std::uint64_t gsp_logical_interrupts_raised = 0;
+    std::uint64_t gsp_thread_delivery_attempts = 0;
+    std::uint64_t gsp_interrupts_ignored_no_active_thread = 0;
+    std::uint64_t gsp_interrupts_ignored_unregistered_thread = 0;
+    std::uint64_t gsp_interrupts_ignored_no_event = 0;
+    std::uint64_t gsp_interrupts_queue_full = 0;
+    std::uint64_t gsp_interrupts_stale_scheduled_event = 0;
+    std::uint64_t gsp_interrupts_actual_dropped = 0;
     std::uint64_t top_framebuffer_address_changes = 0;
     std::uint64_t bottom_framebuffer_address_changes = 0;
     std::uint64_t framebuffer_format_changes = 0;
@@ -151,6 +187,9 @@ struct PerfStats {
     std::uint64_t present_source_display_transfer = 0;
     std::uint64_t present_source_memory_fill = 0;
     std::uint64_t present_source_framebuffer_change = 0;
+    std::uint64_t present_source_cached_render_target = 0;
+    std::uint64_t present_source_cached_render_target_blit = 0;
+    std::uint64_t present_source_cached_render_target_readback = 0;
     std::uint64_t present_source_repeated_frame = 0;
     std::uint64_t present_source_clear_fallback = 0;
     std::uint64_t emulated_system_frames = 0;
@@ -161,6 +200,14 @@ struct PerfStats {
     std::uint64_t hardware_raster_frames = 0;
     std::uint64_t software_raster_frames = 0;
     std::uint64_t transfer_only_frames = 0;
+    std::uint64_t deko_blend_state_supported = 0;
+    std::uint64_t deko_blend_state_unsupported = 0;
+    std::uint64_t deko_blend_pipeline_cache_hits = 0;
+    std::uint64_t deko_blend_pipeline_cache_misses = 0;
+    std::uint64_t deko_depth_state_supported = 0;
+    std::uint64_t deko_depth_state_unsupported = 0;
+    std::uint64_t deko_state_signature_count = 0;
+    std::uint64_t deko_state_signature_id = 0;
 };
 
 enum class FallbackReason {
@@ -214,6 +261,17 @@ void RecordTransformedBatchCompleted(std::uint64_t vertices);
 void RecordDirectBatchRejected();
 void RecordFallbackInvalidTransformedBatch();
 void RecordBlocker(std::uint32_t blocker_mask);
+void RecordTransformedBlocker(std::uint32_t blocker_mask);
+void RecordDirectBlocker(std::uint32_t blocker_mask);
+void RecordRenderTargetCacheHit();
+void RecordRenderTargetCacheMiss();
+void RecordRenderTargetCacheCreation(std::uint64_t bytes);
+void RecordRenderTargetCacheEviction(std::uint64_t bytes);
+void RecordRenderTargetGpuDirty();
+void RecordRenderTargetCpuDirty();
+void RecordBlendState(bool supported, bool cache_hit);
+void RecordDepthState(bool supported);
+void RecordStateSignature(std::uint64_t signature_id, bool is_new);
 void RecordPartialBatch(std::uint64_t hw_triangles, std::uint64_t sw_triangles);
 void RecordDuplicateTrianglePrevention();
 void RecordDroppedTriangleDetection();
@@ -228,6 +286,14 @@ void RecordPicaCacheInvalidation();
 void RecordGspInterruptRequested();
 void RecordGspInterruptDelivered();
 void RecordGspInterruptDropped();
+void RecordGspLogicalInterruptRaised();
+void RecordGspThreadDeliveryAttempt();
+void RecordGspInterruptIgnoredNoActiveThread();
+void RecordGspInterruptIgnoredUnregisteredThread();
+void RecordGspInterruptIgnoredNoEvent();
+void RecordGspInterruptQueueFull();
+void RecordGspInterruptStaleScheduledEvent();
+void RecordGspInterruptActualDropped();
 void RecordFramebufferChange(bool top, bool address, bool format, bool dimensions, bool stride);
 void RecordPresent(PresentSource source, bool changed, bool top_updated, bool bottom_updated);
 void RecordSystemFrame();
@@ -236,5 +302,6 @@ void RecordHardwareRasterFrame();
 void RecordSoftwareRasterFrame();
 void RecordTransferOnlyFrame();
 PerfStats TakePerfStats();
+PerfStats TakePerfStats(PerfStats* total_stats);
 
 } // namespace VideoCore::Deko3D

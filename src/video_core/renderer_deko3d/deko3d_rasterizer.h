@@ -4,10 +4,12 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <vector>
 
 #include "video_core/pica/output_vertex.h"
 #include "video_core/rasterizer_accelerated.h"
+#include "video_core/renderer_deko3d/deko3d_state.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
 #include "video_core/renderer_software/sw_rasterizer.h"
 
@@ -26,7 +28,6 @@ class PicaCore;
 namespace VideoCore::Deko3D {
 
 class ShaderCache;
-class State;
 class TextureCache;
 
 class Rasterizer final : public VideoCore::RasterizerAccelerated {
@@ -75,6 +76,7 @@ private:
     };
 
     enum EligibilityBlocker : u32 {
+        None = 0,
         InvalidBatch = 1U << 0,
         MissingGpuResources = 1U << 1,
         ShaderUnavailable = 1U << 2,
@@ -96,6 +98,15 @@ private:
         ProceduralTexture = 1U << 18,
     };
 
+    enum DirectEligibilityBlocker : u32 {
+        DirectUnimplemented = 1U << 0,
+        DirectTopology = 1U << 1,
+        DirectGeometryShader = 1U << 2,
+        DirectVertexFormat = 1U << 3,
+        DirectIndexFormat = 1U << 4,
+        DirectOther = 1U << 5,
+    };
+
     bool InitializeGpuResources();
     void ShutdownGpuResources();
     FrameSlice& CurrentFrameSlice();
@@ -103,7 +114,10 @@ private:
     HardwareEligibility EvaluateTransformedBatchEligibility() const;
     HardwareEligibility EvaluateDirectBatchEligibility(bool is_indexed) const;
     bool TryDrawHardwareBatch(std::size_t& submitted_vertices);
-    bool SubmitHardwareChunk(FrameSlice& slice, std::size_t base_vertex, std::size_t vertex_count);
+    bool SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
+                             const DkImageView* depth_target, std::size_t base_vertex,
+                             std::size_t vertex_count);
+    const DkImageView* GetOrCreateDepthTarget();
     bool QueueHasError(const char* context);
     void FlushQueue();
 #endif
@@ -130,6 +144,12 @@ private:
     DkMemBlock descriptor_mem_block{};
     void* descriptor_cpu_buffer = nullptr;
     DkGpuAddr descriptor_gpu_addr = 0;
+    DkMemBlock depth_mem_block{};
+    DkImage depth_image{};
+    DkImageView depth_view{};
+    u32 depth_width = 0;
+    u32 depth_height = 0;
+    u32 depth_format = 0;
     std::array<FrameSlice, FrameSliceCount> frame_slices{};
     u32 current_frame_slice = 0;
 #endif

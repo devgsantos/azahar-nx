@@ -5,6 +5,7 @@
 
 #include <array>
 #include <string>
+#include <vector>
 
 #include "common/common_types.h"
 
@@ -72,6 +73,51 @@ public:
         return top_screen_view;
     }
 
+    struct RenderTargetKey {
+        PAddr color_address = 0;
+        u32 width = 0;
+        u32 height = 0;
+        u32 format = 0;
+
+        bool operator==(const RenderTargetKey& other) const {
+            return color_address == other.color_address && width == other.width &&
+                   height == other.height && format == other.format;
+        }
+    };
+
+    enum class SurfaceOwner {
+        Clean,
+        CpuMemory,
+        SoftwareRasterizer,
+        Deko3D,
+        DisplayTransfer,
+    };
+
+    struct CachedRenderTarget {
+        RenderTargetKey key{};
+        DkMemBlock mem_block{};
+        DkImage image{};
+        DkImageView view{};
+        u64 allocation_bytes = 0;
+        SurfaceOwner owner = SurfaceOwner::Clean;
+        u64 guest_memory_generation = 0;
+        u64 deko_generation = 0;
+        u64 software_raster_generation = 0;
+        u64 display_transfer_generation = 0;
+        u64 last_presented_generation = 0;
+        bool gpu_dirty = false;
+        bool cpu_dirty = false;
+    };
+
+    CachedRenderTarget* GetOrCreateRenderTarget(const RenderTargetKey& key);
+    [[nodiscard]] const CachedRenderTarget* FindGpuDirtyRenderTarget(PAddr address) const;
+    [[nodiscard]] const CachedRenderTarget* GetSelectedPresentRenderTarget() const;
+    void SelectPresentRenderTarget(PAddr address);
+    void MarkRenderTargetGpuDirty(CachedRenderTarget& target);
+    void MarkRenderTargetSoftwareDirty(PAddr address, u32 bytes);
+    void MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes);
+    void InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner);
+
     void MarkTopScreenGpuDirty() {
         top_screen_gpu_dirty = true;
     }
@@ -116,6 +162,9 @@ private:
     DkFence present_fence{};
     bool present_fence_pending = false;
     bool top_screen_gpu_dirty = false;
+    std::vector<CachedRenderTarget> render_targets;
+    u64 render_target_generation = 0;
+    const CachedRenderTarget* selected_present_render_target = nullptr;
 
     // Screen textures for CPU framebuffer display (400x240 top, 320x240 bottom)
     DkMemBlock screen_tex_mem_block{};

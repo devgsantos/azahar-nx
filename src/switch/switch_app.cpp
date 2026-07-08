@@ -310,7 +310,8 @@ int SwitchApp::LaunchGame(const std::string& path) {
                 const auto perf = system.GetAndResetPerfStats();
                 const auto jit_stats = TakeJitRunStats();
                 const auto jit_publish_stats = TakeJitPublishStats();
-                const auto deko_stats = VideoCore::Deko3D::TakePerfStats();
+                VideoCore::Deko3D::PerfStats deko_total_stats{};
+                const auto deko_stats = VideoCore::Deko3D::TakePerfStats(&deko_total_stats);
                 last_perf_sample = now;
 
                 LOG_INFO(Frontend,
@@ -489,6 +490,56 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     static_cast<unsigned long long>(deko_stats.fallback_unsupported_state));
                 LOG_INFO(
                     Frontend,
+                    "Switch graphics summary: graphics_interval_transformed_batch_checks {} "
+                    "graphics_interval_transformed_batch_valid {} "
+                    "graphics_interval_transformed_batch_eligible {} "
+                    "graphics_interval_transformed_batch_submitted {} "
+                    "graphics_interval_transformed_batch_completed {} "
+                    "graphics_interval_hw_triangles_completed {} "
+                    "graphics_interval_rt_creations {} graphics_interval_blend_supported {} "
+                    "graphics_interval_present_cached_rt {} graphics_interval_present_repeated {} "
+                    "graphics_interval_raster_queue_errors {} "
+                    "graphics_interval_raster_fence_timeouts {} "
+                    "graphics_interval_present_queue_errors {} "
+                    "graphics_interval_present_fence_timeouts {} "
+                    "graphics_total_transformed_batch_checks {} "
+                    "graphics_total_transformed_batch_valid {} "
+                    "graphics_total_transformed_batch_eligible {} "
+                    "graphics_total_transformed_batch_submitted {} "
+                    "graphics_total_transformed_batch_completed {} "
+                    "graphics_total_hw_triangles_completed {} graphics_total_output_triangles {} "
+                    "graphics_total_display_transfers {} graphics_total_present_calls {} "
+                    "graphics_total_changed_presents {} graphics_total_repeated_presents {} "
+                    "graphics_total_transformed_blocker_invalid_batch {} "
+                    "graphics_total_transformed_blocker_framebuffer_dimensions {} "
+                    "graphics_total_transformed_blocker_textures_enabled {} "
+                    "graphics_total_direct_blocker_unimplemented {} "
+                    "graphics_total_queue_errors {} graphics_total_fence_timeouts {}",
+                    deko_stats.transformed_batch_checks, deko_stats.transformed_batch_valid,
+                    deko_stats.transformed_batch_eligible, deko_stats.transformed_batch_submitted,
+                    deko_stats.transformed_batch_completed, deko_stats.hw_triangles_completed,
+                    deko_stats.render_target_cache_creations,
+                    deko_stats.deko_blend_state_supported,
+                    deko_stats.present_source_cached_render_target,
+                    deko_stats.present_source_repeated_frame, deko_stats.raster_queue_errors,
+                    deko_stats.raster_fence_timeouts, deko_stats.present_queue_errors,
+                    deko_stats.present_fence_timeouts, deko_total_stats.transformed_batch_checks,
+                    deko_total_stats.transformed_batch_valid,
+                    deko_total_stats.transformed_batch_eligible,
+                    deko_total_stats.transformed_batch_submitted,
+                    deko_total_stats.transformed_batch_completed,
+                    deko_total_stats.hw_triangles_completed, deko_total_stats.pica_output_triangles,
+                    deko_total_stats.pica_display_transfer_completed,
+                    deko_total_stats.present_calls, deko_total_stats.present_changed_frames,
+                    deko_total_stats.present_source_repeated_frame,
+                    deko_total_stats.transformed_blocker_invalid_batch,
+                    deko_total_stats.transformed_blocker_framebuffer_dimensions,
+                    deko_total_stats.transformed_blocker_textures_enabled,
+                    deko_total_stats.direct_blocker_unimplemented, deko_total_stats.queue_errors,
+                    deko_total_stats.fence_timeouts);
+#ifdef AZAHAR_DEKO3D_VERBOSE_TELEMETRY
+                LOG_INFO(
+                    Frontend,
                     "Switch graphics telemetry: deko_transformed_batch_checks {} "
                     "deko_transformed_batch_valid {} deko_transformed_batch_invalid {} "
                     "deko_transformed_batch_eligible {} deko_transformed_batch_submitted {} "
@@ -574,6 +625,7 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     deko_stats.present_fence_poll_successes, deko_stats.present_fence_waits,
                     deko_stats.present_fence_timeouts, deko_stats.present_max_fence_wait_us,
                     deko_stats.present_queue_errors);
+#endif
             }
         }
     } catch (const std::exception& e) {
