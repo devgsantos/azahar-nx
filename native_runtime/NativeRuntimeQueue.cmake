@@ -1,0 +1,6 @@
+function(azahar_enable_native_queue_defaults)
+    if(TARGET video_core)
+        target_compile_definitions(video_core PRIVATE AZAHAR_DEKO3D_STATE_IMPLEMENTATION)
+    endif()
+endfunction()
+cmake_language(DEFER CALL azahar_enable_native_queue_defaults)
