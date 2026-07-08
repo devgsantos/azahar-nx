@@ -12,7 +12,6 @@ add_library(video_core STATIC EXCLUDE_FROM_ALL
     gpu.cpp
     gpu.h
     gpu_debugger.h
-    gpu_impl.h
     pica_types.h
     precompiled_headers.h
     rasterizer_accelerated.cpp
@@ -52,6 +51,7 @@ add_library(video_core STATIC EXCLUDE_FROM_ALL
     rasterizer_cache/rasterizer_cache.cpp
     rasterizer_cache/rasterizer_cache.h
     rasterizer_cache/rasterizer_cache_base.h
+    rasterizer_cache/rasterizer_cache_base.h
     rasterizer_cache/sampler_params.h
     rasterizer_cache/slot_id.h
     rasterizer_cache/surface_base.cpp
@@ -62,7 +62,6 @@ add_library(video_core STATIC EXCLUDE_FROM_ALL
     rasterizer_cache/texture_cube.h
     rasterizer_cache/utils.cpp
     rasterizer_cache/utils.h
-    # Needed as a fallback regardless of enabled renderers.
     renderer_software/sw_blitter.cpp
     renderer_software/sw_blitter.h
     right_eye_disabler.cpp
@@ -125,21 +124,9 @@ if (ENABLE_SWITCH_FRONTEND)
     set(DEKO3D_COLOR_FSH "${DEKO3D_SHADER_GEN_DIR}/pica_color_fsh.dksh")
 
     target_sources(video_core PRIVATE
-        renderer_software/sw_clipper.cpp
-        renderer_software/sw_clipper.h
-        renderer_software/sw_framebuffer.cpp
-        renderer_software/sw_framebuffer.h
-        renderer_software/sw_lighting.cpp
-        renderer_software/sw_lighting.h
-        renderer_software/sw_proctex.cpp
-        renderer_software/sw_proctex.h
-        renderer_software/sw_rasterizer.cpp
-        renderer_software/sw_rasterizer.h
-        renderer_software/sw_texturing.cpp
-        renderer_software/sw_texturing.h
         renderer_deko3d/deko3d_presenter.cpp
         renderer_deko3d/deko3d_presenter.h
-        renderer_deko3d/deko3d_rasterizer.cpp
+        renderer_deko3d/deko3d_rasterizer_native.cpp
         renderer_deko3d/deko3d_rasterizer.h
         renderer_deko3d/deko3d_shader.cpp
         renderer_deko3d/deko3d_shader.h
@@ -155,7 +142,10 @@ if (ENABLE_SWITCH_FRONTEND)
         renderer_deko3d/renderer_deko3d.cpp
         renderer_deko3d/renderer_deko3d.h
     )
-    target_compile_definitions(video_core PUBLIC AZAHAR_ENABLE_DEKO3D)
+    target_compile_definitions(video_core PUBLIC
+        AZAHAR_ENABLE_DEKO3D
+        AZAHAR_DEKO3D_NATIVE_RUNTIME
+        AZAHAR_DEKO3D_STRICT_NATIVE)
     if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
         find_path(DEKO3D_INCLUDE_DIR deko3d.h HINTS "$ENV{DEVKITPRO}/libnx/include")
         if(AZAHAR_DEKO3D_VALIDATION)
@@ -238,77 +228,4 @@ if (ENABLE_OPENGL)
         renderer_opengl/renderer_opengl.h
     )
     target_link_libraries(video_core PRIVATE glad)
-endif()
-if (ENABLE_VULKAN)
-    target_sources(video_core PRIVATE
-        renderer_vulkan/pica_to_vk.h
-        renderer_vulkan/renderer_vulkan.cpp
-        renderer_vulkan/renderer_vulkan.h
-        renderer_vulkan/vk_blit_helper.cpp
-        renderer_vulkan/vk_blit_helper.h
-        renderer_vulkan/vk_common.cpp
-        renderer_vulkan/vk_common.h
-        renderer_vulkan/vk_descriptor_update_queue.cpp
-        renderer_vulkan/vk_descriptor_update_queue.h
-        renderer_vulkan/vk_graphics_pipeline.cpp
-        renderer_vulkan/vk_graphics_pipeline.h
-        renderer_vulkan/vk_master_semaphore.cpp
-        renderer_vulkan/vk_master_semaphore.h
-        renderer_vulkan/vk_memory_util.cpp
-        renderer_vulkan/vk_memory_util.h
-        renderer_vulkan/vk_rasterizer.cpp
-        renderer_vulkan/vk_rasterizer.h
-        renderer_vulkan/vk_rasterizer_cache.cpp
-        renderer_vulkan/vk_scheduler.cpp
-        renderer_vulkan/vk_scheduler.h
-        renderer_vulkan/vk_resource_pool.cpp
-        renderer_vulkan/vk_resource_pool.h
-        renderer_vulkan/vk_instance.cpp
-        renderer_vulkan/vk_instance.h
-        renderer_vulkan/vk_pipeline_cache.cpp
-        renderer_vulkan/vk_pipeline_cache.h
-        $<$<NOT:$<BOOL:${ENABLE_LIBRETRO}>>:renderer_vulkan/vk_platform.cpp>
-        renderer_vulkan/vk_platform.h
-        $<$<NOT:$<BOOL:${ENABLE_LIBRETRO}>>:renderer_vulkan/vk_present_window.cpp>
-        $<$<NOT:$<BOOL:${ENABLE_LIBRETRO}>>:renderer_vulkan/vk_present_window.h>
-        renderer_vulkan/vk_render_manager.cpp
-        renderer_vulkan/vk_render_manager.h
-        renderer_vulkan/vk_shader_disk_cache.cpp
-        renderer_vulkan/vk_shader_disk_cache.h
-        renderer_vulkan/vk_shader_util.cpp
-        renderer_vulkan/vk_shader_util.h
-        renderer_vulkan/vk_stream_buffer.cpp
-        renderer_vulkan/vk_stream_buffer.h
-        $<$<NOT:$<BOOL:${ENABLE_LIBRETRO}>>:renderer_vulkan/vk_swapchain.cpp>
-        $<$<NOT:$<BOOL:${ENABLE_LIBRETRO}>>:renderer_vulkan/vk_swapchain.h>
-        renderer_vulkan/vk_texture_runtime.cpp
-        renderer_vulkan/vk_texture_runtime.h
-        shader/generator/spv_fs_shader_gen.cpp
-        shader/generator/spv_fs_shader_gen.h
-    )
-    target_link_libraries(video_core PRIVATE vulkan-headers vma sirit SPIRV glslang)
-endif()
-
-if(ENABLE_SDL2)
-    target_link_libraries(video_core PRIVATE SDL2::SDL2)
-endif()
-
-add_dependencies(video_core host_shaders)
-target_include_directories(video_core PRIVATE ${HOST_SHADERS_INCLUDE})
-
-create_target_directory_groups(video_core)
-
-target_link_libraries(video_core PUBLIC citra_common citra_core)
-target_link_libraries(video_core PRIVATE Boost::serialization dds-ktx json-headers nihstro-headers tsl::robin_map)
-
-if ("x86_64" IN_LIST ARCHITECTURE)
-    target_link_libraries(video_core PUBLIC xbyak)
-endif()
-
-if ("arm64" IN_LIST ARCHITECTURE)
-    target_link_libraries(video_core PUBLIC oaknut)
-endif()
-
-if (CITRA_USE_PRECOMPILED_HEADERS)
-    target_precompile_headers(video_core PRIVATE precompiled_headers.h)
 endif()
