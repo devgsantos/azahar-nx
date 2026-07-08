@@ -57,6 +57,7 @@ public:
 private:
 #ifdef __SWITCH__
     static constexpr u32 FrameContextCount = 32;
+    static constexpr u32 TransferUploadContextCount = 8;
     static constexpr u32 RasterCommandMemorySize = 512 * 1024;
     static constexpr u32 VertexBufferSize = 4 * 1024 * 1024;
     static constexpr u32 UniformBufferSize = 2 * 1024 * 1024;
@@ -93,6 +94,35 @@ private:
         DkImageView view{};
     };
 
+    struct TransferSourceKey {
+        PAddr address = 0;
+        u32 width = 0;
+        u32 height = 0;
+        Pica::PixelFormat format{};
+        bool linear = false;
+
+        bool operator==(const TransferSourceKey& rhs) const {
+            return address == rhs.address && width == rhs.width && height == rhs.height &&
+                   format == rhs.format && linear == rhs.linear;
+        }
+    };
+
+    struct TransferSource {
+        TransferSourceKey key{};
+        DkMemBlock mem{};
+        DkImage image{};
+        DkImageView view{};
+    };
+
+    struct TransferUploadContext {
+        DkMemBlock mem{};
+        void* cpu = nullptr;
+        DkGpuAddr gpu = DK_GPU_ADDR_INVALID;
+        u32 capacity = 0;
+        DkFence fence{};
+        bool fence_pending = false;
+    };
+
     struct alignas(16) TevPackedStage {
         u32 sources = 0;
         u32 modifiers = 0;
@@ -127,9 +157,18 @@ private:
     bool QueueHasError(const char* context);
     void FlushQueue();
     void FlushQueueIfNeeded(bool force);
-    bool SubmitTransfer(const DkImageView& source, u32 source_width, u32 source_height,
-                        State::CachedRenderTarget& destination, u32 flags);
     bool IsNativeBatchValid() const;
+
+    TransferSource* GetOrCreateTransferSource(const Pica::DisplayTransferConfig& config);
+    TransferUploadContext* AcquireTransferUploadContext(u32 required_bytes);
+    bool DecodeTransferSource(const Pica::DisplayTransferConfig& config, void* destination,
+                              u32 destination_size) const;
+    bool SubmitGpuSurfaceTransfer(const DkImageView& source, u32 source_width, u32 source_height,
+                                  State::CachedRenderTarget& destination, u32 flags);
+    bool SubmitGuestMemoryTransfer(const Pica::DisplayTransferConfig& config,
+                                   TransferSource& source,
+                                   State::CachedRenderTarget& destination, u32 flags);
+    static u32 CanonicalColorFormat(Pica::PixelFormat format);
 #endif
 
     State& state;
@@ -144,14 +183,17 @@ private:
     DkCmdBuf command_buffer{};
     DkMemBlock vertex_mem_block{};
     void* vertex_cpu_buffer = nullptr;
-    DkGpuAddr vertex_gpu_addr = 0;
+    DkGpuAddr vertex_gpu_addr = DK_GPU_ADDR_INVALID;
     DkMemBlock uniform_mem_block{};
     void* uniform_cpu_buffer = nullptr;
-    DkGpuAddr uniform_gpu_addr = 0;
+    DkGpuAddr uniform_gpu_addr = DK_GPU_ADDR_INVALID;
     std::array<FrameContext, FrameContextCount> frame_contexts{};
     u32 current_frame_context = 0;
     u32 submissions_since_flush = 0;
     std::vector<std::unique_ptr<DepthSurface>> depth_surfaces;
+    std::vector<std::unique_ptr<TransferSource>> transfer_sources;
+    std::array<TransferUploadContext, TransferUploadContextCount> transfer_upload_contexts{};
+    u32 current_transfer_upload_context = 0;
 #endif
 };
 
