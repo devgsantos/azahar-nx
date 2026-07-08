@@ -21,11 +21,18 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build python3
 
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
           fetch-depth: 1
+
+      - name: Checkout submodules
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1
 
       - name: Install Switch build tools
         shell: bash
