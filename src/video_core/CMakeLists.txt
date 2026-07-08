@@ -51,7 +51,6 @@ add_library(video_core STATIC EXCLUDE_FROM_ALL
     rasterizer_cache/rasterizer_cache.cpp
     rasterizer_cache/rasterizer_cache.h
     rasterizer_cache/rasterizer_cache_base.h
-    rasterizer_cache/rasterizer_cache_base.h
     rasterizer_cache/sampler_params.h
     rasterizer_cache/slot_id.h
     rasterizer_cache/surface_base.cpp
@@ -117,6 +116,7 @@ if (ENABLE_SOFTWARE_RENDERER)
         renderer_software/sw_texturing.h
     )
 endif()
+
 if (ENABLE_SWITCH_FRONTEND)
     set(DEKO3D_SHADER_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/renderer_deko3d/generated")
     set(DEKO3D_SHADER_HEADER "${DEKO3D_SHADER_GEN_DIR}/deko3d_builtin_shaders.h")
@@ -132,7 +132,7 @@ if (ENABLE_SWITCH_FRONTEND)
         renderer_deko3d/deko3d_shader.h
         renderer_deko3d/deko3d_stats.cpp
         renderer_deko3d/deko3d_stats.h
-        renderer_deko3d/deko3d_state.cpp
+        renderer_deko3d/deko3d_state_native.cpp
         renderer_deko3d/deko3d_state.h
         renderer_deko3d/deko3d_texture_cache.cpp
         renderer_deko3d/deko3d_texture_cache.h
@@ -192,6 +192,7 @@ if (ENABLE_SWITCH_FRONTEND)
         endif()
     endif()
 endif()
+
 if (ENABLE_OPENGL)
     target_sources(video_core PRIVATE
         renderer_opengl/frame_dumper_opengl.cpp
