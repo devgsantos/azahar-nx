@@ -108,7 +108,7 @@ DEVKITA64=/opt/devkitpro/devkitA64
 Configure:
 
 ```bash
-cmake -S . -B build-switch \
+cmake -S . -B build-switch -U CMAKE_PROJECT_INCLUDE \
   -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/Switch.cmake \
   -DCMAKE_BUILD_TYPE=Release \
   -DENABLE_SWITCH_FRONTEND=ON \
@@ -118,9 +118,7 @@ cmake -S . -B build-switch \
   -DENABLE_WEB_SERVICE=OFF \
   -DENABLE_SCRIPTING=OFF \
   -DENABLE_GDBSTUB=OFF \
-  -DENABLE_TESTS=OFF \
-  -DCITRA_USE_PRECOMPILED_HEADERS=OFF \
-  -DENABLE_LTO=OFF
+  -DENABLE_TESTS=OFF
 ```
 
 Build:
