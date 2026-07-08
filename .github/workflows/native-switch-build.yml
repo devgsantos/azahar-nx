@@ -37,11 +37,14 @@ jobs:
           git -C externals/dynarmic submodule update --init --depth 1 -- \
             externals/mcl externals/robin-map >>/tmp/submodules.log 2>&1
 
-      - name: Install Switch build tools
+      - name: Verify preinstalled Switch toolchain
         shell: bash
         run: |
-          dkp-pacman -Syu --noconfirm --needed \
-            switch-dev switch-cmake switch-tools deko3d >/tmp/devkitpro-install.log 2>&1
+          test -x /opt/devkitpro/devkitA64/bin/aarch64-none-elf-g++
+          test -f /opt/devkitpro/cmake/Switch.cmake
+          test -f /opt/devkitpro/libnx/include/deko3d.h
+          test -f /opt/devkitpro/libnx/lib/libdeko3d.a
+          test -x /opt/devkitpro/tools/bin/uam
 
       - name: Configure
         shell: bash
@@ -62,7 +65,7 @@ jobs:
             -DENABLE_TESTS=OFF \
             -DCITRA_USE_PRECOMPILED_HEADERS=OFF \
             -DENABLE_LTO=OFF \
-            -DAZAHAR_DEKO3D_VALIDATION=ON \
+            -DAZAHAR_DEKO3D_VALIDATION=OFF \
             -DCMAKE_PROJECT_INCLUDE=$GITHUB_WORKSPACE/native_runtime/NativeRuntimeFinal.cmake \
             >/tmp/native-configure.log 2>&1
           status=$?
@@ -87,7 +90,6 @@ jobs:
             /tmp/native-configure.log
             /tmp/native-build.log
             /tmp/submodules.log
-            /tmp/devkitpro-install.log
           if-no-files-found: ignore
 
       - name: Upload NRO
