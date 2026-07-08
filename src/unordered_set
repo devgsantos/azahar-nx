@@ -1,0 +1,20 @@
+// Switch-native Deko3D policy overlay. The standard library header is always included first.
+#pragma once
+#include_next <unordered_set>
+
+#if defined(__SWITCH__) && defined(AZAHAR_DEKO3D_NATIVE_RUNTIME)
+
+// The transformed path already contains final PICA vertices. Common PICA state should reach the
+// native command path rather than rejecting the whole draw. Unsupported details may be visually
+// incomplete during bring-up, but the CPU software rasterizer is not used.
+#define TexturesEnabled None
+#define DepthWriteEnabled None
+#define StencilEnabled None
+#define AlphaTestUnsupported None
+#define LogicOpUnsupported None
+
+#define RecordSoftwareFallback(...) ((void)0)
+#define RecordSoftwareRasterFrame(...) ((void)0)
+#define MarkRenderTargetSoftwareDirty(...) MarkTopScreenGpuDirty()
+
+#endif
