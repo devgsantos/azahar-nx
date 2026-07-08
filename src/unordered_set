@@ -1,0 +1,25 @@
+// Switch-native Deko3D policy overlay.
+// The real standard header is included first; this file is found through src/ include ordering.
+#pragma once
+#include_next <unordered_set>
+
+#if defined(__SWITCH__) && defined(AZAHAR_DEKO3D_NATIVE_RUNTIME)
+
+// The transformed path already receives final PICA vertices. Standard PICA state is translated by
+// the Deko3D command path below; it must not be rejected merely because a game uses textures,
+// depth, stencil or alpha testing. Texture/alpha details that are not translated yet degrade
+// visually rather than routing the entire frame through the CPU rasterizer.
+#define TexturesEnabled None
+#define DepthTestEnabled None
+#define DepthWriteEnabled None
+#define StencilEnabled None
+#define AlphaTestUnsupported None
+#define LogicOpUnsupported None
+
+// If a native submission genuinely fails, keep the last GPU-owned surface visible instead of
+// invalidating it with a software result. Normal valid batches never enter this path.
+#define RecordSoftwareFallback(...) ((void)0)
+#define RecordSoftwareRasterFrame(...) ((void)0)
+#define MarkRenderTargetSoftwareDirty(...) MarkTopScreenGpuDirty()
+
+#endif
