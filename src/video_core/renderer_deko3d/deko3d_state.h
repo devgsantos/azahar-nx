@@ -4,8 +4,8 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <string>
-#include <vector>
 
 #include "common/common_types.h"
 
@@ -40,7 +40,6 @@ public:
     bool PresentScreenTexturesFrame();
     void WaitIdle();
 
-    // Accessors for screen textures (used by Presenter for CPU framebuffer upload)
     [[nodiscard]] void* GetScreenDataBuffer() const {
         return screen_data_buffer;
     }
@@ -49,7 +48,6 @@ public:
         return screen_data_buffer_size;
     }
 
-    // Upload pixel data from CPU buffer to GPU textures
     void UploadScreenTextures();
 
     [[nodiscard]] const DkImage* GetTopScreenImage() const {
@@ -88,7 +86,6 @@ public:
     enum class SurfaceOwner {
         Clean,
         CpuMemory,
-        SoftwareRasterizer,
         Deko3D,
         DisplayTransfer,
     };
@@ -102,11 +99,25 @@ public:
         SurfaceOwner owner = SurfaceOwner::Clean;
         u64 guest_memory_generation = 0;
         u64 deko_generation = 0;
-        u64 software_raster_generation = 0;
         u64 display_transfer_generation = 0;
         u64 last_presented_generation = 0;
         bool gpu_dirty = false;
         bool cpu_dirty = false;
+
+        CachedRenderTarget() = default;
+        CachedRenderTarget(const CachedRenderTarget& other)
+            : key{other.key}, mem_block{other.mem_block}, image{other.image},
+              allocation_bytes{other.allocation_bytes}, owner{other.owner},
+              guest_memory_generation{other.guest_memory_generation},
+              deko_generation{other.deko_generation},
+              display_transfer_generation{other.display_transfer_generation},
+              last_presented_generation{other.last_presented_generation},
+              gpu_dirty{other.gpu_dirty}, cpu_dirty{other.cpu_dirty} {
+            if (mem_block) {
+                dkImageViewDefaults(&view, &image);
+            }
+        }
+        CachedRenderTarget& operator=(const CachedRenderTarget&) = delete;
     };
 
     CachedRenderTarget* GetOrCreateRenderTarget(const RenderTargetKey& key);
@@ -114,7 +125,6 @@ public:
     [[nodiscard]] const CachedRenderTarget* GetSelectedPresentRenderTarget() const;
     void SelectPresentRenderTarget(PAddr address);
     void MarkRenderTargetGpuDirty(CachedRenderTarget& target);
-    void MarkRenderTargetSoftwareDirty(PAddr address, u32 bytes);
     void MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes);
     void InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner);
 
@@ -162,18 +172,16 @@ private:
     DkFence present_fence{};
     bool present_fence_pending = false;
     bool top_screen_gpu_dirty = false;
-    std::vector<CachedRenderTarget> render_targets;
+    std::deque<CachedRenderTarget> render_targets;
     u64 render_target_generation = 0;
     const CachedRenderTarget* selected_present_render_target = nullptr;
 
-    // Screen textures for CPU framebuffer display (400x240 top, 320x240 bottom)
     DkMemBlock screen_tex_mem_block{};
-    DkImage* top_screen_image = nullptr;     // 400x240 RGBA8
-    DkImage* bottom_screen_image = nullptr;  // 320x240 RGBA8
+    DkImage* top_screen_image = nullptr;
+    DkImage* bottom_screen_image = nullptr;
     DkImageView* top_screen_view = nullptr;
     DkImageView* bottom_screen_view = nullptr;
 
-    // Screen texture data buffer for CPU framebuffer upload
     void* screen_data_buffer = nullptr;
     u32 screen_data_buffer_size = 0;
 #endif
