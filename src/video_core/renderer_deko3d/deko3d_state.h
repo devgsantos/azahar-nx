@@ -126,7 +126,9 @@ public:
     CachedRenderTarget* GetOrCreateRenderTarget(const RenderTargetKey& key);
     [[nodiscard]] const CachedRenderTarget* FindGpuDirtyRenderTarget(PAddr address) const;
     [[nodiscard]] const CachedRenderTarget* GetSelectedPresentRenderTarget() const;
+    [[nodiscard]] const CachedRenderTarget* GetSelectedBottomPresentRenderTarget() const;
     void SelectPresentRenderTarget(PAddr address);
+    void SelectBottomPresentRenderTarget(PAddr address);
     void MarkRenderTargetGpuDirty(CachedRenderTarget& target);
     void MarkRenderTargetSoftwareDirty(PAddr address, u32 bytes);
     void MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes);
@@ -179,6 +181,7 @@ private:
     std::deque<CachedRenderTarget> render_targets;
     u64 render_target_generation = 0;
     const CachedRenderTarget* selected_present_render_target = nullptr;
+    const CachedRenderTarget* selected_bottom_present_render_target = nullptr;
 
     DkMemBlock screen_tex_mem_block{};
     DkImage* top_screen_image = nullptr;
