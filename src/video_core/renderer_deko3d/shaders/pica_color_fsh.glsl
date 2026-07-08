@@ -129,7 +129,9 @@ bool alphaTestPass(float alpha)
     uint function = uniforms.control.w;
     float reference = uniforms.alphaData.x;
     switch (function) {
-    case 0u: return false;
+    // Function 0 is also the power-on/default value while alpha testing is disabled. Treat it as
+    // pass in the native uber-shader so an unset alpha-test register cannot erase the whole frame.
+    case 0u: return true;
     case 1u: return true;
     case 2u: return abs(alpha - reference) <= (1.0 / 255.0);
     case 3u: return abs(alpha - reference) > (1.0 / 255.0);
