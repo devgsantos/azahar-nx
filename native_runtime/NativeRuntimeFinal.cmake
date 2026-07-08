@@ -1,16 +1,12 @@
-function(azahar_enable_native_runtime_final)
-    if(TARGET video_core)
-        target_compile_definitions(video_core PRIVATE
-            AZAHAR_DEKO3D_STRICT_NATIVE
-            AZAHAR_DEKO3D_NATIVE_RUNTIME)
-        target_precompile_headers(video_core PRIVATE
-            "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_native_bootstrap.h>")
-    endif()
+# Native CPU configuration for the Switch runtime branch.
+# The Deko3D backend is compiled directly by src/video_core/CMakeLists.txt; no header overlays or
+# renderer substitutions are used here.
 
+function(azahar_enable_native_cpu_runtime)
     if(TARGET citra_core)
         target_compile_definitions(citra_core PRIVATE
             AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS)
     endif()
 endfunction()
 
-cmake_language(DEFER CALL azahar_enable_native_runtime_final)
+cmake_language(DEFER CALL azahar_enable_native_cpu_runtime)
