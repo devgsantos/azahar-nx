@@ -108,6 +108,38 @@ DkCompareOp MapCompare(Pica::FramebufferRegs::CompareFunc func) {
     return DkCompareOp_Always;
 }
 
+struct alignas(16) PicaFragmentState {
+    s32 alpha_test_enabled;
+    s32 alpha_test_func;
+    float alpha_test_ref;
+    float alpha_test_pad;
+};
+
+static_assert(sizeof(PicaFragmentState) == 16, "PicaFragmentState must match std140 layout");
+
+s32 MapAlphaTestFunc(Pica::FramebufferRegs::CompareFunc func) {
+    using CompareFunc = Pica::FramebufferRegs::CompareFunc;
+    switch (func) {
+    case CompareFunc::Equal:
+        return 0;
+    case CompareFunc::NotEqual:
+        return 1;
+    case CompareFunc::LessThan:
+        return 2;
+    case CompareFunc::LessThanOrEqual:
+        return 3;
+    case CompareFunc::GreaterThan:
+        return 4;
+    case CompareFunc::GreaterThanOrEqual:
+        return 5;
+    case CompareFunc::Always:
+        return 6;
+    case CompareFunc::Never:
+        return 7;
+    }
+    return 7;
+}
+
 u32 ColorWriteMask(const Pica::FramebufferRegs& regs) {
     u32 mask = 0;
     if (regs.framebuffer.allow_color_write != 0 && regs.output_merger.red_enable != 0) {
@@ -424,7 +456,6 @@ bool Rasterizer::WaitForFrameSlice(FrameSlice& slice) {
 Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility() const {
     using ColorFormat = Pica::FramebufferRegs::ColorFormat;
     using LogicOp = Pica::FramebufferRegs::LogicOp;
-    using CompareFunc = Pica::FramebufferRegs::CompareFunc;
 
     const auto& fb = regs.framebuffer;
     u32 blockers = None;
@@ -450,39 +481,31 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
         fb.framebuffer.GetHeight() == 0) {
         blockers |= FramebufferDimensions;
     }
-    if (fb.output_merger.depth_test_enable != 0) {
-        blockers |= DepthTestEnabled;
-    }
-    if (fb.output_merger.depth_write_enable != 0 &&
-        (fb.output_merger.depth_test_enable != 0 ||
-         fb.framebuffer.allow_depth_stencil_write == 0 ||
-         fb.framebuffer.depth_format == Pica::FramebufferRegs::DepthFormat::D24S8)) {
+    // Depth and blending are fully wired to Deko3D in SubmitHardwareChunk; only D24S8
+    // depth targets remain unsupported because GetOrCreateDepthTarget cannot create that format.
+    if ((fb.output_merger.depth_write_enable != 0 || fb.output_merger.depth_test_enable != 0) &&
+        fb.framebuffer.depth_format == Pica::FramebufferRegs::DepthFormat::D24S8) {
         blockers |= DepthWriteEnabled;
     }
     if (fb.output_merger.stencil_test.enable != 0) {
         blockers |= StencilEnabled;
     }
-    bool blend_supported = true;
     if (fb.output_merger.alphablend_enable != 0) {
         const auto blend = fb.output_merger.alpha_blending;
-        blend_supported = MapBlendFactor(blend.factor_source_rgb).has_value() &&
-                          MapBlendFactor(blend.factor_dest_rgb).has_value() &&
-                          MapBlendFactor(blend.factor_source_a).has_value() &&
-                          MapBlendFactor(blend.factor_dest_a).has_value();
+        const bool blend_supported = MapBlendFactor(blend.factor_source_rgb).has_value() &&
+                                     MapBlendFactor(blend.factor_dest_rgb).has_value() &&
+                                     MapBlendFactor(blend.factor_source_a).has_value() &&
+                                     MapBlendFactor(blend.factor_dest_a).has_value();
         if (!blend_supported) {
             blockers |= BlendingEnabled;
         }
     }
-    if (fb.output_merger.alpha_test.enable != 0 &&
-        fb.output_merger.alpha_test.func != CompareFunc::Always) {
-        blockers |= AlphaTestUnsupported;
-    }
+    // Alpha test is implemented in the fixed fragment shader through a uniform buffer.
     if (fb.output_merger.alphablend_enable == 0 && fb.output_merger.logic_op != LogicOp::Copy) {
         blockers |= LogicOpUnsupported;
     }
-    if (fb.framebuffer.allow_color_write == 0 || ColorWriteMask(fb) == 0) {
-        blockers |= ColorMaskUnsupported;
-    }
+    // Color write masks are mapped in SubmitHardwareChunk; allow the hardware path.
+    (void)ColorWriteMask(fb);
 
     const auto pica_textures = regs.texturing.GetTextures();
     for (const auto& texture : pica_textures) {
@@ -539,8 +562,6 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
         primary = FallbackReason::StencilEnabled;
     } else if ((blockers & BlendingEnabled) != 0) {
         primary = FallbackReason::BlendEnabled;
-    } else if ((blockers & AlphaTestUnsupported) != 0) {
-        primary = FallbackReason::AlphaTest;
     } else if ((blockers & LogicOpUnsupported) != 0) {
         primary = FallbackReason::LogicOp;
     } else if ((blockers & ShadowRendering) != 0) {
@@ -572,6 +593,12 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateDirectBatchEligibility(bool 
 
 bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
     submitted_vertices = 0;
+#if defined(AZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER)
+    // Baseline safety: keep the hardware rasterizer path disabled while it is
+    // still being validated on Switch. Software fallback is slower but stable.
+    RecordFallbackReason(FallbackReason::UnsupportedState);
+    return false;
+#endif
     if (!initialized || !device || !queue || !command_buffer || !vertex_cpu_buffer ||
         vertex_gpu_addr == 0) {
         return false;
@@ -607,7 +634,9 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         return false;
     }
     const DkImageView* const depth_target = GetOrCreateDepthTarget();
-    if (regs.framebuffer.output_merger.depth_write_enable != 0 && !depth_target) {
+    if ((regs.framebuffer.output_merger.depth_write_enable != 0 ||
+         regs.framebuffer.output_merger.depth_test_enable != 0) &&
+        !depth_target) {
         RecordDepthState(false);
         RecordFallbackReason(FallbackReason::DepthEnabled);
         return false;
@@ -646,7 +675,7 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
 
 const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
     const auto& fb = regs.framebuffer;
-    if (fb.output_merger.depth_write_enable == 0) {
+    if (fb.output_merger.depth_write_enable == 0 && fb.output_merger.depth_test_enable == 0) {
         return nullptr;
     }
     const u32 width = fb.framebuffer.GetWidth();
@@ -801,9 +830,22 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
                                  static_cast<float>(target_height), 0.0f, 1.0f};
     const DkScissor scissor = {0, 0, target_width, target_height};
 
+    // Fill the per-slice uniform buffer with PICA fragment state.
+    const auto& alpha_test = regs.framebuffer.output_merger.alpha_test;
+    PicaFragmentState fragment_state{
+        .alpha_test_enabled = static_cast<s32>(alpha_test.enable.Value()),
+        .alpha_test_func = MapAlphaTestFunc(alpha_test.func.Value()),
+        .alpha_test_ref = alpha_test.ref.Value() / 255.0f,
+        .alpha_test_pad = 0.0f,
+    };
+    std::memcpy(static_cast<u8*>(uniform_cpu_buffer) + slice.uniform_offset, &fragment_state,
+                sizeof(fragment_state));
+
     dkCmdBufClear(command_buffer);
     dkCmdBufAddMemory(command_buffer, command_mem_block, slice.command_offset,
                       slice.command_size);
+    dkCmdBufBindUniformBuffer(command_buffer, DkStage_Fragment, 0,
+                              uniform_gpu_addr + slice.uniform_offset, sizeof(PicaFragmentState));
     dkCmdBufBindRenderTarget(command_buffer, &color_target.view, depth_target);
     dkCmdBufSetViewports(command_buffer, 0, &viewport, 1);
     dkCmdBufSetScissors(command_buffer, 0, &scissor, 1);

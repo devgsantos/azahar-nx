@@ -23,6 +23,11 @@ if(NOT ENABLE_SWITCH_FRONTEND)
         udp/udp.cpp
         udp/udp.h
     )
+else()
+    target_sources(input_common PRIVATE
+        switch/switch_input.cpp
+        switch/switch_input.h
+    )
 endif()
 
 if(ENABLE_SDL2)

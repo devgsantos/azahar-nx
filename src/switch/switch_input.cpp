@@ -4,6 +4,7 @@
 #include "switch_input.h"
 
 #include "common/logging/log.h"
+#include "input_common/switch/switch_input.h"
 #include "switch_libnx.h"
 
 namespace Azahar::Switch {
@@ -19,35 +20,31 @@ bool InitializeInput() {
 
 InputState PollInput() {
     const LibNx::NativeInputState native = LibNx::PollInput();
-    return {
-        native.a,          native.b,           native.x,          native.y,
-        native.l,          native.r,           native.zl,         native.zr,
-        native.plus,       native.minus,       native.up,         native.down,
-        native.left,       native.right,       native.stick_up,   native.stick_down,
-        native.stick_left, native.stick_right,
+    InputCommon::Switch::UpdateControllerState(
+        native.buttons, native.left_stick_x, native.left_stick_y, native.right_stick_x,
+        native.right_stick_y, native.touch_x, native.touch_y, native.touch_pressed);
+    return InputState{
+        .buttons = native.buttons,
+        .left_stick_x = native.left_stick_x,
+        .left_stick_y = native.left_stick_y,
+        .right_stick_x = native.right_stick_x,
+        .right_stick_y = native.right_stick_y,
+        .touch_x = native.touch_x,
+        .touch_y = native.touch_y,
+        .touch_pressed = native.touch_pressed,
     };
 }
 
 InputState NewlyPressed(const InputState& previous, const InputState& current) {
-    return {
-        current.a && !previous.a,
-        current.b && !previous.b,
-        current.x && !previous.x,
-        current.y && !previous.y,
-        current.l && !previous.l,
-        current.r && !previous.r,
-        current.zl && !previous.zl,
-        current.zr && !previous.zr,
-        current.plus && !previous.plus,
-        current.minus && !previous.minus,
-        current.up && !previous.up,
-        current.down && !previous.down,
-        current.left && !previous.left,
-        current.right && !previous.right,
-        current.stick_up && !previous.stick_up,
-        current.stick_down && !previous.stick_down,
-        current.stick_left && !previous.stick_left,
-        current.stick_right && !previous.stick_right,
+    return InputState{
+        .buttons = current.buttons & ~previous.buttons,
+        .left_stick_x = current.left_stick_x,
+        .left_stick_y = current.left_stick_y,
+        .right_stick_x = current.right_stick_x,
+        .right_stick_y = current.right_stick_y,
+        .touch_x = current.touch_x,
+        .touch_y = current.touch_y,
+        .touch_pressed = current.touch_pressed && !previous.touch_pressed,
     };
 }
 

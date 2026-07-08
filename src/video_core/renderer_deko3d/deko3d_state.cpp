@@ -837,7 +837,10 @@ bool State::PresentScreenTexturesFrame() {
 
     const u8* const top_src = static_cast<const u8*>(screen_data_buffer);
     const u8* const bottom_src = top_src + top_bytes;
-    std::memcpy(upload_ptr, top_src, top_bytes);
+    const CachedRenderTarget* const cached_present = selected_present_render_target;
+    if (!cached_present || !cached_present->gpu_dirty) {
+        std::memcpy(upload_ptr, top_src, top_bytes);
+    }
     std::memcpy(upload_ptr + top_bytes, bottom_src, bottom_bytes);
 
     const u32 top_x = (frame_width - top_width) / 2;
@@ -856,7 +859,6 @@ bool State::PresentScreenTexturesFrame() {
     // Place top and bottom 3DS screens centered on Switch output.  Hardware-rasterized guest
     // render targets stay on the GPU and are blitted directly; CPU upload remains the fallback.
     DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
-    const CachedRenderTarget* const cached_present = selected_present_render_target;
     if (cached_present && cached_present->gpu_dirty) {
         DkImageRect top_copy_src = {0, 0, 0, cached_present->key.width,
                                     cached_present->key.height, 1};

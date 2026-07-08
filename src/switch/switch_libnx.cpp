@@ -3,6 +3,8 @@
 
 #include "switch_libnx.h"
 
+#include "input_common/switch/switch_input.h"
+
 #ifdef __SWITCH__
 #include <switch.h>
 #endif
@@ -12,13 +14,9 @@ namespace {
 
 #ifdef __SWITCH__
 PadState pad;
-
-bool HasStickDirection(const HidAnalogStickState& stick, int x, int y) {
-    constexpr s32 threshold = 12000;
-    return (x < 0 && stick.x < -threshold) || (x > 0 && stick.x > threshold) ||
-           (y < 0 && stick.y < -threshold) || (y > 0 && stick.y > threshold);
-}
 #endif
+
+using SwitchButton = InputCommon::Switch::Button;
 
 } // namespace
 
@@ -112,24 +110,64 @@ NativeInputState PollInput() {
     const HidAnalogStickState left = padGetStickPos(&pad, 0);
     const HidAnalogStickState right = padGetStickPos(&pad, 1);
 
-    state.a = (buttons & HidNpadButton_A) != 0;
-    state.b = (buttons & HidNpadButton_B) != 0;
-    state.x = (buttons & HidNpadButton_X) != 0;
-    state.y = (buttons & HidNpadButton_Y) != 0;
-    state.l = (buttons & HidNpadButton_L) != 0;
-    state.r = (buttons & HidNpadButton_R) != 0;
-    state.zl = (buttons & HidNpadButton_ZL) != 0;
-    state.zr = (buttons & HidNpadButton_ZR) != 0;
-    state.plus = (buttons & HidNpadButton_Plus) != 0;
-    state.minus = (buttons & HidNpadButton_Minus) != 0;
-    state.up = (buttons & HidNpadButton_Up) != 0;
-    state.down = (buttons & HidNpadButton_Down) != 0;
-    state.left = (buttons & HidNpadButton_Left) != 0;
-    state.right = (buttons & HidNpadButton_Right) != 0;
-    state.stick_up = HasStickDirection(left, 0, 1) || HasStickDirection(right, 0, 1);
-    state.stick_down = HasStickDirection(left, 0, -1) || HasStickDirection(right, 0, -1);
-    state.stick_left = HasStickDirection(left, -1, 0) || HasStickDirection(right, -1, 0);
-    state.stick_right = HasStickDirection(left, 1, 0) || HasStickDirection(right, 1, 0);
+    std::uint64_t mask = 0;
+    auto Add = [&](u64 hid, SwitchButton bit) {
+        if ((buttons & hid) != 0) {
+            mask |= static_cast<std::uint64_t>(bit);
+        }
+    };
+
+    Add(HidNpadButton_A, SwitchButton::A);
+    Add(HidNpadButton_B, SwitchButton::B);
+    Add(HidNpadButton_X, SwitchButton::X);
+    Add(HidNpadButton_Y, SwitchButton::Y);
+    Add(HidNpadButton_L, SwitchButton::L);
+    Add(HidNpadButton_R, SwitchButton::R);
+    Add(HidNpadButton_ZL, SwitchButton::ZL);
+    Add(HidNpadButton_ZR, SwitchButton::ZR);
+    Add(HidNpadButton_Plus, SwitchButton::Plus);
+    Add(HidNpadButton_Minus, SwitchButton::Minus);
+    Add(HidNpadButton_Up, SwitchButton::DpadUp);
+    Add(HidNpadButton_Down, SwitchButton::DpadDown);
+    Add(HidNpadButton_Left, SwitchButton::DpadLeft);
+    Add(HidNpadButton_Right, SwitchButton::DpadRight);
+
+    // Map left/right stick thresholds to digital stick directions so the same button mapping
+    // can be used by games that expect the dpad/analog-as-button path.
+    constexpr s32 threshold = 12000;
+    auto AddStick = [&](s32 x, s32 y, SwitchButton left_bit, SwitchButton right_bit,
+                        SwitchButton up_bit, SwitchButton down_bit) {
+        if (x < -threshold) {
+            mask |= static_cast<std::uint64_t>(left_bit);
+        } else if (x > threshold) {
+            mask |= static_cast<std::uint64_t>(right_bit);
+        }
+        if (y > threshold) {
+            mask |= static_cast<std::uint64_t>(up_bit);
+        } else if (y < -threshold) {
+            mask |= static_cast<std::uint64_t>(down_bit);
+        }
+    };
+    AddStick(left.x, left.y, SwitchButton::StickLeft, SwitchButton::StickRight,
+             SwitchButton::StickUp, SwitchButton::StickDown);
+    AddStick(right.x, right.y, SwitchButton::StickLeft, SwitchButton::StickRight,
+             SwitchButton::StickUp, SwitchButton::StickDown);
+
+    state.buttons = mask;
+    state.left_stick_x = left.x;
+    state.left_stick_y = left.y;
+    state.right_stick_x = right.x;
+    state.right_stick_y = right.y;
+
+    HidTouchScreenState touch{};
+    if (R_SUCCEEDED(hidGetTouchScreenStates(&touch, 1)) && touch.count > 0) {
+        const auto& first = touch.touches[0];
+        state.touch_x = first.x;
+        state.touch_y = first.y;
+        state.touch_pressed = true;
+    } else {
+        state.touch_pressed = false;
+    }
 #endif
     return state;
 }

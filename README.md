@@ -14,16 +14,29 @@ Working or implemented:
 - ROM browser for `.3ds`, `.cci`, `.cxi`, `.app`, and `.cia` entries
 - Fixed Switch filesystem root under `sdmc:/switch/azahar/`
 - Switch HID input with fixed Joy-Con mapping
-- audren audio initialization
+- Switch controller input wired through InputCommon (buttons, circle pad, C-stick, touch screen)
+- Audren audio sink with 48 kHz output (now the default sink)
 - Switch network/service stubs for offline boot paths
+- Dynarmic ARM JIT using Horizon dual-alias JIT memory
+- Partial JIT publish enabled by default (faster block emission)
 - Deko3D renderer selection and initialization path
+- Deko3D hardware rasterizer covering:
+  - RGBA8 color targets
+  - Depth testing and depth writing (D16/D24; D24S8 still falls back)
+  - Alpha blending with mapped factors/equations
+  - Alpha test via fragment shader discard
+  - Color write masks
+  - GPU-side presentation blit for cached render targets
 - Early boot and renderer tracing under `sdmc:/switch/azahar/logs/`
+- Switch build helper script: `build-switch.sh`
 
 Still in progress:
 
-- Full PICA-to-Deko3D rasterizer implementation
-- Complete texture/shader translation for gameplay rendering
-- Performance tuning
+- PICA texture cache and generated fragment shaders (textured draws still fall back)
+- Full PICA-to-Deko3D shader translation
+- Additional framebuffer format support (currently RGBA8; RGB565 and others fall back)
+- Geometry shader / procedural texture support
+- Performance tuning and frame pacing
 - Save-state and advanced frontend workflows
 - Broad game compatibility validation
 
@@ -119,6 +132,12 @@ cmake -S . -B build-switch -U CMAKE_PROJECT_INCLUDE \
   -DENABLE_SCRIPTING=OFF \
   -DENABLE_GDBSTUB=OFF \
   -DENABLE_TESTS=OFF
+```
+
+Or use the provided helper script:
+
+```bash
+./build-switch.sh
 ```
 
 Build:

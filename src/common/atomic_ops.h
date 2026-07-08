@@ -107,6 +107,14 @@ namespace Common {
     return __sync_bool_compare_and_swap(pointer, expected, value);
 }
 
+#ifdef __SWITCH__
+
+[[nodiscard]] inline bool AtomicCompareAndSwap(volatile u64* pointer, u128 value, u128 expected) {
+    return __sync_bool_compare_and_swap((unsigned __int128*)pointer, expected, value);
+}
+
+#else
+
 [[nodiscard]] inline bool AtomicCompareAndSwap(volatile u64* pointer, u128 value, u128 expected) {
     unsigned __int128 value_a;
     unsigned __int128 expected_a;
@@ -114,6 +122,8 @@ namespace Common {
     std::memcpy(&expected_a, expected.data(), sizeof(u128));
     return __sync_bool_compare_and_swap((unsigned __int128*)pointer, expected_a, value_a);
 }
+
+#endif
 
 [[nodiscard]] inline bool AtomicCompareAndSwap(volatile u8* pointer, u8 value, u8 expected,
                                                u8& actual) {
@@ -141,6 +151,10 @@ namespace Common {
 
 [[nodiscard]] inline bool AtomicCompareAndSwap(volatile u64* pointer, u128 value, u128 expected,
                                                u128& actual) {
+#ifdef __SWITCH__
+    actual = __sync_val_compare_and_swap((unsigned __int128*)pointer, expected, value);
+    return actual == expected;
+#else
     unsigned __int128 value_a;
     unsigned __int128 expected_a;
     unsigned __int128 actual_a;
@@ -149,16 +163,21 @@ namespace Common {
     actual_a = __sync_val_compare_and_swap((unsigned __int128*)pointer, expected_a, value_a);
     std::memcpy(actual.data(), &actual_a, sizeof(u128));
     return actual_a == expected_a;
+#endif
 }
 
 [[nodiscard]] inline u128 AtomicLoad128(volatile u64* pointer) {
     unsigned __int128 zeros_a = 0;
+#ifdef __SWITCH__
+    return __sync_val_compare_and_swap((unsigned __int128*)pointer, zeros_a, zeros_a);
+#else
     unsigned __int128 result_a =
         __sync_val_compare_and_swap((unsigned __int128*)pointer, zeros_a, zeros_a);
 
     u128 result;
     std::memcpy(result.data(), &result_a, sizeof(u128));
     return result;
+#endif
 }
 
 #endif

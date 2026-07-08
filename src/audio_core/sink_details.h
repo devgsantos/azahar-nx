@@ -23,6 +23,9 @@ enum class SinkType : u32 {
 #ifdef HAVE_LIBRETRO
     LibRetro = 5,
 #endif
+#ifdef HAVE_AUDREN
+    Audren = 6,
+#endif
 };
 
 struct SinkDetails {
