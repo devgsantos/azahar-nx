@@ -126,7 +126,8 @@ if (ENABLE_SWITCH_FRONTEND)
     target_sources(video_core PRIVATE
         renderer_deko3d/deko3d_presenter.cpp
         renderer_deko3d/deko3d_presenter.h
-        renderer_deko3d/deko3d_rasterizer_native.cpp
+        renderer_deko3d/deko3d_rasterizer_draw.cpp
+        renderer_deko3d/deko3d_transfer_native.cpp
         renderer_deko3d/deko3d_rasterizer.h
         renderer_deko3d/deko3d_shader.cpp
         renderer_deko3d/deko3d_shader.h
