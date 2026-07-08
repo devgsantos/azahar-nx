@@ -86,6 +86,7 @@ public:
     enum class SurfaceOwner {
         Clean,
         CpuMemory,
+        SoftwareRasterizer,
         Deko3D,
         DisplayTransfer,
     };
@@ -99,6 +100,7 @@ public:
         SurfaceOwner owner = SurfaceOwner::Clean;
         u64 guest_memory_generation = 0;
         u64 deko_generation = 0;
+        u64 software_raster_generation = 0;
         u64 display_transfer_generation = 0;
         u64 last_presented_generation = 0;
         bool gpu_dirty = false;
@@ -110,6 +112,7 @@ public:
               allocation_bytes{other.allocation_bytes}, owner{other.owner},
               guest_memory_generation{other.guest_memory_generation},
               deko_generation{other.deko_generation},
+              software_raster_generation{other.software_raster_generation},
               display_transfer_generation{other.display_transfer_generation},
               last_presented_generation{other.last_presented_generation},
               gpu_dirty{other.gpu_dirty}, cpu_dirty{other.cpu_dirty} {
@@ -125,6 +128,7 @@ public:
     [[nodiscard]] const CachedRenderTarget* GetSelectedPresentRenderTarget() const;
     void SelectPresentRenderTarget(PAddr address);
     void MarkRenderTargetGpuDirty(CachedRenderTarget& target);
+    void MarkRenderTargetSoftwareDirty(PAddr address, u32 bytes);
     void MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes);
     void InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner);
 
