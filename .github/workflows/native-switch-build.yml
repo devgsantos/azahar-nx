@@ -1,0 +1,102 @@
+name: Native Switch build
+
+on:
+  push:
+    branches:
+      - deko3d-native-runtime-test
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-switch:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Bootstrap container tools
+        shell: bash
+        run: |
+          apt-get update >/tmp/apt-update.log 2>&1
+          apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build python3 >/tmp/apt-install.log 2>&1
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Checkout required submodules
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule sync >/dev/null
+          git submodule update --init --depth 1 >/tmp/submodules.log 2>&1
+          git -C externals/dynarmic submodule sync >>/tmp/submodules.log 2>&1
+          git -C externals/dynarmic submodule update --init --depth 1 -- \
+            externals/mcl externals/robin-map >>/tmp/submodules.log 2>&1
+
+      - name: Verify preinstalled Switch toolchain
+        shell: bash
+        run: |
+          test -x /opt/devkitpro/devkitA64/bin/aarch64-none-elf-g++
+          test -f /opt/devkitpro/cmake/Switch.cmake
+          test -f /opt/devkitpro/libnx/include/deko3d.h
+          test -f /opt/devkitpro/libnx/lib/libdeko3d.a
+          test -x /opt/devkitpro/tools/bin/uam
+
+      - name: Configure
+        shell: bash
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export DEVKITA64=/opt/devkitpro/devkitA64
+          set +e
+          cmake -S . -B build-switch -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/Switch.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_SWITCH_FRONTEND=ON \
+            -DENABLE_QT=OFF \
+            -DENABLE_OPENGL=OFF \
+            -DENABLE_VULKAN=OFF \
+            -DENABLE_WEB_SERVICE=OFF \
+            -DENABLE_SCRIPTING=OFF \
+            -DENABLE_GDBSTUB=OFF \
+            -DENABLE_TESTS=OFF \
+            -DCITRA_USE_PRECOMPILED_HEADERS=OFF \
+            -DENABLE_LTO=OFF \
+            -DAZAHAR_DEKO3D_VALIDATION=OFF \
+            -DCMAKE_PROJECT_INCLUDE=$GITHUB_WORKSPACE/native_runtime/NativeRuntimeFinal.cmake \
+            >/tmp/native-configure.log 2>&1
+          status=$?
+          set -e
+          exit $status
+
+      - name: Build NRO
+        shell: bash
+        run: |
+          set +e
+          cmake --build build-switch --target azahar_switch -j2 >/tmp/native-build.log 2>&1
+          status=$?
+          set -e
+          exit $status
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-native-build-logs
+          path: |
+            /tmp/native-configure.log
+            /tmp/native-build.log
+            /tmp/submodules.log
+          if-no-files-found: ignore
+
+      - name: Upload NRO
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-native-switch
+          path: |
+            build-switch/bin/Release/azahar.nro
+            build-switch/bin/Release/azahar_switch.elf
+          if-no-files-found: error

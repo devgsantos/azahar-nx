@@ -4,14 +4,16 @@
 #pragma once
 
 #include <array>
-#include <optional>
+#include <cstddef>
+#include <memory>
 #include <vector>
 
 #include "video_core/pica/output_vertex.h"
+#include "video_core/pica/regs_external.h"
 #include "video_core/rasterizer_accelerated.h"
 #include "video_core/renderer_deko3d/deko3d_state.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
-#include "video_core/renderer_software/sw_rasterizer.h"
+#include "video_core/renderer_deko3d/deko3d_texture_cache.h"
 
 #ifdef __SWITCH__
 #include <deko3d.h>
@@ -28,17 +30,16 @@ class PicaCore;
 namespace VideoCore::Deko3D {
 
 class ShaderCache;
-class TextureCache;
 
 class Rasterizer final : public VideoCore::RasterizerAccelerated {
 public:
     Rasterizer(Memory::MemorySystem& memory, Pica::PicaCore& pica, State& state,
                TextureCache& texture_cache, ShaderCache& shader_cache);
+    ~Rasterizer() override;
 
     bool Initialize();
     void Shutdown();
 
-    // Keep the compatibility fallback coherent until native Deko3D draw submission is wired.
     void AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
                      const Pica::OutputVertex& v2) override;
     void DrawTriangles() override;
@@ -47,17 +48,22 @@ public:
     void InvalidateRegion(PAddr addr, u32 size) override;
     void FlushAndInvalidateRegion(PAddr addr, u32 size) override;
     void ClearAll(bool flush) override;
+
+    bool AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) override;
+    bool AccelerateTextureCopy(const Pica::DisplayTransferConfig& config) override;
+    bool AccelerateFill(const Pica::MemoryFillConfig& config) override;
     bool AccelerateDrawBatch(bool is_indexed) override;
 
 private:
 #ifdef __SWITCH__
-    static constexpr u32 FrameSliceCount = 3;
-    static constexpr u32 RasterCommandMemorySize = 64 * 1024;
-    static constexpr u32 VertexBufferSize = 1024 * 1024;
-    static constexpr u32 UniformBufferSize = 192 * 1024;
-    static constexpr u32 DescriptorBufferSize = 64 * 1024;
+    static constexpr u32 FrameContextCount = 32;
+    static constexpr u32 TransferUploadContextCount = 8;
+    static constexpr u32 RasterCommandMemorySize = 512 * 1024;
+    static constexpr u32 VertexBufferSize = 4 * 1024 * 1024;
+    static constexpr u32 UniformBufferSize = 2 * 1024 * 1024;
+    static constexpr u32 FlushBatchSize = 16;
 
-    struct FrameSlice {
+    struct FrameContext {
         u32 command_offset = 0;
         u32 command_size = 0;
         u32 vertex_offset = 0;
@@ -69,65 +75,105 @@ private:
         std::size_t pending_vertices = 0;
     };
 
-    struct HardwareEligibility {
-        bool supported = false;
-        FallbackReason reason = FallbackReason::UnsupportedState;
-        u32 blockers = 0;
+    struct DepthKey {
+        PAddr address = 0;
+        u32 width = 0;
+        u32 height = 0;
+        Pica::FramebufferRegs::DepthFormat format{};
+
+        bool operator==(const DepthKey& rhs) const {
+            return address == rhs.address && width == rhs.width && height == rhs.height &&
+                   format == rhs.format;
+        }
     };
 
-    enum EligibilityBlocker : u32 {
-        None = 0,
-        InvalidBatch = 1U << 0,
-        MissingGpuResources = 1U << 1,
-        ShaderUnavailable = 1U << 2,
-        WrongRenderTarget = 1U << 3,
-        FramebufferFormat = 1U << 4,
-        FramebufferDimensions = 1U << 5,
-        TexturesEnabled = 1U << 6,
-        DepthTestEnabled = 1U << 7,
-        DepthWriteEnabled = 1U << 8,
-        StencilEnabled = 1U << 9,
-        BlendingEnabled = 1U << 10,
-        AlphaTestUnsupported = 1U << 11,
-        LogicOpUnsupported = 1U << 12,
-        ColorMaskUnsupported = 1U << 13,
-        CullModeUnsupported = 1U << 14,
-        ViewportUnsupported = 1U << 15,
-        ScissorUnsupported = 1U << 16,
-        ShadowRendering = 1U << 17,
-        ProceduralTexture = 1U << 18,
+    struct DepthSurface {
+        DepthKey key{};
+        DkMemBlock mem{};
+        DkImage image{};
+        DkImageView view{};
     };
 
-    enum DirectEligibilityBlocker : u32 {
-        DirectUnimplemented = 1U << 0,
-        DirectTopology = 1U << 1,
-        DirectGeometryShader = 1U << 2,
-        DirectVertexFormat = 1U << 3,
-        DirectIndexFormat = 1U << 4,
-        DirectOther = 1U << 5,
+    struct TransferSourceKey {
+        PAddr address = 0;
+        u32 width = 0;
+        u32 height = 0;
+        Pica::PixelFormat format{};
+        bool linear = false;
+
+        bool operator==(const TransferSourceKey& rhs) const {
+            return address == rhs.address && width == rhs.width && height == rhs.height &&
+                   format == rhs.format && linear == rhs.linear;
+        }
+    };
+
+    struct TransferSource {
+        TransferSourceKey key{};
+        DkMemBlock mem{};
+        DkImage image{};
+        DkImageView view{};
+    };
+
+    struct TransferUploadContext {
+        DkMemBlock mem{};
+        void* cpu = nullptr;
+        DkGpuAddr gpu = DK_GPU_ADDR_INVALID;
+        u32 capacity = 0;
+        DkFence fence{};
+        bool fence_pending = false;
+    };
+
+    struct alignas(16) TevPackedStage {
+        u32 sources = 0;
+        u32 modifiers = 0;
+        u32 operations = 0;
+        u32 scales = 0;
+    };
+
+    struct alignas(16) FragmentUniforms {
+        std::array<TevPackedStage, 6> stages{};
+        std::array<std::array<float, 4>, 6> constants{};
+        std::array<float, 4> combiner_buffer{};
+        u32 update_mask_rgb = 0;
+        u32 update_mask_alpha = 0;
+        u32 texture_enable_mask = 0;
+        u32 alpha_test = 0;
+        float alpha_reference = 0.0f;
+        std::array<float, 3> padding{};
     };
 
     bool InitializeGpuResources();
     void ShutdownGpuResources();
-    FrameSlice& CurrentFrameSlice();
-    bool WaitForFrameSlice(FrameSlice& slice);
-    HardwareEligibility EvaluateTransformedBatchEligibility() const;
-    HardwareEligibility EvaluateDirectBatchEligibility(bool is_indexed) const;
-    bool TryDrawHardwareBatch(std::size_t& submitted_vertices);
-    bool SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
+    FrameContext& CurrentFrameContext();
+    bool WaitForFrameContext(FrameContext& context);
+    bool SubmitHardwareBatch();
+    bool SubmitHardwareChunk(FrameContext& context, State::CachedRenderTarget& color_target,
                              const DkImageView* depth_target, std::size_t base_vertex,
-                             std::size_t vertex_count);
-    const DkImageView* GetOrCreateDepthTarget();
+                             std::size_t vertex_count,
+                             const std::array<DkResHandle, 3>& texture_handles,
+                             const FragmentUniforms& fragment_uniforms);
+    DepthSurface* GetOrCreateDepthSurface();
+    FragmentUniforms BuildFragmentUniforms(u32 texture_enable_mask) const;
     bool QueueHasError(const char* context);
     void FlushQueue();
+    void FlushQueueIfNeeded(bool force);
+    bool IsNativeBatchValid() const;
+
+    TransferSource* GetOrCreateTransferSource(const Pica::DisplayTransferConfig& config);
+    TransferUploadContext* AcquireTransferUploadContext(u32 required_bytes);
+    bool DecodeTransferSource(const Pica::DisplayTransferConfig& config, void* destination,
+                              u32 destination_size) const;
+    bool SubmitGpuSurfaceTransfer(const DkImageView& source, u32 source_width, u32 source_height,
+                                  State::CachedRenderTarget& destination, u32 flags);
+    bool SubmitGuestMemoryTransfer(const Pica::DisplayTransferConfig& config,
+                                   TransferSource& source,
+                                   State::CachedRenderTarget& destination, u32 flags);
+    static u32 CanonicalColorFormat(Pica::PixelFormat format);
 #endif
-    void DrawSoftwareFallback(std::size_t first_vertex = 0);
 
     State& state;
     TextureCache& texture_cache;
     ShaderCache& shader_cache;
-    SwRenderer::RasterizerSoftware software_fallback;
-    std::vector<Pica::OutputVertex> fallback_vertex_batch;
     bool initialized = false;
 
 #ifdef __SWITCH__
@@ -137,21 +183,17 @@ private:
     DkCmdBuf command_buffer{};
     DkMemBlock vertex_mem_block{};
     void* vertex_cpu_buffer = nullptr;
-    DkGpuAddr vertex_gpu_addr = 0;
+    DkGpuAddr vertex_gpu_addr = DK_GPU_ADDR_INVALID;
     DkMemBlock uniform_mem_block{};
     void* uniform_cpu_buffer = nullptr;
-    DkGpuAddr uniform_gpu_addr = 0;
-    DkMemBlock descriptor_mem_block{};
-    void* descriptor_cpu_buffer = nullptr;
-    DkGpuAddr descriptor_gpu_addr = 0;
-    DkMemBlock depth_mem_block{};
-    DkImage depth_image{};
-    DkImageView depth_view{};
-    u32 depth_width = 0;
-    u32 depth_height = 0;
-    u32 depth_format = 0;
-    std::array<FrameSlice, FrameSliceCount> frame_slices{};
-    u32 current_frame_slice = 0;
+    DkGpuAddr uniform_gpu_addr = DK_GPU_ADDR_INVALID;
+    std::array<FrameContext, FrameContextCount> frame_contexts{};
+    u32 current_frame_context = 0;
+    u32 submissions_since_flush = 0;
+    std::vector<std::unique_ptr<DepthSurface>> depth_surfaces;
+    std::vector<std::unique_ptr<TransferSource>> transfer_sources;
+    std::array<TransferUploadContext, TransferUploadContextCount> transfer_upload_contexts{};
+    u32 current_transfer_upload_context = 0;
 #endif
 };
 

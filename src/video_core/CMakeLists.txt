@@ -62,7 +62,7 @@ add_library(video_core STATIC EXCLUDE_FROM_ALL
     rasterizer_cache/texture_cube.h
     rasterizer_cache/utils.cpp
     rasterizer_cache/utils.h
-    # Needed as a fallback regardless of enabled renderers.
+    # Shared guest-memory DMA helper. The strict Switch renderer does not use it for PICA triangles.
     renderer_software/sw_blitter.cpp
     renderer_software/sw_blitter.h
     right_eye_disabler.cpp
@@ -118,6 +118,7 @@ if (ENABLE_SOFTWARE_RENDERER)
         renderer_software/sw_texturing.h
     )
 endif()
+
 if (ENABLE_SWITCH_FRONTEND)
     set(DEKO3D_SHADER_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/renderer_deko3d/generated")
     set(DEKO3D_SHADER_HEADER "${DEKO3D_SHADER_GEN_DIR}/deko3d_builtin_shaders.h")
@@ -125,27 +126,16 @@ if (ENABLE_SWITCH_FRONTEND)
     set(DEKO3D_COLOR_FSH "${DEKO3D_SHADER_GEN_DIR}/pica_color_fsh.dksh")
 
     target_sources(video_core PRIVATE
-        renderer_software/sw_clipper.cpp
-        renderer_software/sw_clipper.h
-        renderer_software/sw_framebuffer.cpp
-        renderer_software/sw_framebuffer.h
-        renderer_software/sw_lighting.cpp
-        renderer_software/sw_lighting.h
-        renderer_software/sw_proctex.cpp
-        renderer_software/sw_proctex.h
-        renderer_software/sw_rasterizer.cpp
-        renderer_software/sw_rasterizer.h
-        renderer_software/sw_texturing.cpp
-        renderer_software/sw_texturing.h
         renderer_deko3d/deko3d_presenter.cpp
         renderer_deko3d/deko3d_presenter.h
-        renderer_deko3d/deko3d_rasterizer.cpp
+        renderer_deko3d/deko3d_rasterizer_draw.cpp
+        renderer_deko3d/deko3d_transfer_native.cpp
         renderer_deko3d/deko3d_rasterizer.h
         renderer_deko3d/deko3d_shader.cpp
         renderer_deko3d/deko3d_shader.h
         renderer_deko3d/deko3d_stats.cpp
         renderer_deko3d/deko3d_stats.h
-        renderer_deko3d/deko3d_state.cpp
+        renderer_deko3d/deko3d_state_native.cpp
         renderer_deko3d/deko3d_state.h
         renderer_deko3d/deko3d_texture_cache.cpp
         renderer_deko3d/deko3d_texture_cache.h
@@ -155,7 +145,10 @@ if (ENABLE_SWITCH_FRONTEND)
         renderer_deko3d/renderer_deko3d.cpp
         renderer_deko3d/renderer_deko3d.h
     )
-    target_compile_definitions(video_core PUBLIC AZAHAR_ENABLE_DEKO3D)
+    target_compile_definitions(video_core PUBLIC
+        AZAHAR_ENABLE_DEKO3D
+        AZAHAR_DEKO3D_NATIVE_RUNTIME
+        AZAHAR_DEKO3D_STRICT_NATIVE)
     if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
         find_path(DEKO3D_INCLUDE_DIR deko3d.h HINTS "$ENV{DEVKITPRO}/libnx/include")
         if(AZAHAR_DEKO3D_VALIDATION)
@@ -202,6 +195,7 @@ if (ENABLE_SWITCH_FRONTEND)
         endif()
     endif()
 endif()
+
 if (ENABLE_OPENGL)
     target_sources(video_core PRIVATE
         renderer_opengl/frame_dumper_opengl.cpp
@@ -239,6 +233,7 @@ if (ENABLE_OPENGL)
     )
     target_link_libraries(video_core PRIVATE glad)
 endif()
+
 if (ENABLE_VULKAN)
     target_sources(video_core PRIVATE
         renderer_vulkan/pica_to_vk.h
