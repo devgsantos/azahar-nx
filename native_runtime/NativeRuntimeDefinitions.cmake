@@ -1,0 +1,12 @@
+function(azahar_enable_native_runtime_definitions)
+    if(TARGET video_core)
+        target_compile_definitions(video_core PRIVATE
+            AZAHAR_DEKO3D_STRICT_NATIVE
+            AZAHAR_DEKO3D_NATIVE_RUNTIME)
+    endif()
+    if(TARGET citra_core)
+        target_compile_definitions(citra_core PRIVATE
+            AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS)
+    endif()
+endfunction()
+cmake_language(DEFER CALL azahar_enable_native_runtime_definitions)
