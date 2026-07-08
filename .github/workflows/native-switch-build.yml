@@ -18,7 +18,8 @@ jobs:
       - name: Bootstrap container tools
         shell: bash
         run: |
-          dkp-pacman -Syu --noconfirm --needed git ca-certificates
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build python3
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,8 +31,7 @@ jobs:
         shell: bash
         run: |
           dkp-pacman -Syu --noconfirm --needed \
-            switch-dev switch-cmake switch-tools deko3d \
-            cmake ninja python
+            switch-dev switch-cmake switch-tools deko3d
 
       - name: Configure
         shell: bash
