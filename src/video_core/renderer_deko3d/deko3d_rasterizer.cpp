@@ -146,6 +146,17 @@ struct alignas(16) PicaFragmentState {
 
 static_assert(sizeof(PicaFragmentState) == 16, "PicaFragmentState must match std140 layout");
 
+static std::optional<DkLogicOp> MapLogicOp(Pica::FramebufferRegs::LogicOp op) {
+    using LogicOp = Pica::FramebufferRegs::LogicOp;
+    switch (op) {
+    case LogicOp::Clear:        return DkLogicOp_Clear;
+    case LogicOp::And:          return DkLogicOp_And;
+    case LogicOp::Copy:         return DkLogicOp_Copy;
+    case LogicOp::CopyInverted: return DkLogicOp_CopyInverted;
+    default:                    return std::nullopt;
+    }
+}
+
 s32 MapAlphaTestFunc(Pica::FramebufferRegs::CompareFunc func) {
     using CompareFunc = Pica::FramebufferRegs::CompareFunc;
     switch (func) {
@@ -855,8 +866,12 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     rasterizer_state.cullMode = DkFace_None;
     dkColorStateSetBlendEnable(&color_state, 0, regs.framebuffer.output_merger.alphablend_enable != 0);
     if (regs.framebuffer.output_merger.alphablend_enable == 0) {
-        color_state.logicOp =
-            static_cast<DkLogicOp>(static_cast<u32>(regs.framebuffer.output_merger.logic_op.Value()));
+        const auto mapped_logic_op =
+            MapLogicOp(regs.framebuffer.output_merger.logic_op.Value());
+        if (!mapped_logic_op) {
+            return false;
+        }
+        color_state.logicOp = *mapped_logic_op;
     }
     dkColorWriteStateSetMask(&color_write_state, 0, ColorWriteMask(regs.framebuffer));
     if (regs.framebuffer.output_merger.alphablend_enable != 0) {
@@ -1012,6 +1027,7 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     LOG_INFO(Render, "HWdraw F vtx_off={} vtx_bytes={} vtx_count={}", slice.vertex_offset,
              vertex_bytes, vertex_count);
     dkCmdBufDraw(command_buffer, DkPrimitive_Triangles, static_cast<u32>(vertex_count), 1, 0, 0);
+    dkCmdBufBarrier(command_buffer, DkBarrier_Full, DkInvalidateFlags_Image);
     dkCmdBufSignalFence(command_buffer, &slice.fence, true);
 
     const DkCmdList draw_cmd = dkCmdBufFinishList(command_buffer);
