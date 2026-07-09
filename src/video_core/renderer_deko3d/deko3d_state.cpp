@@ -277,9 +277,9 @@ void State::Shutdown() {
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy render target cache enter");
     for (auto& target : render_targets) {
-        if (target.mem_block) {
-            dkMemBlockDestroy(target.mem_block);
-            target.mem_block = nullptr;
+        if (target && target->mem_block) {
+            dkMemBlockDestroy(target->mem_block);
+            target->mem_block = nullptr;
         }
     }
     render_targets.clear();
@@ -598,14 +598,8 @@ bool State::CreateQueue() {
 }
 
 bool State::CreateRasterQueue() {
-    DkQueueMaker queue_maker;
-    dkQueueMakerDefaults(&queue_maker, device);
-    queue_maker.flags = DkQueueFlags_Graphics;
-    raster_queue = dkQueueCreate(&queue_maker);
-    if (!raster_queue) {
-        SetError("dkQueueCreate (raster) failed");
-        return false;
-    }
+    // GetRasterQueue() returns the shared presenter queue to avoid two concurrent
+    // DkQueueFlags_Graphics queues on the same device, which causes GPU timeouts.
     LOG_INFO(Render, "Deko3D raster queue created");
     return true;
 }
@@ -710,9 +704,9 @@ State::CachedRenderTarget* State::GetOrCreateRenderTarget(const RenderTargetKey&
     }
 
     for (auto& target : render_targets) {
-        if (target.key == key) {
+        if (target->key == key) {
             RecordRenderTargetCacheHit();
-            return &target;
+            return target.get();
         }
     }
 
@@ -751,26 +745,27 @@ State::CachedRenderTarget* State::GetOrCreateRenderTarget(const RenderTargetKey&
         return nullptr;
     }
 
-    CachedRenderTarget target{};
-    target.key = key;
-    target.mem_block = mem_block;
-    target.allocation_bytes = AlignUp(image_size, image_alignment);
-    dkImageInitialize(&target.image, &layout, target.mem_block, 0);
-    dkImageViewDefaults(&target.view, &target.image);
-    render_targets.push_back(target);
+    auto target = std::make_unique<CachedRenderTarget>();
+    target->key = key;
+    target->mem_block = mem_block;
+    target->allocation_bytes = AlignUp(image_size, image_alignment);
+    dkImageInitialize(&target->image, &layout, target->mem_block, 0);
+    dkImageViewDefaults(&target->view, &target->image);
+    CachedRenderTarget* result = target.get();
+    render_targets.emplace_back(std::move(target));
     RecordRenderTargetCacheMiss();
-    RecordRenderTargetCacheCreation(target.allocation_bytes);
+    RecordRenderTargetCacheCreation(result->allocation_bytes);
     LOG_INFO(Render,
              "Deko3D render target cache create: addr=0x{:08x} size={}x{} format={} bytes={}",
              key.color_address, key.width, key.height, key.format,
-             static_cast<unsigned long long>(target.allocation_bytes));
-    return &render_targets.back();
+             static_cast<unsigned long long>(result->allocation_bytes));
+    return result;
 }
 
 const State::CachedRenderTarget* State::FindGpuDirtyRenderTarget(PAddr address) const {
     for (const auto& target : render_targets) {
-        if (target.key.color_address == address && target.gpu_dirty) {
-            return &target;
+        if (target->key.color_address == address && target->gpu_dirty) {
+            return target.get();
         }
     }
     return nullptr;
@@ -797,15 +792,15 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
         return;
     }
     for (auto& target : render_targets) {
-        if (!RangesOverlap(address, bytes, target.key.color_address, RenderTargetBytes(target.key))) {
+        if (!RangesOverlap(address, bytes, target->key.color_address, RenderTargetBytes(target->key))) {
             continue;
         }
-        target.owner = owner;
-        target.gpu_dirty = false;
-        target.cpu_dirty = true;
-        target.guest_memory_generation = ++render_target_generation;
+        target->owner = owner;
+        target->gpu_dirty = false;
+        target->cpu_dirty = true;
+        target->guest_memory_generation = ++render_target_generation;
         RecordRenderTargetCpuDirty();
-        if (selected_present_render_target == &target) {
+        if (selected_present_render_target == target.get()) {
             selected_present_render_target = nullptr;
         }
     }

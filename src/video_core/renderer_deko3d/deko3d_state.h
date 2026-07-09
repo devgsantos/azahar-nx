@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -176,7 +177,7 @@ private:
     DkFence present_fence{};
     bool present_fence_pending = false;
     bool top_screen_gpu_dirty = false;
-    std::vector<CachedRenderTarget> render_targets;
+    std::vector<std::unique_ptr<CachedRenderTarget>> render_targets;
     u64 render_target_generation = 0;
     const CachedRenderTarget* selected_present_render_target = nullptr;
 
