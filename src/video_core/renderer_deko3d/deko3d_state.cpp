@@ -976,6 +976,7 @@ bool State::PresentScreenTexturesFrame() {
         return false;
     }
     FlushQueue();
+    dkQueueWaitIdle(queue);
     if (QueueHasError("after present flush")) {
         return false;
     }

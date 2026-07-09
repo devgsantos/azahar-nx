@@ -664,9 +664,14 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
                 ++enabled_count;
             }
         }
-        if (enabled_count == 1) {
-            cached_texture = texture_cache.GetTexture(textures[enabled_texture_index]);
+        if (enabled_count != 0) {
+            LOG_INFO(Render,
+                     "Deko3D diagnostic: textured batch forced to software fallback textures={}",
+                     enabled_count);
+            RecordFallbackReason(FallbackReason::TexturesEnabled);
+            return false;
         }
+        (void)enabled_texture_index;
     }
 
     const bool use_texture = cached_texture != nullptr;
