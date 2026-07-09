@@ -11,8 +11,25 @@ layout (location = 7) in vec3 inView;
 
 layout (location = 0) out vec4 outColor;
 
+const vec2 EPSILON_Z = vec2(0.000001, -1.00001);
+
+vec4 SanitizeVertex(vec4 position)
+{
+    if (position.w != 0.0) {
+        float ndcZ = position.z / position.w;
+        if (ndcZ > 0.0 && ndcZ < EPSILON_Z.x) {
+            position.z = 0.0;
+        }
+        if (ndcZ < -1.0 && ndcZ > EPSILON_Z.y) {
+            position.z = -position.w;
+        }
+    }
+    return position;
+}
+
 void main()
 {
-    gl_Position = inPosition;
+    vec4 position = SanitizeVertex(inPosition);
+    gl_Position = vec4(position.x, position.y, -position.z, position.w);
     outColor = inColor;
 }

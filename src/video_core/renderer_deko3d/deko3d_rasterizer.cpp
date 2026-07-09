@@ -874,6 +874,17 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         color_state.logicOp = *mapped_logic_op;
     }
     dkColorWriteStateSetMask(&color_write_state, 0, ColorWriteMask(regs.framebuffer));
+    LOG_INFO(Render,
+             "HWdraw pipeline: blend={} logicOp={} depthTest={} depthWrite={} depthCmp={} "
+             "stencil={} colorMask={:#x} alphablend_en={}",
+             regs.framebuffer.output_merger.alphablend_enable.Value(),
+             static_cast<u32>(color_state.logicOp),
+             depth_stencil_state.depthTestEnable,
+             depth_stencil_state.depthWriteEnable,
+             static_cast<u32>(depth_stencil_state.depthCompareOp),
+             depth_stencil_state.stencilTestEnable,
+             ColorWriteMask(regs.framebuffer),
+             regs.framebuffer.output_merger.alphablend_enable.Value());
     if (regs.framebuffer.output_merger.alphablend_enable != 0) {
         const auto blend = regs.framebuffer.output_merger.alpha_blending;
         const auto src_rgb = MapBlendFactor(blend.factor_source_rgb);
@@ -1027,7 +1038,6 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     LOG_INFO(Render, "HWdraw F vtx_off={} vtx_bytes={} vtx_count={}", slice.vertex_offset,
              vertex_bytes, vertex_count);
     dkCmdBufDraw(command_buffer, DkPrimitive_Triangles, static_cast<u32>(vertex_count), 1, 0, 0);
-    dkCmdBufBarrier(command_buffer, DkBarrier_Full, DkInvalidateFlags_Image);
     dkCmdBufSignalFence(command_buffer, &slice.fence, true);
 
     const DkCmdList draw_cmd = dkCmdBufFinishList(command_buffer);
@@ -1043,14 +1053,16 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     }
     LOG_INFO(Render, "HWdraw H");
     FlushQueue();
-    LOG_INFO(Render, "HWdraw I");
-    dkQueueWaitIdle(queue);
-    if (QueueHasError("after draw waitidle")) {
+    LOG_INFO(Render, "HWdraw waiting slice fence");
+    const DkResult fence_result = dkFenceWait(&slice.fence, -1);
+    LOG_INFO(Render, "HWdraw slice fence result={}", static_cast<int>(fence_result));
+    if (fence_result != DkResult_Success || QueueHasError("after slice fence wait")) {
+        LOG_ERROR(Render, "HWdraw GPU completion failed result={}", static_cast<int>(fence_result));
         return false;
     }
     LOG_INFO(Render, "HWdraw J");
-    slice.fence_pending = true;
-    slice.pending_vertices = vertex_count;
+    slice.fence_pending = false;
+    slice.pending_vertices = 0;
     state.MarkRenderTargetGpuDirty(color_target);
     RecordHardwareRasterFrame();
     RecordHardwareDrawSubmitted(vertex_count / 3);
