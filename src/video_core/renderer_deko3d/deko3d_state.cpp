@@ -936,25 +936,15 @@ bool State::PresentScreenTexturesFrame() {
     LOG_INFO(Render, "Present D cached={}", cached_present != nullptr);
     DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
     if (cached_present && cached_present->gpu_dirty) {
+        LOG_INFO(Render, "Present cached D1 before wait");
         WaitRasterQueue();
-        DkImageRect top_copy_src = {0, 0, 0, cached_present->key.width,
-                                    cached_present->key.height, 1};
-        dkCmdBufBarrier(cmdbuf, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
-        dkCmdBufBlitImage(cmdbuf, &cached_present->view, &top_copy_src, &framebuffer_views[slot],
-                          &top_copy_dst, DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
-        LOG_INFO(Render,
-                 "Deko3D present cached render target: display_addr=0x{:08x} target={}x{} "
-                 "dst={}x{}+{},{} generation={} orientation={}",
-                 cached_present->key.color_address, cached_present->key.width,
-                 cached_present->key.height, top_copy_dst.width, top_copy_dst.height,
-                 top_copy_dst.x, top_copy_dst.y,
-                 static_cast<unsigned long long>(cached_present->deko_generation),
-                 cached_present->key.width == top_height && cached_present->key.height == top_width
-                     ? "portrait_to_landscape"
-                     : "direct_or_scaled");
+        LOG_INFO(Render, "Present cached D2 after wait");
+        dkCmdBufBindRenderTarget(cmdbuf, &framebuffer_views[slot], nullptr);
+        dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.7f, 0.0f, 0.7f, 1.0f);
+        LOG_INFO(Render, "Present cached D3 diagnostic clear done (blit skipped)");
     } else if (top_screen_gpu_dirty && top_screen_view) {
         DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
-        dkCmdBufBarrier(cmdbuf, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
+        dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
         dkCmdBufBlitImage(cmdbuf, top_screen_view, &top_copy_src, &framebuffer_views[slot],
                           &top_copy_dst, DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
     } else {
@@ -968,21 +958,21 @@ bool State::PresentScreenTexturesFrame() {
     dkCmdBufCopyBufferToImage(cmdbuf, &bottom_copy_src, &framebuffer_views[slot], &bottom_copy_dst,
                               0);
 
+    dkCmdBufSignalFence(cmdbuf, &present_fence, false);
     LOG_INFO(Render, "Present E");
     const DkCmdList copy_cmd = dkCmdBufFinishList(cmdbuf);
+    LOG_INFO(Render, "Present E2 cmdlist={}", copy_cmd != 0);
     if (!copy_cmd) {
         SetError("Deko3D failed to record buffer-to-image copy command");
         return false;
     }
 
     LOG_INFO(Render, "Present F");
+    LOG_INFO(Render, "Present cached submit begin");
     dkQueueSubmitCommands(queue, copy_cmd);
+    LOG_INFO(Render, "Present cached submit leave");
     RecordPresentQueueSubmit();
     if (QueueHasError("after present copy submit")) {
-        return false;
-    }
-    dkQueueSignalFence(queue, &present_fence, true);
-    if (QueueHasError("after present fence signal")) {
         return false;
     }
     FlushQueue();
