@@ -722,7 +722,7 @@ State::CachedRenderTarget* State::GetOrCreateRenderTarget(const RenderTargetKey&
     DkImageLayoutMaker layout_maker;
     dkImageLayoutMakerDefaults(&layout_maker, device);
     layout_maker.type = DkImageType_2D;
-    layout_maker.flags = DkImageFlags_UsageRender;
+    layout_maker.flags = DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine;
     layout_maker.format = *mapped_format;
     layout_maker.dimensions[0] = key.width;
     layout_maker.dimensions[1] = key.height;
@@ -939,7 +939,7 @@ bool State::PresentScreenTexturesFrame() {
         WaitRasterQueue();
         DkImageRect top_copy_src = {0, 0, 0, cached_present->key.width,
                                     cached_present->key.height, 1};
-        dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
+        dkCmdBufBarrier(cmdbuf, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
         dkCmdBufBlitImage(cmdbuf, &cached_present->view, &top_copy_src, &framebuffer_views[slot],
                           &top_copy_dst, DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
         LOG_INFO(Render,
@@ -954,7 +954,7 @@ bool State::PresentScreenTexturesFrame() {
                      : "direct_or_scaled");
     } else if (top_screen_gpu_dirty && top_screen_view) {
         DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
-        dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
+        dkCmdBufBarrier(cmdbuf, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
         dkCmdBufBlitImage(cmdbuf, top_screen_view, &top_copy_src, &framebuffer_views[slot],
                           &top_copy_dst, DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
     } else {

@@ -18,16 +18,15 @@ bool AlphaTestPassed(float a) {
     if (pica.alpha_test_enabled == 0) {
         return true;
     }
-    switch (pica.alpha_test_func) {
-        case 0:  return a == pica.alpha_test_ref; // Equal
-        case 1:  return a != pica.alpha_test_ref; // NotEqual
-        case 2:  return a <  pica.alpha_test_ref; // Less
-        case 3:  return a <= pica.alpha_test_ref; // LessEqual
-        case 4:  return a >  pica.alpha_test_ref; // Greater
-        case 5:  return a >= pica.alpha_test_ref; // GreaterEqual
-        case 6:  return true;                       // Always
-        default: return false;                      // Never and unknown
-    }
+    int func = clamp(pica.alpha_test_func, 0, 7);
+    if (func == 0) return a == pica.alpha_test_ref;
+    if (func == 1) return a != pica.alpha_test_ref;
+    if (func == 2) return a <  pica.alpha_test_ref;
+    if (func == 3) return a <= pica.alpha_test_ref;
+    if (func == 4) return a >  pica.alpha_test_ref;
+    if (func == 5) return a >= pica.alpha_test_ref;
+    if (func == 6) return true;
+    return false;
 }
 
 void main()
