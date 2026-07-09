@@ -69,6 +69,17 @@ public:
         return queue;
     }
 
+    [[nodiscard]] DkQueue GetRasterQueue() const {
+        return raster_queue;
+    }
+
+    void WaitRasterQueue() {
+        if (raster_queue) {
+            dkQueueFlush(raster_queue);
+            dkQueueWaitIdle(raster_queue);
+        }
+    }
+
     [[nodiscard]] const DkImageView* GetTopScreenRenderTargetView() const {
         return top_screen_view;
     }
@@ -135,6 +146,7 @@ private:
     bool CreateFramebuffers();
     bool CreateCommandBuffer();
     bool CreateQueue();
+    bool CreateRasterQueue();
     bool RecordStaticCommands();
     bool CreateScreenTextures();
     bool QueueHasError(const char* context);
@@ -142,6 +154,7 @@ private:
 
     DkDevice device{};
     DkQueue queue{};
+    DkQueue raster_queue{};
     DkMemBlock framebuffer_mem_block{};
     std::array<DkImage, FramebufferCount> framebuffers{};
     std::array<DkImageView, FramebufferCount> framebuffer_views{};

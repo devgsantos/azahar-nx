@@ -7,9 +7,11 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <optional>
 
 #include "common/logging/log.h"
 #include "common/switch_trace.h"
+#include "video_core/pica/regs_framebuffer.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
 
 #ifdef __SWITCH__
@@ -26,8 +28,40 @@ u64 AlignUp(u64 value, u64 alignment) {
     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
 }
 
+std::optional<DkImageFormat> MapRenderTargetColorFormat(Pica::FramebufferRegs::ColorFormat format) {
+    using ColorFormat = Pica::FramebufferRegs::ColorFormat;
+    switch (format) {
+    case ColorFormat::RGBA8:
+        return DkImageFormat_RGBA8_Unorm;
+    case ColorFormat::RGB5A1:
+        return DkImageFormat_RGB5A1_Unorm;
+    case ColorFormat::RGB565:
+        return DkImageFormat_RGB565_Unorm;
+    case ColorFormat::RGBA4:
+        return DkImageFormat_RGBA4_Unorm;
+    default:
+        return std::nullopt;
+    }
+}
+
 u64 RenderTargetBytes(const State::RenderTargetKey& key) {
-    return static_cast<u64>(key.width) * key.height * 4;
+    using ColorFormat = Pica::FramebufferRegs::ColorFormat;
+    u32 bytes_per_pixel = 4;
+    switch (static_cast<ColorFormat>(key.format)) {
+    case ColorFormat::RGB8:
+        bytes_per_pixel = 3;
+        break;
+    case ColorFormat::RGB5A1:
+    case ColorFormat::RGB565:
+    case ColorFormat::RGBA4:
+        bytes_per_pixel = 2;
+        break;
+    case ColorFormat::RGBA8:
+    default:
+        bytes_per_pixel = 4;
+        break;
+    }
+    return static_cast<u64>(key.width) * key.height * bytes_per_pixel;
 }
 
 bool RangesOverlap(PAddr lhs, u64 lhs_size, PAddr rhs, u64 rhs_size) {
@@ -100,6 +134,11 @@ bool State::Initialize() {
     }
     SWITCH_TRACE_EVENT("Deko3D", "State::CreateQueue", "Deko3D queue created");
 
+    if (!CreateRasterQueue()) {
+        Shutdown();
+        return false;
+    }
+
     SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "enter");
     if (!CreateFramebuffers()) {
         SWITCH_TRACE_EVENT("Deko3D", "State::CreateFramebuffers", "failed");
@@ -162,6 +201,7 @@ bool State::Initialize() {
     SWITCH_TRACE_EVENTF("Deko3D", "State::Initialize", "screen buffer allocated",
                         "size=%u", screen_data_buffer_size);
 
+    render_targets.reserve(8);
     initialized = true;
     LOG_INFO(Render, "Deko3D renderer initialized: framebuffer={}x{} count={}", FramebufferWidth,
              FramebufferHeight, FramebufferCount);
@@ -237,6 +277,7 @@ void State::Shutdown() {
         }
     }
     render_targets.clear();
+    render_targets.reserve(8);
     render_target_generation = 0;
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy render target cache leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures enter");
@@ -262,6 +303,10 @@ void State::Shutdown() {
     }
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy screen textures leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy queue enter");
+    if (raster_queue) {
+        dkQueueDestroy(raster_queue);
+        raster_queue = nullptr;
+    }
     if (queue) {
         dkQueueDestroy(queue);
         queue = nullptr;
@@ -548,6 +593,19 @@ bool State::CreateQueue() {
     return true;
 }
 
+bool State::CreateRasterQueue() {
+    DkQueueMaker queue_maker;
+    dkQueueMakerDefaults(&queue_maker, device);
+    queue_maker.flags = DkQueueFlags_Graphics;
+    raster_queue = dkQueueCreate(&queue_maker);
+    if (!raster_queue) {
+        SetError("dkQueueCreate (raster) failed");
+        return false;
+    }
+    LOG_INFO(Render, "Deko3D raster queue created");
+    return true;
+}
+
 bool State::RecordStaticCommands() {
     for (u32 index = 0; index < FramebufferCount; ++index) {
         dkCmdBufClear(cmdbuf);
@@ -654,12 +712,20 @@ State::CachedRenderTarget* State::GetOrCreateRenderTarget(const RenderTargetKey&
         }
     }
 
+    const auto mapped_format =
+        MapRenderTargetColorFormat(static_cast<Pica::FramebufferRegs::ColorFormat>(key.format));
+    if (!mapped_format) {
+        LOG_WARNING(Render,
+                    "Deko3D render target cache: unsupported color format {} for addr=0x{:08x}",
+                    key.format, key.color_address);
+        return nullptr;
+    }
+
     DkImageLayoutMaker layout_maker;
     dkImageLayoutMakerDefaults(&layout_maker, device);
     layout_maker.type = DkImageType_2D;
-    layout_maker.flags =
-        DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine | DkImageFlags_UsageLoadStore;
-    layout_maker.format = DkImageFormat_RGBA8_Unorm;
+    layout_maker.flags = DkImageFlags_UsageRender;
+    layout_maker.format = *mapped_format;
     layout_maker.dimensions[0] = key.width;
     layout_maker.dimensions[1] = key.height;
 
@@ -719,7 +785,6 @@ void State::MarkRenderTargetGpuDirty(CachedRenderTarget& target) {
     target.gpu_dirty = true;
     target.cpu_dirty = false;
     target.deko_generation = ++render_target_generation;
-    top_screen_gpu_dirty = true;
     RecordRenderTargetGpuDirty();
 }
 
@@ -757,6 +822,7 @@ void State::UploadScreenTextures() {
 }
 
 bool State::PresentScreenTexturesFrame() {
+    LOG_INFO(Render, "Present A");
     if (!initialized || !queue || !swapchain) {
         SetError("Deko3D present requested before initialization");
         SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "failed_not_initialized");
@@ -765,8 +831,11 @@ bool State::PresentScreenTexturesFrame() {
 
     // Upload screen texture data first
     UploadScreenTextures();
+    LOG_INFO(Render, "Present B");
 
+    LOG_INFO(Render, "Present B1 acquire");
     const int slot = dkQueueAcquireImage(queue, swapchain);
+    LOG_INFO(Render, "Present B1b slot={}", slot);
     if (slot < 0 || slot >= static_cast<int>(FramebufferCount)) {
         SetError("Deko3D failed to acquire swapchain image");
         SWITCH_TRACE_EVENTF("Deko3D", "State::PresentScreenTexturesFrame", "failed_acquire",
@@ -795,6 +864,7 @@ bool State::PresentScreenTexturesFrame() {
         return true;
     }
 
+    LOG_INFO(Render, "Present B2 fence_pending={}", present_fence_pending);
     if (present_fence_pending) {
         FlushQueue();
         RecordPresentFencePoll();
@@ -848,6 +918,7 @@ bool State::PresentScreenTexturesFrame() {
     const u32 bottom_x = (frame_width - bottom_width) / 2;
     const u32 bottom_y = 320;
 
+    LOG_INFO(Render, "Present C");
     dkCmdBufClear(cmdbuf);
 
     if (!swapchain_background_initialized[slot]) {
@@ -858,8 +929,10 @@ bool State::PresentScreenTexturesFrame() {
 
     // Place top and bottom 3DS screens centered on Switch output.  Hardware-rasterized guest
     // render targets stay on the GPU and are blitted directly; CPU upload remains the fallback.
+    LOG_INFO(Render, "Present D cached={}", cached_present != nullptr);
     DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
     if (cached_present && cached_present->gpu_dirty) {
+        WaitRasterQueue();
         DkImageRect top_copy_src = {0, 0, 0, cached_present->key.width,
                                     cached_present->key.height, 1};
         dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
@@ -891,12 +964,14 @@ bool State::PresentScreenTexturesFrame() {
     dkCmdBufCopyBufferToImage(cmdbuf, &bottom_copy_src, &framebuffer_views[slot], &bottom_copy_dst,
                               0);
 
+    LOG_INFO(Render, "Present E");
     const DkCmdList copy_cmd = dkCmdBufFinishList(cmdbuf);
     if (!copy_cmd) {
         SetError("Deko3D failed to record buffer-to-image copy command");
         return false;
     }
 
+    LOG_INFO(Render, "Present F");
     dkQueueSubmitCommands(queue, copy_cmd);
     RecordPresentQueueSubmit();
     if (QueueHasError("after present copy submit")) {
@@ -912,6 +987,10 @@ bool State::PresentScreenTexturesFrame() {
     }
     present_fence_pending = true;
     dkQueuePresentImage(queue, swapchain, slot);
+    if (QueueHasError("after present image")) {
+        return false;
+    }
+    LOG_INFO(Render, "Present G");
     return true;
 }
 #endif

@@ -649,6 +649,9 @@ void SwitchApp::DrawExternalDataWarning(const ExternalDataStatus& status) const 
 
 } // namespace Azahar::Switch
 
+extern "C" u32 __nx_applet_exit_mode = 0;
+extern "C" u64 __nx_main_thread_stack_size = 4 * 1024 * 1024;
+
 int main(int, char**) {
     Azahar::Switch::DebugLog::Initialize();
     SWITCH_EARLY_LOG("main entered");

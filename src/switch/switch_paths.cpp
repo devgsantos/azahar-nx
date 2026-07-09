@@ -81,6 +81,7 @@ void ApplySwitchSettings() {
     Settings::values.resolution_factor = 1;
     Settings::values.use_disk_shader_cache = true;
     Settings::values.async_shader_compilation = true;
+    Settings::values.use_shader_jit = true;
     Settings::values.texture_filter = Settings::TextureFilter::NoFilter;
     Settings::values.texture_sampling = Settings::TextureSampling::GameControlled;
     Settings::values.custom_textures = false;

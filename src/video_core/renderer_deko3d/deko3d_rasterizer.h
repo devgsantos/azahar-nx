@@ -5,6 +5,7 @@
 
 #include <array>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 
 #include "video_core/pica/output_vertex.h"
@@ -27,6 +28,7 @@ class PicaCore;
 
 namespace VideoCore::Deko3D {
 
+struct CachedTexture;
 class ShaderCache;
 class TextureCache;
 
@@ -116,7 +118,7 @@ private:
     bool TryDrawHardwareBatch(std::size_t& submitted_vertices);
     bool SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
                              const DkImageView* depth_target, std::size_t base_vertex,
-                             std::size_t vertex_count);
+                             std::size_t vertex_count, const CachedTexture* texture);
     const DkImageView* GetOrCreateDepthTarget();
     bool QueueHasError(const char* context);
     void FlushQueue();
@@ -150,8 +152,20 @@ private:
     u32 depth_width = 0;
     u32 depth_height = 0;
     u32 depth_format = 0;
+    bool depth_needs_clear = false;
     std::array<FrameSlice, FrameSliceCount> frame_slices{};
     u32 current_frame_slice = 0;
+    mutable std::unordered_set<std::size_t> observed_state_signatures;
+    std::unordered_set<std::size_t> blend_signatures;
+    DkRasterizerState hw_rasterizer_state{};
+    DkMultisampleState hw_multisample_state{};
+    DkColorState hw_color_state{};
+    DkColorWriteState hw_color_write_state{};
+    DkDepthStencilState hw_depth_stencil_state{};
+    DkBlendState hw_blend_state{};
+    DkImageView hw_color_view{};
+    DkImageDescriptor hw_image_descriptor{};
+    DkSamplerDescriptor hw_sampler_descriptor{};
 #endif
 };
 
