@@ -283,7 +283,7 @@ bool Rasterizer::InitializeGpuResources() {
     }
 
     const u32 command_slice_size =
-        AlignDown(RasterCommandMemorySize / FrameSliceCount, DK_CMDMEM_ALIGNMENT);
+        AlignDown(RasterCommandMemorySize, DK_CMDMEM_ALIGNMENT);
     DkMemBlockMaker vertex_mem_maker;
     dkMemBlockMakerDefaults(&vertex_mem_maker, device,
                             AlignUp(VertexBufferSize, DK_MEMBLOCK_ALIGNMENT));
@@ -381,10 +381,10 @@ bool Rasterizer::InitializeGpuResources() {
         LOG_INFO(Render, "Testing initial clear slice={}", index);
         SWITCH_EARLY_LOGF("Testing initial clear slice=%u", index);
         dkCmdBufClear(frame_slices[index].command_buffer);
-        LOG_INFO(Render, "Initial clear succeeded slice={}", index);
-        SWITCH_EARLY_LOGF("Initial clear succeeded slice=%u", index);
         dkCmdBufAddMemory(frame_slices[index].command_buffer,
                           frame_slices[index].command_mem_block, 0, command_slice_size);
+        LOG_INFO(Render, "Initial clear succeeded slice={}", index);
+        SWITCH_EARLY_LOGF("Initial clear succeeded slice=%u", index);
     }
 
     current_frame_slice = 2;
@@ -943,7 +943,6 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
              static_cast<void*>(slice.command_mem_block),
              slice.fence_pending);
     dkCmdBufClear(command_buffer);
-    dkCmdBufAddMemory(command_buffer, slice.command_mem_block, 0, slice.command_size);
     LOG_INFO(Render, "HWdraw C");
     const DkGpuAddr ubo_addr = uniform_gpu_addr + slice.uniform_offset;
     const u32 ubo_size = AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT);
