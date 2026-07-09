@@ -5,12 +5,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <optional>
 
 #include "common/logging/log.h"
 #include "common/switch_trace.h"
+#include "switch/switch_debug_log.h"
 #include "video_core/pica/regs_framebuffer.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
 
@@ -79,8 +81,12 @@ bool RangesOverlap(PAddr lhs, u64 lhs_size, PAddr rhs, u64 rhs_size) {
 #ifdef __SWITCH__
 void Deko3DDebugCallback(void* user_data, const char* context, DkResult result,
                          const char* message) {
-    LOG_ERROR(Render, "Deko3D validation: user_data={} context={} result={} message={}",
-              user_data, context ? context : "", static_cast<int>(result),
+    SWITCH_EARLY_LOGF("DEKO3D FATAL context=%s result=%d message=%s",
+                      context ? context : "<null>",
+                      static_cast<int>(result),
+                      message ? message : "<null>");
+    LOG_ERROR(Render, "Deko3D validation: context={} result={} message={}",
+              context ? context : "", static_cast<int>(result),
               message ? message : "");
 }
 #endif

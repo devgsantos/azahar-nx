@@ -14,6 +14,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "switch/switch_debug_log.h"
 #include "video_core/pica/pica_core.h"
 #include "video_core/renderer_deko3d/deko3d_shader.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
@@ -352,7 +353,7 @@ bool Rasterizer::InitializeGpuResources() {
         DkMemBlockMaker cmd_mem_maker;
         dkMemBlockMakerDefaults(&cmd_mem_maker, device,
                                 AlignUp(command_slice_size, DK_MEMBLOCK_ALIGNMENT));
-        cmd_mem_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code;
+        cmd_mem_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
         slice.command_mem_block = dkMemBlockCreate(&cmd_mem_maker);
         if (!slice.command_mem_block) {
             LOG_ERROR(Render, "Deko3D rasterizer command memory allocation failed for slice {}", index);
@@ -367,9 +368,26 @@ bool Rasterizer::InitializeGpuResources() {
             return false;
         }
         dkCmdBufAddMemory(slice.command_buffer, slice.command_mem_block, 0, command_slice_size);
-        dkCmdBufFinishList(slice.command_buffer);
+        LOG_INFO(Render,
+                 "Created slice={} cmdbuf={} cmdmem={} cmdmem_cpu={} cmdmem_gpu=0x{:x}",
+                 index,
+                 static_cast<void*>(slice.command_buffer),
+                 static_cast<void*>(slice.command_mem_block),
+                 dkMemBlockGetCpuAddr(slice.command_mem_block),
+                 dkMemBlockGetGpuAddr(slice.command_mem_block));
     }
-    current_frame_slice = 0;
+
+    for (u32 index = 0; index < FrameSliceCount; ++index) {
+        LOG_INFO(Render, "Testing initial clear slice={}", index);
+        SWITCH_EARLY_LOGF("Testing initial clear slice=%u", index);
+        dkCmdBufClear(frame_slices[index].command_buffer);
+        LOG_INFO(Render, "Initial clear succeeded slice={}", index);
+        SWITCH_EARLY_LOGF("Initial clear succeeded slice=%u", index);
+        dkCmdBufAddMemory(frame_slices[index].command_buffer,
+                          frame_slices[index].command_mem_block, 0, command_slice_size);
+    }
+
+    current_frame_slice = 2;
 
     LOG_INFO(Render,
              "Deko3D rasterizer GPU resources created: vertex={} uniform={} descriptor={} "
@@ -919,11 +937,18 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         LOG_ERROR(Render, "HWdraw ABORT: null command_buffer for slice");
         return false;
     }
+    LOG_INFO(Render,
+             "Clearing slice cmdbuf={} cmdmem={} fence_pending={}",
+             static_cast<void*>(slice.command_buffer),
+             static_cast<void*>(slice.command_mem_block),
+             slice.fence_pending);
     dkCmdBufClear(command_buffer);
+    dkCmdBufAddMemory(command_buffer, slice.command_mem_block, 0, slice.command_size);
     LOG_INFO(Render, "HWdraw C");
-    dkCmdBufBindUniformBuffer(command_buffer, DkStage_Fragment, 0,
-                              uniform_gpu_addr + slice.uniform_offset,
-                              AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT));
+    const DkGpuAddr ubo_addr = uniform_gpu_addr + slice.uniform_offset;
+    const u32 ubo_size = AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT);
+    LOG_INFO(Render, "HWdraw C1 ubo_addr=0x{:x} ubo_size={} uni_gpu=0x{:x} uni_off={}", ubo_addr, ubo_size, uniform_gpu_addr, slice.uniform_offset);
+    dkCmdBufBindUniformBuffer(command_buffer, DkStage_Fragment, 0, ubo_addr, ubo_size);
     LOG_INFO(Render, "HWdraw D");
     dkImageViewDefaults(&hw_color_view, &color_target.image);
     dkCmdBufBindRenderTarget(command_buffer, &hw_color_view, depth_target);
