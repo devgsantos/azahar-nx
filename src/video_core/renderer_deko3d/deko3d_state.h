@@ -70,13 +70,13 @@ public:
     }
 
     [[nodiscard]] DkQueue GetRasterQueue() const {
-        return raster_queue;
+        return queue; // share the single presenter queue — two Graphics queues on same device fault
     }
 
     void WaitRasterQueue() {
-        if (raster_queue) {
-            dkQueueFlush(raster_queue);
-            dkQueueWaitIdle(raster_queue);
+        if (queue) {
+            dkQueueFlush(queue);
+            dkQueueWaitIdle(queue);
         }
     }
 

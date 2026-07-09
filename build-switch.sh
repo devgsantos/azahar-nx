@@ -27,6 +27,7 @@ cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DENABLE_SCRIPTING=OFF \
     -DENABLE_GDBSTUB=OFF \
     -DENABLE_TESTS=OFF \
+    -DAZAHAR_DEKO3D_VALIDATION=ON \
     "$@"
 
 cmake --build "$BUILD_DIR" --target azahar_switch -- -j"$JOBS"

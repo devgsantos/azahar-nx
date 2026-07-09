@@ -281,23 +281,6 @@ bool Rasterizer::InitializeGpuResources() {
         return false;
     }
 
-    DkMemBlockMaker command_mem_maker;
-    dkMemBlockMakerDefaults(&command_mem_maker, device,
-                            AlignUp(RasterCommandMemorySize, DK_MEMBLOCK_ALIGNMENT));
-    command_mem_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
-    command_mem_block = dkMemBlockCreate(&command_mem_maker);
-    if (!command_mem_block) {
-        LOG_ERROR(Render, "Deko3D rasterizer command memory allocation failed");
-        return false;
-    }
-
-    DkCmdBufMaker command_buffer_maker;
-    dkCmdBufMakerDefaults(&command_buffer_maker, device);
-    command_buffer = dkCmdBufCreate(&command_buffer_maker);
-    if (!command_buffer) {
-        LOG_ERROR(Render, "Deko3D rasterizer command buffer creation failed");
-        return false;
-    }
     const u32 command_slice_size =
         AlignDown(RasterCommandMemorySize / FrameSliceCount, DK_CMDMEM_ALIGNMENT);
     DkMemBlockMaker vertex_mem_maker;
@@ -353,10 +336,8 @@ bool Rasterizer::InitializeGpuResources() {
     const u32 uniform_slice_size = AlignDown(UniformBufferSize / FrameSliceCount, 256u);
     for (u32 index = 0; index < FrameSliceCount; ++index) {
         auto& slice = frame_slices[index];
-        slice.command_offset = index * command_slice_size;
-        slice.command_size =
-            index == FrameSliceCount - 1 ? RasterCommandMemorySize - slice.command_offset
-                                         : command_slice_size;
+        slice.command_offset = 0;
+        slice.command_size = command_slice_size;
         slice.vertex_offset = index * vertex_slice_size;
         slice.vertex_size =
             index == FrameSliceCount - 1 ? VertexBufferSize - slice.vertex_offset
@@ -367,6 +348,26 @@ bool Rasterizer::InitializeGpuResources() {
                                          : uniform_slice_size;
         slice.fence = {};
         slice.fence_pending = false;
+
+        DkMemBlockMaker cmd_mem_maker;
+        dkMemBlockMakerDefaults(&cmd_mem_maker, device,
+                                AlignUp(command_slice_size, DK_MEMBLOCK_ALIGNMENT));
+        cmd_mem_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code;
+        slice.command_mem_block = dkMemBlockCreate(&cmd_mem_maker);
+        if (!slice.command_mem_block) {
+            LOG_ERROR(Render, "Deko3D rasterizer command memory allocation failed for slice {}", index);
+            return false;
+        }
+
+        DkCmdBufMaker cmd_buf_maker;
+        dkCmdBufMakerDefaults(&cmd_buf_maker, device);
+        slice.command_buffer = dkCmdBufCreate(&cmd_buf_maker);
+        if (!slice.command_buffer) {
+            LOG_ERROR(Render, "Deko3D rasterizer command buffer creation failed for slice {}", index);
+            return false;
+        }
+        dkCmdBufAddMemory(slice.command_buffer, slice.command_mem_block, 0, command_slice_size);
+        dkCmdBufFinishList(slice.command_buffer);
     }
     current_frame_slice = 0;
 
@@ -378,18 +379,20 @@ bool Rasterizer::InitializeGpuResources() {
 }
 
 void Rasterizer::ShutdownGpuResources() {
-    if (device || queue || command_buffer || command_mem_block || vertex_mem_block ||
+    if (device || queue || vertex_mem_block ||
         uniform_mem_block || descriptor_mem_block) {
         state.WaitIdle();
     }
 
-    if (command_buffer) {
-        dkCmdBufDestroy(command_buffer);
-        command_buffer = nullptr;
-    }
-    if (command_mem_block) {
-        dkMemBlockDestroy(command_mem_block);
-        command_mem_block = nullptr;
+    for (auto& slice : frame_slices) {
+        if (slice.command_buffer) {
+            dkCmdBufDestroy(slice.command_buffer);
+            slice.command_buffer = nullptr;
+        }
+        if (slice.command_mem_block) {
+            dkMemBlockDestroy(slice.command_mem_block);
+            slice.command_mem_block = nullptr;
+        }
     }
     if (vertex_mem_block) {
         dkMemBlockDestroy(vertex_mem_block);
@@ -493,7 +496,7 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
     if (!batch_valid) {
         blockers |= InvalidBatch;
     }
-    if (!initialized || !device || !queue || !command_buffer || !vertex_cpu_buffer ||
+    if (!initialized || !device || !queue || !frame_slices[0].command_buffer || !vertex_cpu_buffer ||
         vertex_gpu_addr == 0) {
         blockers |= MissingGpuResources;
     }
@@ -613,7 +616,7 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
     RecordFallbackReason(FallbackReason::UnsupportedState);
     return false;
 #endif
-    if (!initialized || !device || !queue || !command_buffer || !vertex_cpu_buffer ||
+    if (!initialized || !device || !queue || !frame_slices[0].command_buffer || !vertex_cpu_buffer ||
         vertex_gpu_addr == 0) {
         return false;
     }
@@ -906,11 +909,17 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     std::memcpy(static_cast<u8*>(uniform_cpu_buffer) + slice.uniform_offset, &fragment_state,
                 sizeof(fragment_state));
 
-    LOG_INFO(Render, "HWdraw A");
+    DkCmdBuf command_buffer = slice.command_buffer;
+    LOG_INFO(Render, "HWdraw A slice={} cmd_off={} cmd_sz={} vtx_off={} uni_off={} cmdbuf={}",
+             current_frame_slice == 0 ? FrameSliceCount - 1 : current_frame_slice - 1,
+             slice.command_offset, slice.command_size,
+             slice.vertex_offset, slice.uniform_offset,
+             command_buffer != nullptr);
+    if (!command_buffer) {
+        LOG_ERROR(Render, "HWdraw ABORT: null command_buffer for slice");
+        return false;
+    }
     dkCmdBufClear(command_buffer);
-    LOG_INFO(Render, "HWdraw B");
-    dkCmdBufAddMemory(command_buffer, command_mem_block, slice.command_offset,
-                      slice.command_size);
     LOG_INFO(Render, "HWdraw C");
     dkCmdBufBindUniformBuffer(command_buffer, DkStage_Fragment, 0,
                               uniform_gpu_addr + slice.uniform_offset,
@@ -928,8 +937,11 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     }
     LOG_INFO(Render, "HWdraw E");
     dkCmdBufSetViewports(command_buffer, 0, &viewport, 1);
+    LOG_INFO(Render, "HWdraw E1");
     dkCmdBufSetScissors(command_buffer, 0, &scissor, 1);
+    LOG_INFO(Render, "HWdraw E2");
     dkCmdBufBindShaders(command_buffer, DkStageFlag_GraphicsMask, shaders, 2);
+    LOG_INFO(Render, "HWdraw E3");
     if (texture) {
         const std::size_t image_offset = 0;
         const std::size_t sampler_offset =
@@ -948,20 +960,29 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         dkCmdBufBindSamplerDescriptorSet(command_buffer, descriptor_gpu_addr + sampler_offset, 1);
     }
     dkCmdBufBindRasterizerState(command_buffer, &rasterizer_state);
+    LOG_INFO(Render, "HWdraw E4");
     dkCmdBufBindMultisampleState(command_buffer, &multisample_state);
+    LOG_INFO(Render, "HWdraw E5");
     dkCmdBufBindColorState(command_buffer, &color_state);
+    LOG_INFO(Render, "HWdraw E6");
     dkCmdBufBindColorWriteState(command_buffer, &color_write_state);
+    LOG_INFO(Render, "HWdraw E7");
     dkCmdBufBindBlendState(command_buffer, 0, &blend_state);
+    LOG_INFO(Render, "HWdraw E8");
     dkCmdBufSetBlendConst(command_buffer,
                           regs.framebuffer.output_merger.blend_const.r.Value() / 255.0f,
                           regs.framebuffer.output_merger.blend_const.g.Value() / 255.0f,
                           regs.framebuffer.output_merger.blend_const.b.Value() / 255.0f,
                           regs.framebuffer.output_merger.blend_const.a.Value() / 255.0f);
+    LOG_INFO(Render, "HWdraw E9");
     dkCmdBufBindDepthStencilState(command_buffer, &depth_stencil_state);
+    LOG_INFO(Render, "HWdraw E10");
     dkCmdBufBindVtxAttribState(command_buffer, attribs,
                                sizeof(attribs) / sizeof(attribs[0]));
+    LOG_INFO(Render, "HWdraw E11");
     dkCmdBufBindVtxBufferState(command_buffer, vtx_buffer_state,
                                sizeof(vtx_buffer_state) / sizeof(vtx_buffer_state[0]));
+    LOG_INFO(Render, "HWdraw E12");
     dkCmdBufBindVtxBuffer(command_buffer, 0, vertex_gpu_addr + slice.vertex_offset,
                           static_cast<u32>(vertex_bytes));
     LOG_INFO(Render, "HWdraw F vtx_off={} vtx_bytes={} vtx_count={}", slice.vertex_offset,

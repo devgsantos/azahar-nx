@@ -60,6 +60,8 @@ private:
     static constexpr u32 DescriptorBufferSize = 64 * 1024;
 
     struct FrameSlice {
+        DkCmdBuf command_buffer{};
+        DkMemBlock command_mem_block{};
         u32 command_offset = 0;
         u32 command_size = 0;
         u32 vertex_offset = 0;
@@ -135,8 +137,6 @@ private:
 #ifdef __SWITCH__
     DkDevice device{};
     DkQueue queue{};
-    DkMemBlock command_mem_block{};
-    DkCmdBuf command_buffer{};
     DkMemBlock vertex_mem_block{};
     void* vertex_cpu_buffer = nullptr;
     DkGpuAddr vertex_gpu_addr = 0;

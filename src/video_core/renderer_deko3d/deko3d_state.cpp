@@ -382,11 +382,9 @@ bool State::PresentClearFrame(float red, float green, float blue, float alpha) {
 bool State::CreateDevice() {
     DkDeviceMaker device_maker;
     dkDeviceMakerDefaults(&device_maker);
-#ifdef AZAHAR_DEKO3D_VALIDATION
     device_maker.userData = this;
     device_maker.cbDebug = Deko3DDebugCallback;
-    LOG_INFO(Render, "Deko3D validation callback enabled");
-#endif
+    LOG_INFO(Render, "Deko3D debug callback installed");
     device = dkDeviceCreate(&device_maker);
     if (!device) {
         SetError("dkDeviceCreate failed");
