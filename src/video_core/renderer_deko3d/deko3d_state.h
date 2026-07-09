@@ -118,6 +118,7 @@ public:
         u64 last_presented_generation = 0;
         bool gpu_dirty = false;
         bool cpu_dirty = false;
+        bool needs_clear = true;
     };
 
     CachedRenderTarget* GetOrCreateRenderTarget(const RenderTargetKey& key);

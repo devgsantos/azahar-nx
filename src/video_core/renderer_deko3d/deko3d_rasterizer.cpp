@@ -725,6 +725,7 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
     }
     if (depth_mem_block) {
         FlushQueue();
+        dkQueueWaitIdle(queue);
         dkMemBlockDestroy(depth_mem_block);
         depth_mem_block = nullptr;
         depth_image = {};
@@ -912,10 +913,15 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
                       slice.command_size);
     LOG_INFO(Render, "HWdraw C");
     dkCmdBufBindUniformBuffer(command_buffer, DkStage_Fragment, 0,
-                              uniform_gpu_addr + slice.uniform_offset, sizeof(PicaFragmentState));
+                              uniform_gpu_addr + slice.uniform_offset,
+                              AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT));
     LOG_INFO(Render, "HWdraw D");
     dkImageViewDefaults(&hw_color_view, &color_target.image);
     dkCmdBufBindRenderTarget(command_buffer, &hw_color_view, depth_target);
+    if (color_target.needs_clear) {
+        dkCmdBufClearColorFloat(command_buffer, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 0.0f);
+        color_target.needs_clear = false;
+    }
     if (depth_target && depth_needs_clear) {
         dkCmdBufClearDepthStencil(command_buffer, true, 1.0f, 0xff, 0);
         depth_needs_clear = false;
@@ -977,7 +983,8 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     LOG_INFO(Render, "HWdraw H");
     FlushQueue();
     LOG_INFO(Render, "HWdraw I");
-    if (QueueHasError("after draw flush")) {
+    dkQueueWaitIdle(queue);
+    if (QueueHasError("after draw waitidle")) {
         return false;
     }
     LOG_INFO(Render, "HWdraw J");

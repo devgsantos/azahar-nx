@@ -833,6 +833,43 @@ bool State::PresentScreenTexturesFrame() {
     UploadScreenTextures();
     LOG_INFO(Render, "Present B");
 
+    // Wait for the previous present fence BEFORE acquiring, so we never block
+    // acquireImage with both swapchain slots still in-flight.
+    LOG_INFO(Render, "Present B2 fence_pending={}", present_fence_pending);
+    if (present_fence_pending) {
+        if (QueueHasError("before present flush")) {
+            return false;
+        }
+        FlushQueue();
+        RecordPresentFencePoll();
+        const DkResult poll_result = dkFenceWait(&present_fence, 0);
+        if (poll_result == DkResult_Success) {
+            RecordFencePollSuccess();
+            RecordPresentFencePollSuccess();
+            present_fence_pending = false;
+        }
+    }
+    if (present_fence_pending) {
+        RecordFenceWait();
+        RecordPresentFenceWait();
+        constexpr s64 FenceWaitTimeoutNs = 1'000'000'000LL;
+        const auto wait_start = std::chrono::steady_clock::now();
+        const DkResult result = dkFenceWait(&present_fence, FenceWaitTimeoutNs);
+        const auto wait_end = std::chrono::steady_clock::now();
+        const auto wait_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(wait_end - wait_start).count();
+        RecordPresentFenceWaitDurationUs(static_cast<std::uint64_t>(std::max<s64>(wait_us, 0)));
+        if (result != DkResult_Success) {
+            if (result == DkResult_Timeout) {
+                RecordFenceTimeout();
+                RecordPresentFenceTimeout();
+            }
+            SetError("Deko3D present fence wait failed");
+            return false;
+        }
+        present_fence_pending = false;
+    }
+
     LOG_INFO(Render, "Present B1 acquire");
     const int slot = dkQueueAcquireImage(queue, swapchain);
     LOG_INFO(Render, "Present B1b slot={}", slot);
@@ -862,38 +899,6 @@ bool State::PresentScreenTexturesFrame() {
         FlushQueue();
         dkQueuePresentImage(queue, swapchain, slot);
         return true;
-    }
-
-    LOG_INFO(Render, "Present B2 fence_pending={}", present_fence_pending);
-    if (present_fence_pending) {
-        FlushQueue();
-        RecordPresentFencePoll();
-        const DkResult poll_result = dkFenceWait(&present_fence, 0);
-        if (poll_result == DkResult_Success) {
-            RecordFencePollSuccess();
-            RecordPresentFencePollSuccess();
-            present_fence_pending = false;
-        }
-    }
-    if (present_fence_pending) {
-        RecordFenceWait();
-        RecordPresentFenceWait();
-        constexpr s64 FenceWaitTimeoutNs = 1'000'000'000LL;
-        const auto wait_start = std::chrono::steady_clock::now();
-        const DkResult result = dkFenceWait(&present_fence, FenceWaitTimeoutNs);
-        const auto wait_end = std::chrono::steady_clock::now();
-        const auto wait_us =
-            std::chrono::duration_cast<std::chrono::microseconds>(wait_end - wait_start).count();
-        RecordPresentFenceWaitDurationUs(static_cast<std::uint64_t>(std::max<s64>(wait_us, 0)));
-        if (result != DkResult_Success) {
-            if (result == DkResult_Timeout) {
-                RecordFenceTimeout();
-                RecordPresentFenceTimeout();
-            }
-            SetError("Deko3D present fence wait failed");
-            return false;
-        }
-        present_fence_pending = false;
     }
 
     u8* const upload_ptr = static_cast<u8*>(upload_cpu_buffer);
