@@ -768,7 +768,30 @@ const State::CachedRenderTarget* State::FindGpuDirtyRenderTarget(PAddr address) 
             return target.get();
         }
     }
-    return nullptr;
+    // Fallback: the display controller reads from a display-transfer destination address which
+    // differs from the render target address. Pick the most recently GPU-dirtied target.
+    const CachedRenderTarget* best = nullptr;
+    for (const auto& target : render_targets) {
+        if (!target->gpu_dirty) {
+            continue;
+        }
+        const u32 target_pixels = target->key.width * target->key.height;
+        const u32 best_pixels = best ? (best->key.width * best->key.height) : 0;
+        if (target_pixels > best_pixels) {
+            best = target.get();
+        } else if (target_pixels == best_pixels &&
+                   target->deko_generation > best->deko_generation) {
+            best = target.get();
+        }
+    }
+    if (best) {
+        LOG_INFO(Render,
+                 "FindGpuDirtyRenderTarget: display addr=0x{:08x} using most-recent RT "
+                 "addr=0x{:08x} size={}x{} gen={}",
+                 address, best->key.color_address, best->key.width, best->key.height,
+                 best->deko_generation);
+    }
+    return best;
 }
 
 const State::CachedRenderTarget* State::GetSelectedPresentRenderTarget() const {
@@ -777,6 +800,18 @@ const State::CachedRenderTarget* State::GetSelectedPresentRenderTarget() const {
 
 void State::SelectPresentRenderTarget(PAddr address) {
     selected_present_render_target = FindGpuDirtyRenderTarget(address);
+    LOG_INFO(Render,
+             "SelectPresentRenderTarget: addr=0x{:08x} found={} rt_count={}",
+             address, selected_present_render_target != nullptr,
+             render_targets.size());
+    if (!selected_present_render_target) {
+        for (const auto& t : render_targets) {
+            LOG_INFO(Render,
+                     "  RT addr=0x{:08x} size={}x{} gpu_dirty={}",
+                     t->key.color_address, t->key.width, t->key.height,
+                     t->gpu_dirty ? 1 : 0);
+        }
+    }
 }
 
 void State::MarkRenderTargetGpuDirty(CachedRenderTarget& target) {
@@ -793,6 +828,10 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
     }
     for (auto& target : render_targets) {
         if (!RangesOverlap(address, bytes, target->key.color_address, RenderTargetBytes(target->key))) {
+            continue;
+        }
+        if (target->owner == SurfaceOwner::Deko3D &&
+            owner != SurfaceOwner::Deko3D) {
             continue;
         }
         target->owner = owner;
@@ -939,22 +978,35 @@ bool State::PresentScreenTexturesFrame() {
         LOG_INFO(Render, "Present cached D1 before wait");
         WaitRasterQueue();
         LOG_INFO(Render, "Present cached D2 after wait");
-        // Blit the hardware render target (240x400, top portion of 240x800 buffer)
-        // into the 400x240 top-screen slot on the Switch framebuffer.
-        // src rect is portrait 240w x 400h; dst rect is landscape 400w x 240h.
-        // dkCmdBufBlitImage will stretch-blit; without rotation support we accept
-        // a 90-degree transposed image for now and handle rotation via flip_viewport.
-        DkImageRect rt_src = {0, 0, 0,
-                              cached_present->key.width,
-                              cached_present->key.height,
-                              1};
+        // The RT is stored in portrait orientation (width=240).
+        // The top screen occupies the first 400 rows (portrait height),
+        // the bottom screen the next 320 rows (if RT height >= 720).
+        // Blit top-screen portion: src 240x400 portrait → dst 400x240 landscape.
+        const u32 rt_w = cached_present->key.width;
+        const u32 rt_h = cached_present->key.height;
+        const u32 top_src_h = std::min(rt_h, 400u);
+        // Flip vertically by reading the source from bottom to top (y = top_src_h, height wraps).
+        // Deko3D interprets src y+height as the end row; setting y=top_src_h and height=0-top_src_h
+        // (wrapping unsigned) is not valid. Instead use FlipY via swapped dst rect top/bottom:
+        // dst rect with y at bottom edge and negative-equivalent height achieved by two blits is
+        // complex; simplest valid approach is just blit normally for now and investigate rotation.
+        DkImageRect rt_src = {0, 0, 0, rt_w, top_src_h, 1};
         dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
         dkCmdBufBlitImage(cmdbuf, &cached_present->view, &rt_src,
                           &framebuffer_views[slot], &top_copy_dst,
                           DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
         LOG_INFO(Render, "Present cached D3 blit done src={}x{} dst={}x{}",
-                 cached_present->key.width, cached_present->key.height,
-                 top_copy_dst.width, top_copy_dst.height);
+                 rt_w, top_src_h, top_copy_dst.width, top_copy_dst.height);
+        // If the RT also contains the bottom screen (height >= 720), blit that too.
+        if (rt_h >= 720) {
+            DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
+            DkImageRect rt_bottom_src = {0, 400, 0, rt_w, 320u, 1};
+            dkCmdBufBlitImage(cmdbuf, &cached_present->view, &rt_bottom_src,
+                              &framebuffer_views[slot], &bottom_copy_dst,
+                              DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
+            LOG_INFO(Render, "Present cached D4 bottom blit done src={}x320 dst={}x{}",
+                     rt_w, bottom_copy_dst.width, bottom_copy_dst.height);
+        }
     } else if (top_screen_gpu_dirty && top_screen_view) {
         DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
         dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
@@ -966,10 +1018,14 @@ bool State::PresentScreenTexturesFrame() {
                                   0);
     }
 
-    DkCopyBuf bottom_copy_src = {upload_gpu_addr + top_bytes, 0, 0};
-    DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
-    dkCmdBufCopyBufferToImage(cmdbuf, &bottom_copy_src, &framebuffer_views[slot], &bottom_copy_dst,
-                              0);
+    const bool bottom_from_rt = cached_present && cached_present->gpu_dirty &&
+                                  cached_present->key.height >= 720;
+    if (!bottom_from_rt) {
+        DkCopyBuf bottom_copy_src = {upload_gpu_addr + top_bytes, 0, 0};
+        DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
+        dkCmdBufCopyBufferToImage(cmdbuf, &bottom_copy_src, &framebuffer_views[slot],
+                                  &bottom_copy_dst, 0);
+    }
 
     dkCmdBufSignalFence(cmdbuf, &present_fence, false);
     LOG_INFO(Render, "Present E");

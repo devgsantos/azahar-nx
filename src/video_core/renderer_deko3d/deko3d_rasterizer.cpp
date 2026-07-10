@@ -694,6 +694,19 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
             RecordFallbackInvalidTransformedBatch();
         }
         RecordFallbackReason(eligibility.reason);
+        {
+            static std::chrono::steady_clock::time_point s_last_blocker_log;
+            static u32 s_last_blockers = 0;
+            const auto now = std::chrono::steady_clock::now();
+            if (eligibility.blockers != s_last_blockers ||
+                now - s_last_blocker_log >= std::chrono::seconds(1)) {
+                LOG_INFO(Render, "Deko3D HW reject: blockers=0x{:08x} reason={} vertices={}",
+                         eligibility.blockers, static_cast<u32>(eligibility.reason),
+                         vertex_batch.size());
+                s_last_blockers = eligibility.blockers;
+                s_last_blocker_log = now;
+            }
+        }
         return false;
     }
 
@@ -836,6 +849,20 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
 
     std::memcpy(static_cast<u8*>(vertex_cpu_buffer) + slice.vertex_offset,
                 vertex_batch.data() + base_vertex, vertex_bytes);
+
+    {
+        static bool s_logged_first_verts = false;
+        if (!s_logged_first_verts && vertex_count >= 3) {
+            s_logged_first_verts = true;
+            const auto& v0 = vertex_batch[base_vertex + 0];
+            const auto& v1 = vertex_batch[base_vertex + 1];
+            const auto& v2 = vertex_batch[base_vertex + 2];
+            LOG_INFO(Render, "HWdraw first tri v0=({:.3f},{:.3f},{:.3f},{:.3f}) v1=({:.3f},{:.3f},{:.3f},{:.3f}) v2=({:.3f},{:.3f},{:.3f},{:.3f})",
+                     v0.position[0], v0.position[1], v0.position[2], v0.position[3],
+                     v1.position[0], v1.position[1], v1.position[2], v1.position[3],
+                     v2.position[0], v2.position[1], v2.position[2], v2.position[3]);
+        }
+    }
 
     const DkShader* const shaders[] = {
         texture ? shader_cache.GetTexVertexShader() : shader_cache.GetColorVertexShader(),
@@ -1142,7 +1169,18 @@ void Rasterizer::DrawTriangles() {
         fallback_vertex_batch.clear();
         return;
     }
-    LOG_INFO(Render, "Deko3D hardware draw rejected, falling back to software");
+    {
+        static std::chrono::steady_clock::time_point s_last_summary;
+        static u32 s_rejected_count = 0;
+        ++s_rejected_count;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_last_summary >= std::chrono::seconds(1)) {
+            LOG_INFO(Render, "Deko3D SW fallback summary: rejected={} in last second",
+                     s_rejected_count);
+            s_rejected_count = 0;
+            s_last_summary = now;
+        }
+    }
     if (submitted_vertices != 0) {
         RecordHardwareDrawFailure();
         const std::uint64_t hw_triangles = submitted_vertices / 3;
