@@ -154,6 +154,10 @@ bool TextureCache::Initialize(State& state_, Memory::MemorySystem& memory_) {
     return true;
 }
 
+TextureCache::~TextureCache() {
+    Shutdown();
+}
+
 void TextureCache::Shutdown() {
 #ifdef __SWITCH__
     for (auto& [key, cached] : cache) {
@@ -301,6 +305,7 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
 
     const auto info = Pica::Texture::TextureInfo::FromPicaRegister(config, format);
     auto* const staging_pixels = static_cast<u8*>(staging_cpu_addr);
+    static bool s_logged_first_texture_samples = false;
     for (u32 y = 0; y < height; ++y) {
         // PICA stores textures bottom-to-top; GPU images are top-to-bottom.
         const u32 src_y = height - 1 - y;
@@ -312,6 +317,19 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
             staging_pixels[dst + 2] = color.b();
             staging_pixels[dst + 3] = color.a();
         }
+    }
+    if (!s_logged_first_texture_samples) {
+        s_logged_first_texture_samples = true;
+        const auto sample_tl = Pica::Texture::LookupTexture(texture_data, 0, height - 1, info);
+        const auto sample_center =
+            Pica::Texture::LookupTexture(texture_data, width / 2, height / 2, info);
+        const auto sample_br = Pica::Texture::LookupTexture(texture_data, width - 1, 0, info);
+        LOG_INFO(Render,
+                 "Deko3D first texture decoded samples format={} tl=({},{},{},{}) "
+                 "center=({},{},{},{}) br=({},{},{},{})",
+                 static_cast<u32>(format), sample_tl.r(), sample_tl.g(), sample_tl.b(),
+                 sample_tl.a(), sample_center.r(), sample_center.g(), sample_center.b(),
+                 sample_center.a(), sample_br.r(), sample_br.g(), sample_br.b(), sample_br.a());
     }
 
     dkCmdBufClear(upload_command_buffer);

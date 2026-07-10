@@ -139,17 +139,41 @@ DkStencilOp MapStencilOp(Pica::FramebufferRegs::StencilAction action) {
 }
 
 struct alignas(16) PicaFragmentState {
+    struct alignas(16) TevStage {
+        s32 color_source1;
+        s32 color_source2;
+        s32 color_source3;
+        s32 alpha_source1;
+        s32 alpha_source2;
+        s32 alpha_source3;
+        s32 color_modifier1;
+        s32 color_modifier2;
+        s32 color_modifier3;
+        s32 alpha_modifier1;
+        s32 alpha_modifier2;
+        s32 alpha_modifier3;
+        s32 color_op;
+        s32 alpha_op;
+        s32 color_scale;
+        s32 alpha_scale;
+        float const_color[4];
+    };
+
     s32 alpha_test_enabled;
     s32 alpha_test_func;
     float alpha_test_ref;
     s32 texture_enable_mask;
+    s32 combiner_update_rgb_mask;
+    s32 combiner_update_alpha_mask;
     s32 pad0;
     s32 pad1;
-    s32 pad2;
-    s32 pad3;
+    float combiner_buffer_color[4];
+    TevStage tev_stages[6];
 };
 
-static_assert(sizeof(PicaFragmentState) == 32, "PicaFragmentState must match std140 layout");
+static_assert(sizeof(PicaFragmentState::TevStage) == 80,
+              "PicaFragmentState::TevStage must match std140 layout");
+static_assert(sizeof(PicaFragmentState) == 528, "PicaFragmentState must match std140 layout");
 
 struct alignas(16) PicaVertexState {
     s32 flip_viewport;
@@ -725,6 +749,28 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
                      texture_mask, first_index, texture.config.GetPhysicalAddress(),
                      texture.config.width.Value(), texture.config.height.Value(),
                      static_cast<u32>(texture.format));
+            const auto tev_stages = regs.texturing.GetTevStages();
+            for (std::size_t tev_index = 0; tev_index < tev_stages.size(); ++tev_index) {
+                const auto& stage = tev_stages[tev_index];
+                LOG_INFO(Render,
+                         "Deko3D first TEV stage {}: srcC={},{},{} srcA={},{},{} modC={},{},{} "
+                         "modA={},{},{} opC={} opA={} scaleC={} scaleA={} const=0x{:08x}",
+                         tev_index, static_cast<u32>(stage.color_source1.Value()),
+                         static_cast<u32>(stage.color_source2.Value()),
+                         static_cast<u32>(stage.color_source3.Value()),
+                         static_cast<u32>(stage.alpha_source1.Value()),
+                         static_cast<u32>(stage.alpha_source2.Value()),
+                         static_cast<u32>(stage.alpha_source3.Value()),
+                         static_cast<u32>(stage.color_modifier1.Value()),
+                         static_cast<u32>(stage.color_modifier2.Value()),
+                         static_cast<u32>(stage.color_modifier3.Value()),
+                         static_cast<u32>(stage.alpha_modifier1.Value()),
+                         static_cast<u32>(stage.alpha_modifier2.Value()),
+                         static_cast<u32>(stage.alpha_modifier3.Value()),
+                         static_cast<u32>(stage.color_op.Value()),
+                         static_cast<u32>(stage.alpha_op.Value()), stage.GetColorMultiplier(),
+                         stage.GetAlphaMultiplier(), stage.const_color);
+            }
         }
     }
 
@@ -753,6 +799,13 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
                  color_key.color_address, color_key.width, color_key.height, color_key.format,
                  texture_mask, enabled_texture_count);
         RecordTransformedBlocker(MissingGpuResources);
+        RecordFallbackReason(FallbackReason::WrongRenderTarget);
+        return false;
+    }
+    if (color_target->cpu_dirty) {
+        LOG_INFO(Render, "Deko3D HW reject: color RT is CPU-dirty addr=0x{:08x} size={}x{}",
+                 color_key.color_address, color_key.width, color_key.height);
+        RecordTransformedBlocker(WrongRenderTarget);
         RecordFallbackReason(FallbackReason::WrongRenderTarget);
         return false;
     }
@@ -1012,16 +1065,79 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
 
     // Fill the per-slice uniform buffer with PICA fragment state.
     const auto& alpha_test = regs.framebuffer.output_merger.alpha_test;
+    {
+        static bool s_logged_first_output_state = false;
+        if (!s_logged_first_output_state) {
+            s_logged_first_output_state = true;
+            const auto blend = regs.framebuffer.output_merger.alpha_blending;
+            LOG_INFO(Render,
+                     "Deko3D first output state: color_mask=0x{:x} allow_color={} rgba={}{}{}{} "
+                     "alpha_test={} func={} ref={} blend={} depth_test={} depth_write={} "
+                     "allow_depth={} blend_eq={}/{} blend_factor={},{},{},{} "
+                     "color_addr=0x{:08x} depth_addr=0x{:08x}",
+                     ColorWriteMask(regs.framebuffer),
+                     regs.framebuffer.framebuffer.allow_color_write.Value(),
+                     regs.framebuffer.output_merger.red_enable.Value(),
+                     regs.framebuffer.output_merger.green_enable.Value(),
+                     regs.framebuffer.output_merger.blue_enable.Value(),
+                     regs.framebuffer.output_merger.alpha_enable.Value(),
+                     alpha_test.enable.Value(), static_cast<u32>(alpha_test.func.Value()),
+                     alpha_test.ref.Value(), regs.framebuffer.output_merger.alphablend_enable.Value(),
+                     regs.framebuffer.output_merger.depth_test_enable.Value(),
+                     regs.framebuffer.output_merger.depth_write_enable.Value(),
+                     regs.framebuffer.framebuffer.allow_depth_stencil_write.Value(),
+                     static_cast<u32>(blend.blend_equation_rgb.Value()),
+                     static_cast<u32>(blend.blend_equation_a.Value()),
+                     static_cast<u32>(blend.factor_source_rgb.Value()),
+                     static_cast<u32>(blend.factor_dest_rgb.Value()),
+                     static_cast<u32>(blend.factor_source_a.Value()),
+                     static_cast<u32>(blend.factor_dest_a.Value()),
+                     regs.framebuffer.framebuffer.GetColorBufferPhysicalAddress(),
+                     regs.framebuffer.framebuffer.GetDepthBufferPhysicalAddress());
+        }
+    }
     PicaFragmentState fragment_state{
         .alpha_test_enabled = static_cast<s32>(alpha_test.enable.Value()),
         .alpha_test_func = MapAlphaTestFunc(alpha_test.func.Value()),
         .alpha_test_ref = alpha_test.ref.Value() / 255.0f,
         .texture_enable_mask = static_cast<s32>(texture_mask),
+        .combiner_update_rgb_mask =
+            static_cast<s32>(regs.texturing.tev_combiner_buffer_input.update_mask_rgb.Value()),
+        .combiner_update_alpha_mask =
+            static_cast<s32>(regs.texturing.tev_combiner_buffer_input.update_mask_a.Value()),
         .pad0 = 0,
         .pad1 = 0,
-        .pad2 = 0,
-        .pad3 = 0,
+        .combiner_buffer_color =
+            {regs.texturing.tev_combiner_buffer_color.r.Value() / 255.0f,
+             regs.texturing.tev_combiner_buffer_color.g.Value() / 255.0f,
+             regs.texturing.tev_combiner_buffer_color.b.Value() / 255.0f,
+             regs.texturing.tev_combiner_buffer_color.a.Value() / 255.0f},
     };
+    const auto tev_stages = regs.texturing.GetTevStages();
+    for (std::size_t i = 0; i < tev_stages.size(); ++i) {
+        const auto& stage = tev_stages[i];
+        auto& out_stage = fragment_state.tev_stages[i];
+        out_stage.color_source1 = static_cast<s32>(stage.color_source1.Value());
+        out_stage.color_source2 = static_cast<s32>(stage.color_source2.Value());
+        out_stage.color_source3 = static_cast<s32>(stage.color_source3.Value());
+        out_stage.alpha_source1 = static_cast<s32>(stage.alpha_source1.Value());
+        out_stage.alpha_source2 = static_cast<s32>(stage.alpha_source2.Value());
+        out_stage.alpha_source3 = static_cast<s32>(stage.alpha_source3.Value());
+        out_stage.color_modifier1 = static_cast<s32>(stage.color_modifier1.Value());
+        out_stage.color_modifier2 = static_cast<s32>(stage.color_modifier2.Value());
+        out_stage.color_modifier3 = static_cast<s32>(stage.color_modifier3.Value());
+        out_stage.alpha_modifier1 = static_cast<s32>(stage.alpha_modifier1.Value());
+        out_stage.alpha_modifier2 = static_cast<s32>(stage.alpha_modifier2.Value());
+        out_stage.alpha_modifier3 = static_cast<s32>(stage.alpha_modifier3.Value());
+        out_stage.color_op = static_cast<s32>(stage.color_op.Value());
+        out_stage.alpha_op = static_cast<s32>(stage.alpha_op.Value());
+        out_stage.color_scale = static_cast<s32>(stage.GetColorMultiplier());
+        out_stage.alpha_scale = static_cast<s32>(stage.GetAlphaMultiplier());
+        out_stage.const_color[0] = stage.const_r.Value() / 255.0f;
+        out_stage.const_color[1] = stage.const_g.Value() / 255.0f;
+        out_stage.const_color[2] = stage.const_b.Value() / 255.0f;
+        out_stage.const_color[3] = stage.const_a.Value() / 255.0f;
+    }
     std::memcpy(static_cast<u8*>(uniform_cpu_buffer) + slice.uniform_offset, &fragment_state,
                 sizeof(fragment_state));
     const u32 frag_aligned = AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT);
@@ -1096,6 +1212,13 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
                                        texture_count);
         dkCmdBufBindSamplerDescriptorSet(command_buffer, descriptor_gpu_addr + sampler_offset,
                                          texture_count);
+        const DkResHandle texture_handles[texture_count] = {
+            dkMakeTextureHandle(0, 0),
+            dkMakeTextureHandle(1, 1),
+            dkMakeTextureHandle(2, 2),
+        };
+        dkCmdBufBindTextures(command_buffer, DkStage_Fragment, 0, texture_handles,
+                             texture_count);
     }
     dkCmdBufBindRasterizerState(command_buffer, &rasterizer_state);
     dkCmdBufBindMultisampleState(command_buffer, &multisample_state);
@@ -1276,7 +1399,11 @@ void Rasterizer::ClearAll(bool flush) {
 
 bool Rasterizer::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
 #ifdef __SWITCH__
-    state.RecordDisplayTransfer(config.GetPhysicalInputAddress(), config.GetPhysicalOutputAddress());
+    return state.RecordDisplayTransfer(config.GetPhysicalInputAddress(),
+                                       config.GetPhysicalOutputAddress(),
+                                       config.input_width.Value(), config.input_height.Value(),
+                                       config.output_width.Value(), config.output_height.Value(),
+                                       config.flags);
 #endif
     return false;
 }

@@ -80,7 +80,8 @@ bool ShaderCache::LoadBuiltInShaders(DkDevice device) {
         AlignUp(static_cast<u32>(BuiltinShaders::PicaTexVshSize), DK_SHADER_CODE_ALIGNMENT) +
         AlignUp(static_cast<u32>(BuiltinShaders::PicaTexFshSize), DK_SHADER_CODE_ALIGNMENT) +
         AlignUp(static_cast<u32>(BuiltinShaders::PresentVshSize), DK_SHADER_CODE_ALIGNMENT) +
-        AlignUp(static_cast<u32>(BuiltinShaders::PresentFshSize), DK_SHADER_CODE_ALIGNMENT);
+        AlignUp(static_cast<u32>(BuiltinShaders::PresentFshSize), DK_SHADER_CODE_ALIGNMENT) +
+        DK_SHADER_CODE_UNUSABLE_SIZE;
 
     DkMemBlockMaker shader_mem_maker;
     dkMemBlockMakerDefaults(&shader_mem_maker, device, AlignUp(code_size, DK_MEMBLOCK_ALIGNMENT));

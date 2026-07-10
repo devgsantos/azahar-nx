@@ -62,9 +62,10 @@ RendererDeko3D::RendererDeko3D(Core::System& system_, Pica::PicaCore& pica,
 }
 
 RendererDeko3D::~RendererDeko3D() {
-    rasterizer.Shutdown();
-    shader_cache.Shutdown();
     state.WaitIdle();
+    rasterizer.Shutdown();
+    texture_cache.Shutdown();
+    shader_cache.Shutdown();
 }
 
 void RendererDeko3D::SwapBuffers() {

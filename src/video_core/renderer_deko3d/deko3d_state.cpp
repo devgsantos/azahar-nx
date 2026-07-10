@@ -294,8 +294,10 @@ void State::Shutdown() {
     present_fence_pending = false;
     top_screen_gpu_dirty = false;
     selected_present_render_target = nullptr;
+    selected_bottom_present_render_target = nullptr;
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy render target cache enter");
+    display_transfer_targets.clear();
     for (auto& target : render_targets) {
         if (target && target->mem_block) {
             dkMemBlockDestroy(target->mem_block);
@@ -746,20 +748,25 @@ bool State::CreatePresentResources() {
     return true;
 }
 
-bool State::DrawCachedTopRenderTarget(const CachedRenderTarget& target, u32 slot, u32 dst_x,
-                                      u32 dst_y, u32 dst_width, u32 dst_height) {
+bool State::DrawCachedScreenRenderTarget(const CachedRenderTarget& target, u32 slot,
+                                         u32 scratch_index, u32 src_y, u32 src_height, u32 dst_x,
+                                         u32 dst_y, u32 dst_width, u32 dst_height,
+                                         const char* label) {
     if (!present_vertex_shader || !present_fragment_shader || !present_cpu_buffer ||
-        present_gpu_addr == 0 || slot >= FramebufferCount) {
+        present_gpu_addr == 0 || slot >= FramebufferCount || src_height == 0 ||
+        src_y >= target.key.height) {
         return false;
     }
 
+    constexpr std::size_t PresentScratchStride = 1024;
+    const std::size_t scratch_base = static_cast<std::size_t>(scratch_index) * PresentScratchStride;
     constexpr std::size_t ImageOffset = 0;
     const std::size_t sampler_offset =
         AlignUp(ImageOffset + sizeof(DkImageDescriptor), DK_IMAGE_DESCRIPTOR_ALIGNMENT);
     const std::size_t vertex_offset =
         AlignUp(sampler_offset + sizeof(DkSamplerDescriptor), 16);
     const std::size_t required_size =
-        vertex_offset + sizeof(PresentVertex) * 4;
+        scratch_base + vertex_offset + sizeof(PresentVertex) * 4;
     if (required_size > PresentMemorySize) {
         return false;
     }
@@ -768,14 +775,16 @@ bool State::DrawCachedTopRenderTarget(const CachedRenderTarget& target, u32 slot
     DkSamplerDescriptor sampler_descriptor{};
     dkImageDescriptorInitialize(&image_descriptor, &target.view, false, false);
     dkSamplerDescriptorInitialize(&sampler_descriptor, &present_sampler);
-    std::memcpy(static_cast<u8*>(present_cpu_buffer) + ImageOffset, &image_descriptor,
+    std::memcpy(static_cast<u8*>(present_cpu_buffer) + scratch_base + ImageOffset, &image_descriptor,
                 sizeof(image_descriptor));
-    std::memcpy(static_cast<u8*>(present_cpu_buffer) + sampler_offset, &sampler_descriptor,
-                sizeof(sampler_descriptor));
+    std::memcpy(static_cast<u8*>(present_cpu_buffer) + scratch_base + sampler_offset,
+                &sampler_descriptor, sizeof(sampler_descriptor));
 
-    const float src_top = 0.0f;
+    const u32 clamped_src_height = std::min(src_height, target.key.height - src_y);
+    const float src_top =
+        static_cast<float>(src_y) / static_cast<float>(std::max(target.key.height, 1u));
     const float src_bottom =
-        static_cast<float>(std::min(target.key.height, 400u)) /
+        static_cast<float>(src_y + clamped_src_height) /
         static_cast<float>(std::max(target.key.height, 1u));
     const PresentVertex vertices[] = {
         {{-1.0f, +1.0f}, {1.0f, src_top}},
@@ -783,7 +792,7 @@ bool State::DrawCachedTopRenderTarget(const CachedRenderTarget& target, u32 slot
         {{+1.0f, +1.0f}, {1.0f, src_bottom}},
         {{+1.0f, -1.0f}, {0.0f, src_bottom}},
     };
-    std::memcpy(static_cast<u8*>(present_cpu_buffer) + vertex_offset, vertices,
+    std::memcpy(static_cast<u8*>(present_cpu_buffer) + scratch_base + vertex_offset, vertices,
                 sizeof(vertices));
 
     static const DkVtxAttribState attribs[] = {
@@ -821,8 +830,10 @@ bool State::DrawCachedTopRenderTarget(const CachedRenderTarget& target, u32 slot
     dkCmdBufBindShaders(cmdbuf, DkStageFlag_GraphicsMask, shaders, 2);
     dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments,
                     DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
-    dkCmdBufBindImageDescriptorSet(cmdbuf, present_gpu_addr + ImageOffset, 1);
-    dkCmdBufBindSamplerDescriptorSet(cmdbuf, present_gpu_addr + sampler_offset, 1);
+    dkCmdBufBindImageDescriptorSet(cmdbuf, present_gpu_addr + scratch_base + ImageOffset, 1);
+    dkCmdBufBindSamplerDescriptorSet(cmdbuf, present_gpu_addr + scratch_base + sampler_offset, 1);
+    const DkResHandle texture_handle = dkMakeTextureHandle(0, 0);
+    dkCmdBufBindTextures(cmdbuf, DkStage_Fragment, 0, &texture_handle, 1);
     dkCmdBufBindRasterizerState(cmdbuf, &rasterizer_state);
     dkCmdBufBindMultisampleState(cmdbuf, &multisample_state);
     dkCmdBufBindColorState(cmdbuf, &color_state);
@@ -832,12 +843,23 @@ bool State::DrawCachedTopRenderTarget(const CachedRenderTarget& target, u32 slot
     dkCmdBufBindVtxAttribState(cmdbuf, attribs, sizeof(attribs) / sizeof(attribs[0]));
     dkCmdBufBindVtxBufferState(cmdbuf, vtx_buffer_state,
                                sizeof(vtx_buffer_state) / sizeof(vtx_buffer_state[0]));
-    dkCmdBufBindVtxBuffer(cmdbuf, 0, present_gpu_addr + vertex_offset,
+    dkCmdBufBindVtxBuffer(cmdbuf, 0, present_gpu_addr + scratch_base + vertex_offset,
                           static_cast<u32>(sizeof(vertices)));
     dkCmdBufDraw(cmdbuf, DkPrimitive_TriangleStrip, 4, 1, 0, 0);
-    LOG_INFO(Render,
-             "Present cached top shader draw src={}x{} dst={}x{} uv_bottom={:.3f}",
-             target.key.width, target.key.height, dst_width, dst_height, src_bottom);
+    static auto s_last_present_shader_log_top = std::chrono::steady_clock::time_point{};
+    static auto s_last_present_shader_log_bottom = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    auto& last_present_shader_log = label && std::strcmp(label, "bottom") == 0
+                                        ? s_last_present_shader_log_bottom
+                                        : s_last_present_shader_log_top;
+    if (now - last_present_shader_log >= std::chrono::seconds(1)) {
+        last_present_shader_log = now;
+        LOG_INFO(Render,
+                 "Present cached {} shader draw src={}x{} y={} h={} dst={}x{} "
+                 "uv={:.3f}..{:.3f}",
+                 label ? label : "screen", target.key.width, target.key.height, src_y,
+                 clamped_src_height, dst_width, dst_height, src_top, src_bottom);
+    }
     return true;
 }
 
@@ -913,41 +935,23 @@ const State::CachedRenderTarget* State::FindGpuDirtyRenderTarget(PAddr address) 
     }
     for (const auto& alias : display_transfer_targets) {
         const CachedRenderTarget* const target = alias.target;
-        if (alias.display_address != address || !target ||
-            target->deko_generation != alias.deko_generation) {
+        if (alias.display_address != address || !target || !target->gpu_dirty ||
+            target->owner != SurfaceOwner::Deko3D || alias.deko_generation == 0) {
             continue;
         }
-        LOG_INFO(Render,
-                 "FindGpuDirtyRenderTarget: display addr=0x{:08x} using transfer RT "
-                 "addr=0x{:08x} size={}x{} gen={}",
-                 address, target->key.color_address, target->key.width, target->key.height,
-                 alias.deko_generation);
+        static auto s_last_alias_lookup_log = std::chrono::steady_clock::time_point{};
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_last_alias_lookup_log >= std::chrono::seconds(1)) {
+            s_last_alias_lookup_log = now;
+            LOG_INFO(Render,
+                     "FindGpuDirtyRenderTarget: display addr=0x{:08x} using transfer RT "
+                     "addr=0x{:08x} size={}x{} gen={} alias_gen={} gpu_dirty={}",
+                     address, target->key.color_address, target->key.width, target->key.height,
+                     target->deko_generation, alias.deko_generation, target->gpu_dirty);
+        }
         return target;
     }
     return nullptr;
-}
-
-const State::CachedRenderTarget* State::FindNewestDisplayTransferRenderTarget() const {
-    const DisplayTransferTarget* newest = nullptr;
-    for (const auto& alias : display_transfer_targets) {
-        const CachedRenderTarget* const target = alias.target;
-        if (!target || target->deko_generation != alias.deko_generation ||
-            target->key.width != 240 || target->key.height < 400) {
-            continue;
-        }
-        if (!newest || alias.deko_generation > newest->deko_generation) {
-            newest = &alias;
-        }
-    }
-    if (!newest) {
-        return nullptr;
-    }
-    LOG_INFO(Render,
-             "FindNewestDisplayTransferRenderTarget: using dst=0x{:08x} RT addr=0x{:08x} "
-             "size={}x{} gen={}",
-             newest->display_address, newest->target->key.color_address,
-             newest->target->key.width, newest->target->key.height, newest->deko_generation);
-    return newest->target;
 }
 
 const State::CachedRenderTarget* State::GetSelectedPresentRenderTarget() const {
@@ -964,13 +968,20 @@ void State::SelectPresentRenderTarget(PAddr address) {
 
 void State::SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address) {
     selected_present_render_target = FindGpuDirtyRenderTarget(top_address);
-    if (!selected_present_render_target) {
-        selected_present_render_target = FindNewestDisplayTransferRenderTarget();
+    const auto is_top_shape = [](const CachedRenderTarget* target) {
+        return target && target->key.width == 240 && target->key.height >= 400;
+    };
+    if (!is_top_shape(selected_present_render_target)) {
+        selected_present_render_target = nullptr;
     }
     selected_bottom_present_render_target =
         bottom_address != 0 ? FindGpuDirtyRenderTarget(bottom_address) : nullptr;
-    if (!selected_present_render_target && !selected_bottom_present_render_target &&
-        !render_targets.empty()) {
+    if (selected_bottom_present_render_target &&
+        (selected_bottom_present_render_target->key.width != 240 ||
+         selected_bottom_present_render_target->key.height != 320)) {
+        selected_bottom_present_render_target = nullptr;
+    }
+    if (!render_targets.empty()) {
         static auto s_last_log = std::chrono::steady_clock::time_point{};
         const auto now = std::chrono::steady_clock::now();
         if (now - s_last_log < std::chrono::seconds(1)) {
@@ -978,16 +989,16 @@ void State::SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address) 
         }
         s_last_log = now;
         LOG_INFO(Render,
-                 "SelectPresentRenderTarget: top=0x{:08x} top_found={} bottom=0x{:08x} "
-                 "bottom_found={} rt_count={}",
-                 top_address, selected_present_render_target != nullptr, bottom_address,
-                 selected_bottom_present_render_target != nullptr, render_targets.size());
-        for (const auto& t : render_targets) {
-            LOG_INFO(Render,
-                     "  RT addr=0x{:08x} size={}x{} gpu_dirty={}",
-                     t->key.color_address, t->key.width, t->key.height,
-                     t->gpu_dirty ? 1 : 0);
-        }
+                 "SelectPresentRenderTarget: top=0x{:08x} top={}x{} addr=0x{:08x} "
+                 "bottom=0x{:08x} bottom={}x{} addr=0x{:08x} rt_count={}",
+                 top_address, selected_present_render_target ? selected_present_render_target->key.width : 0,
+                 selected_present_render_target ? selected_present_render_target->key.height : 0,
+                 selected_present_render_target ? selected_present_render_target->key.color_address : 0,
+                 bottom_address,
+                 selected_bottom_present_render_target ? selected_bottom_present_render_target->key.width : 0,
+                 selected_bottom_present_render_target ? selected_bottom_present_render_target->key.height : 0,
+                 selected_bottom_present_render_target ? selected_bottom_present_render_target->key.color_address : 0,
+                 render_targets.size());
     }
 }
 
@@ -999,21 +1010,24 @@ void State::MarkRenderTargetGpuDirty(CachedRenderTarget& target) {
     RecordRenderTargetGpuDirty();
 }
 
-void State::RecordDisplayTransfer(PAddr input_address, PAddr output_address) {
+bool State::RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32 input_width,
+                                  u32 input_height, u32 output_width, u32 output_height,
+                                  u32 flags) {
     if (input_address == 0 || output_address == 0) {
-        return;
+        return false;
     }
 
     const CachedRenderTarget* source = nullptr;
     for (const auto& target : render_targets) {
-        if (target->key.color_address == input_address && target->gpu_dirty) {
+        if (target->key.color_address == input_address && target->gpu_dirty &&
+            target->owner == SurfaceOwner::Deko3D) {
             source = target.get();
             break;
         }
     }
     if (!source) {
         for (const auto& target : render_targets) {
-            if (!target->gpu_dirty ||
+            if (!target->gpu_dirty || target->owner != SurfaceOwner::Deko3D ||
                 !RangesOverlap(input_address, 1, target->key.color_address,
                                RenderTargetBytes(target->key))) {
                 continue;
@@ -1024,7 +1038,11 @@ void State::RecordDisplayTransfer(PAddr input_address, PAddr output_address) {
         }
     }
     if (!source) {
-        return;
+        return false;
+    }
+    if (source->key.width != input_width || source->key.height != input_height ||
+        output_width == 0 || output_height == 0) {
+        return false;
     }
 
     auto existing =
@@ -1035,17 +1053,35 @@ void State::RecordDisplayTransfer(PAddr input_address, PAddr output_address) {
     if (existing != display_transfer_targets.end()) {
         existing->target = source;
         existing->deko_generation = source->deko_generation;
+        existing->input_width = input_width;
+        existing->input_height = input_height;
+        existing->output_width = output_width;
+        existing->output_height = output_height;
+        existing->flags = flags;
     } else {
         display_transfer_targets.emplace_back(DisplayTransferTarget{
             .display_address = output_address,
             .target = source,
             .deko_generation = source->deko_generation,
+            .input_width = input_width,
+            .input_height = input_height,
+            .output_width = output_width,
+            .output_height = output_height,
+            .flags = flags,
         });
     }
-    LOG_INFO(Render,
-             "Deko3D display transfer alias: dst=0x{:08x} src=0x{:08x} size={}x{} gen={}",
-             output_address, source->key.color_address, source->key.width, source->key.height,
-             source->deko_generation);
+    static auto s_last_transfer_log = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now - s_last_transfer_log >= std::chrono::seconds(1)) {
+        s_last_transfer_log = now;
+        LOG_INFO(Render,
+                 "Deko3D display transfer alias: dst=0x{:08x} src=0x{:08x} rt={}x{} "
+                 "in={}x{} out={}x{} flags=0x{:08x} gen={}",
+                 output_address, source->key.color_address, source->key.width, source->key.height,
+                 input_width, input_height, output_width, output_height, flags,
+                 source->deko_generation);
+    }
+    return true;
 }
 
 void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner) {
@@ -1061,6 +1097,12 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
         target->cpu_dirty = true;
         target->guest_memory_generation = ++render_target_generation;
         RecordRenderTargetCpuDirty();
+        display_transfer_targets.erase(
+            std::remove_if(display_transfer_targets.begin(), display_transfer_targets.end(),
+                           [raw_target = target.get()](const DisplayTransferTarget& alias) {
+                               return alias.target == raw_target;
+                           }),
+            display_transfer_targets.end());
         if (selected_present_render_target == target.get()) {
             selected_present_render_target = nullptr;
         }
@@ -1196,22 +1238,21 @@ bool State::PresentScreenTexturesFrame() {
     // render targets stay on the GPU and are blitted directly; CPU upload remains the fallback.
     DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
     if (cached_present) {
-        LOG_INFO(Render, "Present cached D1 before wait");
+        const u32 top_src_y = 0;
+        const u32 top_src_height = std::min(400u, cached_present->key.height - top_src_y);
         WaitRasterQueue();
-        LOG_INFO(Render, "Present cached D2 after wait");
-        if (!DrawCachedTopRenderTarget(*cached_present, static_cast<u32>(slot), top_x, top_y,
-                                       top_width, top_height)) {
+        if (!DrawCachedScreenRenderTarget(*cached_present, static_cast<u32>(slot), 0, top_src_y,
+                                          top_src_height, top_x, top_y, top_width, top_height,
+                                          "top")) {
             const u32 rt_w = cached_present->key.width;
-            const u32 rt_h = cached_present->key.height;
-            const u32 top_src_h = std::min(rt_h, 400u);
-            DkImageRect rt_src = {0, 0, 0, rt_w, top_src_h, 1};
+            DkImageRect rt_src = {0, top_src_y, 0, rt_w, top_src_height, 1};
             dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
             dkCmdBufBlitImage(cmdbuf, &cached_present->view, &rt_src,
                               &framebuffer_views[slot], &top_copy_dst,
                               DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
             LOG_INFO(Render, "Present cached top shader unavailable; blit fallback src={}x{} "
                              "dst={}x{}",
-                     rt_w, top_src_h, top_copy_dst.width, top_copy_dst.height);
+                     rt_w, top_src_height, top_copy_dst.width, top_copy_dst.height);
         }
     } else if (top_screen_gpu_dirty && top_screen_view) {
         DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
@@ -1226,18 +1267,26 @@ bool State::PresentScreenTexturesFrame() {
 
     bool bottom_from_rt = false;
     DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
-    if (cached_bottom_present) {
+    if (cached_bottom_present && cached_bottom_present->key.width == 240 &&
+        cached_bottom_present->key.height == 320) {
         WaitRasterQueue();
-        DkImageRect bottom_rt_src = {0, 0, 0, cached_bottom_present->key.width,
-                                     std::min(cached_bottom_present->key.height, 320u), 1};
-        dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
-        dkCmdBufBlitImage(cmdbuf, &cached_bottom_present->view, &bottom_rt_src,
-                          &framebuffer_views[slot], &bottom_copy_dst,
-                          DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
-        bottom_from_rt = true;
-        LOG_INFO(Render, "Present cached bottom blit done src={}x{} dst={}x{}",
-                 bottom_rt_src.width, bottom_rt_src.height, bottom_copy_dst.width,
-                 bottom_copy_dst.height);
+        if (DrawCachedScreenRenderTarget(*cached_bottom_present, static_cast<u32>(slot), 1, 0,
+                                         320, bottom_x, bottom_y, bottom_width, bottom_height,
+                                         "bottom")) {
+            bottom_from_rt = true;
+        } else {
+            DkImageRect bottom_rt_src = {0, 0, 0, cached_bottom_present->key.width,
+                                         std::min(cached_bottom_present->key.height, 320u), 1};
+            dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
+            dkCmdBufBlitImage(cmdbuf, &cached_bottom_present->view, &bottom_rt_src,
+                              &framebuffer_views[slot], &bottom_copy_dst,
+                              DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
+            bottom_from_rt = true;
+            LOG_INFO(Render, "Present cached bottom shader unavailable; blit fallback src={}x{} "
+                             "dst={}x{}",
+                     bottom_rt_src.width, bottom_rt_src.height, bottom_copy_dst.width,
+                     bottom_copy_dst.height);
+        }
     }
     if (!bottom_from_rt) {
         DkCopyBuf bottom_copy_src = {upload_gpu_addr + top_bytes, 0, 0};

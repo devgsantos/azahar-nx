@@ -131,17 +131,22 @@ public:
         PAddr display_address = 0;
         const CachedRenderTarget* target = nullptr;
         u64 deko_generation = 0;
+        u32 input_width = 0;
+        u32 input_height = 0;
+        u32 output_width = 0;
+        u32 output_height = 0;
+        u32 flags = 0;
     };
 
     CachedRenderTarget* GetOrCreateRenderTarget(const RenderTargetKey& key);
     [[nodiscard]] const CachedRenderTarget* FindGpuDirtyRenderTarget(PAddr address) const;
-    [[nodiscard]] const CachedRenderTarget* FindNewestDisplayTransferRenderTarget() const;
     [[nodiscard]] const CachedRenderTarget* GetSelectedPresentRenderTarget() const;
     [[nodiscard]] const CachedRenderTarget* GetSelectedBottomPresentRenderTarget() const;
     void SelectPresentRenderTarget(PAddr address);
     void SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address);
     void MarkRenderTargetGpuDirty(CachedRenderTarget& target);
-    void RecordDisplayTransfer(PAddr input_address, PAddr output_address);
+    bool RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32 input_width,
+                               u32 input_height, u32 output_width, u32 output_height, u32 flags);
     void MarkRenderTargetSoftwareDirty(PAddr address, u32 bytes);
     void MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes);
     void InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner);
@@ -167,8 +172,10 @@ private:
     bool RecordStaticCommands();
     bool CreateScreenTextures();
     bool CreatePresentResources();
-    bool DrawCachedTopRenderTarget(const CachedRenderTarget& target, u32 slot, u32 dst_x,
-                                   u32 dst_y, u32 dst_width, u32 dst_height);
+    bool DrawCachedScreenRenderTarget(const CachedRenderTarget& target, u32 slot,
+                                      u32 scratch_index, u32 src_y, u32 src_height, u32 dst_x,
+                                      u32 dst_y, u32 dst_width, u32 dst_height,
+                                      const char* label);
     bool QueueHasError(const char* context);
     void FlushQueue();
 

@@ -39,6 +39,8 @@ struct CachedTexture {
 
 class TextureCache {
 public:
+    ~TextureCache();
+
     bool Initialize(State& state, Memory::MemorySystem& memory);
     void Shutdown();
     bool IsInitialized() const {
