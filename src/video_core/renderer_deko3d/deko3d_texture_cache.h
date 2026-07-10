@@ -61,7 +61,7 @@ private:
 #ifdef __SWITCH__
     bool AllocateTexture(CachedTexture& cached, u32 width, u32 height,
                           Pica::TexturingRegs::TextureFormat format);
-    void UploadTexture(CachedTexture& cached, const Pica::TexturingRegs::TextureConfig& config,
+    bool UploadTexture(CachedTexture& cached, const Pica::TexturingRegs::TextureConfig& config,
                        Pica::TexturingRegs::TextureFormat format);
     void DestroyTexture(CachedTexture& cached);
     DkSampler CreateSampler(const Pica::TexturingRegs::TextureConfig& config) const;

@@ -17,6 +17,13 @@ layout (location = 4) out float outTexCoord0W;
 layout (location = 5) out vec4 outNormQuat;
 layout (location = 6) out vec3 outView;
 
+layout (binding = 0, std140) uniform VertexState {
+    int flip_viewport;
+    int pad0;
+    int pad1;
+    int pad2;
+};
+
 const vec2 EPSILON_Z = vec2(0.000001, -1.00001);
 
 vec4 SanitizeVertex(vec4 position)
@@ -36,7 +43,8 @@ vec4 SanitizeVertex(vec4 position)
 void main()
 {
     vec4 position = SanitizeVertex(inPosition);
-    gl_Position = vec4(position.x, position.y, -position.z, position.w);
+    float y = flip_viewport != 0 ? -position.y : position.y;
+    gl_Position = vec4(position.x, y, -position.z, position.w);
     outColor = inColor;
     outTexCoord0 = inTexCoord0;
     outTexCoord1 = inTexCoord1;

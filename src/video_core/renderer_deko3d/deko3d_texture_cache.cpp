@@ -177,7 +177,10 @@ const CachedTexture* TextureCache::GetTexture(
         return nullptr;
     }
 
-    UploadTexture(*cached, config.config, config.format);
+    if (!UploadTexture(*cached, config.config, config.format)) {
+        DestroyTexture(*cached);
+        return nullptr;
+    }
     cached->sampler = CreateSampler(config.config);
     cached->generation = generation;
 
@@ -228,11 +231,11 @@ bool TextureCache::AllocateTexture(CachedTexture& cached, u32 width, u32 height,
     return true;
 }
 
-void TextureCache::UploadTexture(CachedTexture& cached,
+bool TextureCache::UploadTexture(CachedTexture& cached,
                                  const Pica::TexturingRegs::TextureConfig& config,
                                  Pica::TexturingRegs::TextureFormat format) {
     if (!memory) {
-        return;
+        return false;
     }
 
     const u32 width = config.width;
@@ -247,14 +250,14 @@ void TextureCache::UploadTexture(CachedTexture& cached,
                     "Deko3D texture cache: skipping upload of {}x{} texture ({} bytes needed, "
                     "{} available)",
                     width, height, required_size, StagingBufferSize);
-        return;
+        return false;
     }
 
     const u8* texture_data = memory->GetPhysicalPointer(config.GetPhysicalAddress());
     if (!texture_data) {
         LOG_WARNING(Render, "Deko3D texture cache: guest texture memory not mapped at 0x{:08x}",
                     config.GetPhysicalAddress());
-        return;
+        return false;
     }
 
     const auto info = Pica::Texture::TextureInfo::FromPicaRegister(config, format);
@@ -277,8 +280,8 @@ void TextureCache::UploadTexture(CachedTexture& cached,
 
     DkCopyBuf copy_buf{};
     copy_buf.addr = staging_gpu_addr;
-    copy_buf.rowLength = width;
-    copy_buf.imageHeight = height;
+    copy_buf.rowLength = 0;
+    copy_buf.imageHeight = 0;
 
     DkImageRect dst_rect{};
     dst_rect.x = 0;
@@ -293,8 +296,12 @@ void TextureCache::UploadTexture(CachedTexture& cached,
     const DkCmdList cmd_list = dkCmdBufFinishList(upload_command_buffer);
     if (!cmd_list) {
         LOG_WARNING(Render, "Deko3D texture cache: failed to finish upload command list");
-        return;
+        return false;
     }
+    LOG_INFO(Render, "Texture upload drain begin");
+    dkQueueFlush(state->GetQueue());
+    dkQueueWaitIdle(state->GetQueue());
+    LOG_INFO(Render, "Texture upload drain leave");
     LOG_INFO(Render, "Texture upload submit begin");
     dkQueueSubmitCommands(state->GetQueue(), cmd_list);
     LOG_INFO(Render, "Texture upload submit leave");
@@ -302,6 +309,11 @@ void TextureCache::UploadTexture(CachedTexture& cached,
     dkQueueWaitIdle(state->GetQueue());
     LOG_INFO(Render, "Texture upload wait leave queue_error={}",
              dkQueueIsInErrorState(state->GetQueue()) ? 1 : 0);
+    if (dkQueueIsInErrorState(state->GetQueue())) {
+        LOG_ERROR(Render, "Texture upload failed: queue entered error state");
+        return false;
+    }
+    return true;
 }
 
 void TextureCache::DestroyTexture(CachedTexture& cached) {
