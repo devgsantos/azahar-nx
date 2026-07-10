@@ -41,6 +41,24 @@ bool HasAnyVisiblePixel(const u8* rgba, u32 width, u32 height) {
     return false;
 }
 
+bool HasAnyNonZeroSourceByte(const u8* src, u32 width, u32 height, u32 stride) {
+    if (!src || width == 0 || height == 0 || stride == 0) {
+        return false;
+    }
+
+    const u32 rows = std::min(height, 64u);
+    const u32 bytes_per_row = std::min(stride, 2048u);
+    for (u32 y = 0; y < rows; y += 4) {
+        const u8* const row = src + static_cast<std::size_t>(y) * stride;
+        for (u32 x = 0; x < bytes_per_row; x += 4) {
+            if (row[x] != 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 u32 EstimateBytesPerPixel(u32 width, u32 stride) {
     if (width == 0) {
         return 0;
@@ -91,11 +109,11 @@ void ConvertRotateToRgba8888(const u8* src, u8* dst, u32 src_width, u32 src_heig
     const u32 max_x = std::min(src_width, dst_height);
     const u32 max_y = std::min(src_height, dst_width);
 
-    // Rotate clockwise: source portrait buffers become landscape output.
+    // Rotate counter-clockwise: source portrait buffers become landscape output.
     for (u32 sy = 0; sy < max_y; ++sy) {
         for (u32 sx = 0; sx < max_x; ++sx) {
-            const u32 dx = dst_width - 1 - sy;
-            const u32 dy = sx;
+            const u32 dx = sy;
+            const u32 dy = dst_height - 1 - sx;
             const u8* const src_px = src + (sy * src_stride) + (sx * bpp);
             u8* const dst_px = dst + ((dy * dst_width + dx) * 4);
             DecodePixelToRgba(src_px, bpp, dst_px);
@@ -120,6 +138,14 @@ bool Presenter::PresentFrame() {
     bool top_changed = false;
     bool bottom_changed = false;
     bool frame_changed = false;
+    bool top_source_nonzero = false;
+    bool bottom_source_nonzero = false;
+    u32 top_width_dbg = 0;
+    u32 top_height_dbg = 0;
+    u32 top_stride_dbg = 0;
+    u32 bottom_width_dbg = 0;
+    u32 bottom_height_dbg = 0;
+    u32 bottom_stride_dbg = 0;
     PresentSource source = PresentSource::Unknown;
     try {
         auto& pica_core = system.GPU().PicaCore();
@@ -133,10 +159,11 @@ bool Presenter::PresentFrame() {
                                                         : framebuffer_config[1].address_left2;
         top_changed = !have_last_addrs || last_top_addr != fb0_addr;
         bottom_changed = !have_last_addrs || last_bottom_addr != fb1_addr;
-        state.SelectPresentRenderTarget(fb0_addr);
+        state.SelectPresentRenderTargets(fb0_addr, fb1_addr);
         const auto* const cached_target = state.GetSelectedPresentRenderTarget();
+        const auto* const cached_bottom_target = state.GetSelectedBottomPresentRenderTarget();
         frame_changed = top_changed || bottom_changed || cached_target != nullptr ||
-                        state.IsTopScreenGpuDirty();
+                        cached_bottom_target != nullptr || state.IsTopScreenGpuDirty();
         if (cached_target) {
             source = PresentSource::CachedRenderTargetBlit;
         } else {
@@ -146,9 +173,10 @@ bool Presenter::PresentFrame() {
                                           : PresentSource::RepeatedPreviousFrame);
         }
 
-        // Top screen: skip CPU readback when the GPU already has a dirty cached render target,
-        // because PresentScreenTexturesFrame will blit it directly.
+        // Skip CPU readback when the GPU already has dirty cached render targets,
+        // because PresentScreenTexturesFrame will blit them directly.
         const bool top_use_gpu_blit = cached_target && cached_target->gpu_dirty;
+        const bool bottom_use_gpu_blit = cached_bottom_target && cached_bottom_target->gpu_dirty;
 
         auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
         if (!screen_buffer ||
@@ -166,7 +194,11 @@ bool Presenter::PresentFrame() {
             const u32 height = fb0.height.Value();
             const u32 stride = fb0.stride;
 
+            top_width_dbg = width;
+            top_height_dbg = height;
+            top_stride_dbg = stride;
             u8* fb0_ptr = memory.GetPhysicalPointer(fb0_addr);
+            top_source_nonzero = HasAnyNonZeroSourceByte(fb0_ptr, width, height, stride);
             if (fb0_ptr && width > 0 && height > 0 && stride > 0) {
                 ConvertRotateToRgba8888(fb0_ptr, screen_buffer, width, height, stride,
                                         TopScreenWidth, TopScreenHeight);
@@ -175,14 +207,18 @@ bool Presenter::PresentFrame() {
             }
         }
 
-        // Copy bottom screen (320x240 RGB565 or RGBA8) from guest VRAM.
-        {
+        // Copy bottom screen (320x240 RGB565 or RGBA8) when no GPU blit path exists.
+        if (!bottom_use_gpu_blit) {
             const auto& fb1 = framebuffer_config[1];
             const u32 width = fb1.width.Value();
             const u32 height = fb1.height.Value();
             const u32 stride = fb1.stride;
 
+            bottom_width_dbg = width;
+            bottom_height_dbg = height;
+            bottom_stride_dbg = stride;
             u8* fb1_ptr = memory.GetPhysicalPointer(fb1_addr);
+            bottom_source_nonzero = HasAnyNonZeroSourceByte(fb1_ptr, width, height, stride);
             const u32 top_size = TopScreenWidth * TopScreenHeight * BytesPerPixel;
             if (fb1_ptr && width > 0 && height > 0 && stride > 0) {
                 u8* const bottom_buffer = screen_buffer + top_size;
@@ -193,12 +229,11 @@ bool Presenter::PresentFrame() {
             }
         }
 
-#if defined(AZAHAR_SWITCH_DEKO3D_SOURCE_DIAGNOSTICS)
         ++frame_counter;
         const u8* const top_rgba = screen_buffer;
-        const u8* const bottom_rgba = screen_buffer + (400 * 240 * 4);
-        const bool top_has_pixels = HasAnyVisiblePixel(top_rgba, 400, 240);
-        const bool bottom_has_pixels = HasAnyVisiblePixel(bottom_rgba, 320, 240);
+        const u8* const bottom_rgba = screen_buffer + (TopScreenWidth * TopScreenHeight * BytesPerPixel);
+        const bool top_has_pixels = HasAnyVisiblePixel(top_rgba, TopScreenWidth, TopScreenHeight);
+        const bool bottom_has_pixels = HasAnyVisiblePixel(bottom_rgba, BottomScreenWidth, BottomScreenHeight);
         if (!top_has_pixels) {
             ++blank_top_frames;
         }
@@ -206,13 +241,18 @@ bool Presenter::PresentFrame() {
             ++blank_bottom_frames;
         }
 
-        if ((frame_counter % 120) == 0) {
+        if ((frame_counter % 60) == 0 || (!top_has_pixels && !bottom_has_pixels && frame_counter <= 10)) {
             LOG_INFO(Render,
                      "Deko3D source diagnostics: frames={} blank_top={} blank_bottom={} "
-                     "fb0=0x{:08x} fb1=0x{:08x}",
-                     frame_counter, blank_top_frames, blank_bottom_frames, fb0_addr, fb1_addr);
+                     "fb0=0x{:08x} {}x{} stride={} bpp={} src_nonzero={} rgba_visible={} "
+                     "fb1=0x{:08x} {}x{} stride={} bpp={} src_nonzero={} rgba_visible={}",
+                     frame_counter, blank_top_frames, blank_bottom_frames, fb0_addr,
+                     top_width_dbg, top_height_dbg, top_stride_dbg,
+                     EstimateBytesPerPixel(top_width_dbg, top_stride_dbg), top_source_nonzero,
+                     top_has_pixels, fb1_addr, bottom_width_dbg, bottom_height_dbg,
+                     bottom_stride_dbg, EstimateBytesPerPixel(bottom_width_dbg, bottom_stride_dbg),
+                     bottom_source_nonzero, bottom_has_pixels);
         }
-#endif
 
     } catch (const std::exception& e) {
         LOG_WARNING(Render, "Deko3D Presenter framebuffer access error: {}", e.what());

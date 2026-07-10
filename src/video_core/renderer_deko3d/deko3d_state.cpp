@@ -768,43 +768,42 @@ const State::CachedRenderTarget* State::FindGpuDirtyRenderTarget(PAddr address) 
             return target.get();
         }
     }
-    // Fallback: the display controller reads from a display-transfer destination address which
-    // differs from the render target address. Pick the most recently GPU-dirtied target.
-    const CachedRenderTarget* best = nullptr;
-    for (const auto& target : render_targets) {
-        if (!target->gpu_dirty) {
+    for (const auto& [display_address, target] : display_transfer_targets) {
+        if (display_address != address || !target || !target->gpu_dirty) {
             continue;
         }
-        const u32 target_pixels = target->key.width * target->key.height;
-        const u32 best_pixels = best ? (best->key.width * best->key.height) : 0;
-        if (target_pixels > best_pixels) {
-            best = target.get();
-        } else if (target_pixels == best_pixels &&
-                   target->deko_generation > best->deko_generation) {
-            best = target.get();
-        }
-    }
-    if (best) {
         LOG_INFO(Render,
-                 "FindGpuDirtyRenderTarget: display addr=0x{:08x} using most-recent RT "
+                 "FindGpuDirtyRenderTarget: display addr=0x{:08x} using transfer RT "
                  "addr=0x{:08x} size={}x{} gen={}",
-                 address, best->key.color_address, best->key.width, best->key.height,
-                 best->deko_generation);
+                 address, target->key.color_address, target->key.width, target->key.height,
+                 target->deko_generation);
+        return target;
     }
-    return best;
+    return nullptr;
 }
 
 const State::CachedRenderTarget* State::GetSelectedPresentRenderTarget() const {
     return selected_present_render_target;
 }
 
+const State::CachedRenderTarget* State::GetSelectedBottomPresentRenderTarget() const {
+    return selected_bottom_present_render_target;
+}
+
 void State::SelectPresentRenderTarget(PAddr address) {
-    selected_present_render_target = FindGpuDirtyRenderTarget(address);
+    SelectPresentRenderTargets(address, 0);
+}
+
+void State::SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address) {
+    selected_present_render_target = FindGpuDirtyRenderTarget(top_address);
+    selected_bottom_present_render_target =
+        bottom_address != 0 ? FindGpuDirtyRenderTarget(bottom_address) : nullptr;
     LOG_INFO(Render,
-             "SelectPresentRenderTarget: addr=0x{:08x} found={} rt_count={}",
-             address, selected_present_render_target != nullptr,
-             render_targets.size());
-    if (!selected_present_render_target) {
+             "SelectPresentRenderTarget: top=0x{:08x} top_found={} bottom=0x{:08x} "
+             "bottom_found={} rt_count={}",
+             top_address, selected_present_render_target != nullptr, bottom_address,
+             selected_bottom_present_render_target != nullptr, render_targets.size());
+    if (!selected_present_render_target && !selected_bottom_present_render_target) {
         for (const auto& t : render_targets) {
             LOG_INFO(Render,
                      "  RT addr=0x{:08x} size={}x{} gpu_dirty={}",
@@ -820,6 +819,48 @@ void State::MarkRenderTargetGpuDirty(CachedRenderTarget& target) {
     target.cpu_dirty = false;
     target.deko_generation = ++render_target_generation;
     RecordRenderTargetGpuDirty();
+}
+
+void State::RecordDisplayTransfer(PAddr input_address, PAddr output_address) {
+    if (input_address == 0 || output_address == 0) {
+        return;
+    }
+
+    const CachedRenderTarget* source = nullptr;
+    for (const auto& target : render_targets) {
+        if (target->key.color_address == input_address && target->gpu_dirty) {
+            source = target.get();
+            break;
+        }
+    }
+    if (!source) {
+        for (const auto& target : render_targets) {
+            if (!target->gpu_dirty ||
+                !RangesOverlap(input_address, 1, target->key.color_address,
+                               RenderTargetBytes(target->key))) {
+                continue;
+            }
+            if (!source || target->deko_generation > source->deko_generation) {
+                source = target.get();
+            }
+        }
+    }
+    if (!source) {
+        return;
+    }
+
+    auto existing =
+        std::find_if(display_transfer_targets.begin(), display_transfer_targets.end(),
+                     [output_address](const auto& entry) { return entry.first == output_address; });
+    if (existing != display_transfer_targets.end()) {
+        existing->second = source;
+    } else {
+        display_transfer_targets.emplace_back(output_address, source);
+    }
+    LOG_INFO(Render,
+             "Deko3D display transfer alias: dst=0x{:08x} src=0x{:08x} size={}x{} gen={}",
+             output_address, source->key.color_address, source->key.width, source->key.height,
+             source->deko_generation);
 }
 
 void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner) {
@@ -841,6 +882,14 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
         RecordRenderTargetCpuDirty();
         if (selected_present_render_target == target.get()) {
             selected_present_render_target = nullptr;
+        }
+        if (selected_bottom_present_render_target == target.get()) {
+            selected_bottom_present_render_target = nullptr;
+        }
+        for (auto& entry : display_transfer_targets) {
+            if (entry.second == target.get()) {
+                entry.second = nullptr;
+            }
         }
     }
 }
@@ -951,10 +1000,13 @@ bool State::PresentScreenTexturesFrame() {
     const u8* const top_src = static_cast<const u8*>(screen_data_buffer);
     const u8* const bottom_src = top_src + top_bytes;
     const CachedRenderTarget* const cached_present = selected_present_render_target;
+    const CachedRenderTarget* const cached_bottom_present = selected_bottom_present_render_target;
     if (!cached_present || !cached_present->gpu_dirty) {
         std::memcpy(upload_ptr, top_src, top_bytes);
     }
-    std::memcpy(upload_ptr + top_bytes, bottom_src, bottom_bytes);
+    if (!cached_bottom_present || !cached_bottom_present->gpu_dirty) {
+        std::memcpy(upload_ptr + top_bytes, bottom_src, bottom_bytes);
+    }
 
     const u32 top_x = (frame_width - top_width) / 2;
     const u32 top_y = 40;
@@ -997,16 +1049,6 @@ bool State::PresentScreenTexturesFrame() {
                           DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
         LOG_INFO(Render, "Present cached D3 blit done src={}x{} dst={}x{}",
                  rt_w, top_src_h, top_copy_dst.width, top_copy_dst.height);
-        // If the RT also contains the bottom screen (height >= 720), blit that too.
-        if (rt_h >= 720) {
-            DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
-            DkImageRect rt_bottom_src = {0, 400, 0, rt_w, 320u, 1};
-            dkCmdBufBlitImage(cmdbuf, &cached_present->view, &rt_bottom_src,
-                              &framebuffer_views[slot], &bottom_copy_dst,
-                              DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
-            LOG_INFO(Render, "Present cached D4 bottom blit done src={}x320 dst={}x{}",
-                     rt_w, bottom_copy_dst.width, bottom_copy_dst.height);
-        }
     } else if (top_screen_gpu_dirty && top_screen_view) {
         DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
         dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
@@ -1018,11 +1060,23 @@ bool State::PresentScreenTexturesFrame() {
                                   0);
     }
 
-    const bool bottom_from_rt = cached_present && cached_present->gpu_dirty &&
-                                  cached_present->key.height >= 720;
+    bool bottom_from_rt = false;
+    DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
+    if (cached_bottom_present && cached_bottom_present->gpu_dirty) {
+        WaitRasterQueue();
+        DkImageRect bottom_rt_src = {0, 0, 0, cached_bottom_present->key.width,
+                                     std::min(cached_bottom_present->key.height, 320u), 1};
+        dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
+        dkCmdBufBlitImage(cmdbuf, &cached_bottom_present->view, &bottom_rt_src,
+                          &framebuffer_views[slot], &bottom_copy_dst,
+                          DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
+        bottom_from_rt = true;
+        LOG_INFO(Render, "Present cached bottom blit done src={}x{} dst={}x{}",
+                 bottom_rt_src.width, bottom_rt_src.height, bottom_copy_dst.width,
+                 bottom_copy_dst.height);
+    }
     if (!bottom_from_rt) {
         DkCopyBuf bottom_copy_src = {upload_gpu_addr + top_bytes, 0, 0};
-        DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
         dkCmdBufCopyBufferToImage(cmdbuf, &bottom_copy_src, &framebuffer_views[slot],
                                   &bottom_copy_dst, 0);
     }

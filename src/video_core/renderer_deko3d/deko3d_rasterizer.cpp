@@ -16,6 +16,7 @@
 #include "common/logging/log.h"
 #include "switch/switch_debug_log.h"
 #include "video_core/pica/pica_core.h"
+#include "video_core/pica/regs_external.h"
 #include "video_core/renderer_deko3d/deko3d_shader.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
 #include "video_core/renderer_deko3d/deko3d_texture_cache.h"
@@ -654,6 +655,14 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
     RecordFallbackReason(FallbackReason::UnsupportedState);
     return false;
 #endif
+    // Device logs show HWdraw submissions completing while both screens remain blank.
+    // Do not let the unvalidated native triangle path consume frame content until
+    // render-target readout proves it can produce visible pixels.
+    constexpr bool HardwareTrianglePathEnabled = false;
+    if (!HardwareTrianglePathEnabled) {
+        RecordFallbackReason(FallbackReason::UnsupportedState);
+        return false;
+    }
     if (!initialized || !device || !queue || !frame_slices[0].command_buffer || !vertex_cpu_buffer ||
         vertex_gpu_addr == 0) {
         return false;
@@ -1246,6 +1255,13 @@ void Rasterizer::ClearAll(bool flush) {
     vertex_batch.clear();
     fallback_vertex_batch.clear();
     software_fallback.ClearAll(flush);
+}
+
+bool Rasterizer::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
+#ifdef __SWITCH__
+    state.RecordDisplayTransfer(config.GetPhysicalInputAddress(), config.GetPhysicalOutputAddress());
+#endif
+    return false;
 }
 
 bool Rasterizer::AccelerateDrawBatch(bool is_indexed) {

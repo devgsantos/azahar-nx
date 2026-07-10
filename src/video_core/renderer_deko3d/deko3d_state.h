@@ -125,8 +125,11 @@ public:
     CachedRenderTarget* GetOrCreateRenderTarget(const RenderTargetKey& key);
     [[nodiscard]] const CachedRenderTarget* FindGpuDirtyRenderTarget(PAddr address) const;
     [[nodiscard]] const CachedRenderTarget* GetSelectedPresentRenderTarget() const;
+    [[nodiscard]] const CachedRenderTarget* GetSelectedBottomPresentRenderTarget() const;
     void SelectPresentRenderTarget(PAddr address);
+    void SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address);
     void MarkRenderTargetGpuDirty(CachedRenderTarget& target);
+    void RecordDisplayTransfer(PAddr input_address, PAddr output_address);
     void MarkRenderTargetSoftwareDirty(PAddr address, u32 bytes);
     void MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes);
     void InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner);
@@ -178,8 +181,10 @@ private:
     bool present_fence_pending = false;
     bool top_screen_gpu_dirty = false;
     std::vector<std::unique_ptr<CachedRenderTarget>> render_targets;
+    std::vector<std::pair<PAddr, const CachedRenderTarget*>> display_transfer_targets;
     u64 render_target_generation = 0;
     const CachedRenderTarget* selected_present_render_target = nullptr;
+    const CachedRenderTarget* selected_bottom_present_render_target = nullptr;
 
     // Screen textures for CPU framebuffer display (400x240 top, 320x240 bottom)
     DkMemBlock screen_tex_mem_block{};
