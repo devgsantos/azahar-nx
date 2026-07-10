@@ -170,8 +170,8 @@ bool Presenter::PresentFrame() {
 
         // Skip CPU readback when the GPU already has dirty cached render targets,
         // because PresentScreenTexturesFrame will blit them directly.
-        const bool top_use_gpu_blit = cached_target && cached_target->gpu_dirty;
-        const bool bottom_use_gpu_blit = cached_bottom_target && cached_bottom_target->gpu_dirty;
+        const bool top_use_gpu_blit = cached_target != nullptr;
+        const bool bottom_use_gpu_blit = cached_bottom_target != nullptr;
 
         auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
         if (!screen_buffer ||

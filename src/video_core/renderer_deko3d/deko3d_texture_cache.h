@@ -26,6 +26,7 @@ class State;
 #ifdef __SWITCH__
 struct CachedTexture {
     PAddr physical_address{};
+    u32 source_bytes = 0;
     u32 width = 0;
     u32 height = 0;
     Pica::TexturingRegs::TextureFormat format{};
@@ -33,7 +34,6 @@ struct CachedTexture {
     DkImageView view{};
     DkMemBlock mem_block{};
     DkSampler sampler{};
-    std::size_t generation = 0;
 };
 #endif
 
@@ -77,7 +77,6 @@ private:
     DkMemBlock upload_command_mem_block{};
     DkCmdBuf upload_command_buffer{};
     std::unordered_map<u64, std::unique_ptr<CachedTexture>> cache;
-    std::size_t generation = 0;
 #endif
     bool initialized = false;
 };

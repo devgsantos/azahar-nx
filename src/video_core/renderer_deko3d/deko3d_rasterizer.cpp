@@ -142,10 +142,14 @@ struct alignas(16) PicaFragmentState {
     s32 alpha_test_enabled;
     s32 alpha_test_func;
     float alpha_test_ref;
-    float alpha_test_pad;
+    s32 texture_enable_mask;
+    s32 pad0;
+    s32 pad1;
+    s32 pad2;
+    s32 pad3;
 };
 
-static_assert(sizeof(PicaFragmentState) == 16, "PicaFragmentState must match std140 layout");
+static_assert(sizeof(PicaFragmentState) == 32, "PicaFragmentState must match std140 layout");
 
 struct alignas(16) PicaVertexState {
     s32 flip_viewport;
@@ -571,28 +575,20 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
     // Color write masks are mapped in SubmitHardwareChunk; allow the hardware path.
     (void)ColorWriteMask(fb);
 
-    // Texturing is now handled by the texture cache and textured shaders. We only
-    // block configurations that are too complex for the first hardware milestone
-    // (multiple texture units, cube/projection/shadow maps, procedural textures).
+    // Texturing is handled by the texture cache and fixed Deko3D shaders. Keep
+    // non-2D/procedural units on the software path until their coordinate modes
+    // are implemented, but allow normal multi-texture batches onto the GPU.
     const auto pica_textures = regs.texturing.GetTextures();
     u32 enabled_texture_count = 0;
-    u32 first_enabled_index = 0;
     for (std::size_t i = 0; i < pica_textures.size(); ++i) {
         if (pica_textures[i].enabled != 0) {
-            if (enabled_texture_count == 0) {
-                first_enabled_index = static_cast<u32>(i);
-            }
             ++enabled_texture_count;
+            if (pica_textures[i].config.type != Pica::TexturingRegs::TextureConfig::Texture2D) {
+                blockers |= TexturesEnabled;
+            }
         }
     }
-    if (enabled_texture_count > 1) {
-        blockers |= TexturesEnabled;
-    } else if (enabled_texture_count == 1) {
-        const auto& tex = pica_textures[first_enabled_index];
-        if (tex.config.type != Pica::TexturingRegs::TextureConfig::Texture2D) {
-            blockers |= TexturesEnabled;
-        }
-    }
+    (void)enabled_texture_count;
 
     ASSERT_MSG(batch_valid || (blockers & InvalidBatch) != 0,
                "Transformed batch validity did not set InvalidBatch blocker");
@@ -665,20 +661,6 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         return false;
     }
 
-    const auto textures = regs.texturing.GetTextures();
-    bool has_enabled_texture = false;
-    for (const auto& texture : textures) {
-        if (texture.enabled != 0) {
-            has_enabled_texture = true;
-            break;
-        }
-    }
-    if (has_enabled_texture) {
-        RecordTransformedBlocker(TexturesEnabled);
-        RecordFallbackReason(FallbackReason::TexturesEnabled);
-        return false;
-    }
-
     const auto eligibility = EvaluateTransformedBatchEligibility();
     RecordTransformedBlocker(eligibility.blockers);
     if (!eligibility.supported) {
@@ -702,13 +684,58 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         return false;
     }
 
-    const CachedTexture* const cached_texture = nullptr;
-    constexpr bool use_texture = false;
+    const auto textures = regs.texturing.GetTextures();
+    std::array<const CachedTexture*, 3> cached_textures{};
+    u32 texture_mask = 0;
+    u32 enabled_texture_count = 0;
+    for (u32 index = 0; index < static_cast<u32>(textures.size()); ++index) {
+        if (textures[index].enabled == 0) {
+            continue;
+        }
+        ++enabled_texture_count;
+        if (index >= cached_textures.size()) {
+            LOG_INFO(Render, "Deko3D HW reject: texture unit {} outside fixed shader range", index);
+            RecordTransformedBlocker(TexturesEnabled);
+            RecordFallbackReason(FallbackReason::TexturesEnabled);
+            return false;
+        }
+        cached_textures[index] = texture_cache.GetTexture(textures[index]);
+        texture_mask |= 1U << index;
+        if (!cached_textures[index]) {
+            const auto& texture = textures[index];
+            LOG_INFO(Render,
+                     "Deko3D HW reject: texture cache miss/fail unit={} addr=0x{:08x} size={}x{} "
+                     "format={} type={} mask=0x{:x}",
+                     index, texture.config.GetPhysicalAddress(), texture.config.width.Value(),
+                     texture.config.height.Value(), static_cast<u32>(texture.format),
+                     static_cast<u32>(texture.config.type.Value()), texture_mask);
+            RecordFallbackReason(FallbackReason::TexturesEnabled);
+            return false;
+        }
+    }
+    if (texture_mask != 0) {
+        static bool s_logged_first_textured_batch = false;
+        if (!s_logged_first_textured_batch) {
+            s_logged_first_textured_batch = true;
+            const u32 first_index = (texture_mask & 0x1) != 0 ? 0 : ((texture_mask & 0x2) != 0 ? 1 : 2);
+            const auto& texture = textures[first_index];
+            LOG_INFO(Render,
+                     "Deko3D HW textured batch enabled: mask=0x{:x} first_unit={} addr=0x{:08x} size={}x{} "
+                     "format={}",
+                     texture_mask, first_index, texture.config.GetPhysicalAddress(),
+                     texture.config.width.Value(), texture.config.height.Value(),
+                     static_cast<u32>(texture.format));
+        }
+    }
+
+    const bool use_texture = texture_mask != 0;
     const DkShader* const vertex_shader =
         use_texture ? shader_cache.GetTexVertexShader() : shader_cache.GetColorVertexShader();
     const DkShader* const fragment_shader =
         use_texture ? shader_cache.GetTexFragmentShader() : shader_cache.GetColorFragmentShader();
     if (!vertex_shader || !fragment_shader) {
+        LOG_INFO(Render, "Deko3D HW reject: missing shader use_texture={} mask=0x{:x}",
+                 use_texture, texture_mask);
         return false;
     }
 
@@ -721,6 +748,10 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
     };
     State::CachedRenderTarget* color_target = state.GetOrCreateRenderTarget(color_key);
     if (!color_target) {
+        LOG_INFO(Render, "Deko3D HW reject: color RT create failed addr=0x{:08x} size={}x{} "
+                         "format={} texture_mask=0x{:x} textures={}",
+                 color_key.color_address, color_key.width, color_key.height, color_key.format,
+                 texture_mask, enabled_texture_count);
         RecordTransformedBlocker(MissingGpuResources);
         RecordFallbackReason(FallbackReason::WrongRenderTarget);
         return false;
@@ -729,6 +760,9 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
     if ((regs.framebuffer.output_merger.depth_write_enable != 0 ||
          regs.framebuffer.output_merger.depth_test_enable != 0) &&
         !depth_target) {
+        LOG_INFO(Render, "Deko3D HW reject: depth RT create failed size={}x{} fmt={} mask=0x{:x}",
+                 fb.GetWidth(), fb.GetHeight(), static_cast<u32>(fb.depth_format.Value()),
+                 texture_mask);
         RecordDepthState(false);
         RecordFallbackReason(FallbackReason::DepthEnabled);
         return false;
@@ -756,8 +790,11 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
             return false;
         }
         if (!SubmitHardwareChunk(slice, *color_target, depth_target, base_vertex,
-                                 aligned_vertex_count, cached_texture)) {
-            LOG_INFO(Render, "Deko3D hardware draw: SubmitHardwareChunk failed");
+                                 aligned_vertex_count, cached_textures, texture_mask)) {
+            LOG_INFO(Render,
+                     "Deko3D hardware draw: SubmitHardwareChunk failed vertices={} base={} "
+                     "mask=0x{:x}",
+                     aligned_vertex_count, base_vertex, texture_mask);
             return false;
         }
         submitted_vertices += aligned_vertex_count;
@@ -838,7 +875,9 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
 
 bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
                                      const DkImageView* depth_target, std::size_t base_vertex,
-                                     std::size_t vertex_count, const CachedTexture* texture) {
+                                     std::size_t vertex_count,
+                                     const std::array<const CachedTexture*, 3>& textures,
+                                     u32 texture_mask) {
 
 
     const std::size_t vertex_bytes = vertex_count * sizeof(HardwareVertex);
@@ -867,9 +906,10 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         }
     }
 
+    const bool use_textures = texture_mask != 0;
     const DkShader* const shaders[] = {
-        texture ? shader_cache.GetTexVertexShader() : shader_cache.GetColorVertexShader(),
-        texture ? shader_cache.GetTexFragmentShader() : shader_cache.GetColorFragmentShader()};
+        use_textures ? shader_cache.GetTexVertexShader() : shader_cache.GetColorVertexShader(),
+        use_textures ? shader_cache.GetTexFragmentShader() : shader_cache.GetColorFragmentShader()};
     if (!shaders[0] || !shaders[1]) {
         return false;
     }
@@ -976,7 +1016,11 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         .alpha_test_enabled = static_cast<s32>(alpha_test.enable.Value()),
         .alpha_test_func = MapAlphaTestFunc(alpha_test.func.Value()),
         .alpha_test_ref = alpha_test.ref.Value() / 255.0f,
-        .alpha_test_pad = 0.0f,
+        .texture_enable_mask = static_cast<s32>(texture_mask),
+        .pad0 = 0,
+        .pad1 = 0,
+        .pad2 = 0,
+        .pad3 = 0,
     };
     std::memcpy(static_cast<u8*>(uniform_cpu_buffer) + slice.uniform_offset, &fragment_state,
                 sizeof(fragment_state));
@@ -1016,22 +1060,42 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     dkCmdBufSetViewports(command_buffer, 0, &viewport, 1);
     dkCmdBufSetScissors(command_buffer, 0, &scissor, 1);
     dkCmdBufBindShaders(command_buffer, DkStageFlag_GraphicsMask, shaders, 2);
-    if (texture) {
+    if (use_textures) {
+        const CachedTexture* fallback_texture = nullptr;
+        for (const CachedTexture* texture : textures) {
+            if (texture) {
+                fallback_texture = texture;
+                break;
+            }
+        }
+        if (!fallback_texture) {
+            return false;
+        }
+
         const std::size_t image_offset = 0;
+        constexpr std::size_t texture_count = 3;
+        const std::size_t image_bytes = texture_count * sizeof(DkImageDescriptor);
         const std::size_t sampler_offset =
-            Common::AlignUp(image_offset + sizeof(DkImageDescriptor),
+            Common::AlignUp(image_offset + image_bytes,
                             static_cast<std::size_t>(DK_IMAGE_DESCRIPTOR_ALIGNMENT));
+        for (std::size_t index = 0; index < texture_count; ++index) {
+            const CachedTexture* texture = textures[index] ? textures[index] : fallback_texture;
+            DkImageDescriptor image_descriptor{};
+            DkSamplerDescriptor sampler_descriptor{};
+            dkImageDescriptorInitialize(&image_descriptor, &texture->view, false, false);
+            dkSamplerDescriptorInitialize(&sampler_descriptor, &texture->sampler);
+            std::memcpy(static_cast<u8*>(descriptor_cpu_buffer) + image_offset +
+                            index * sizeof(DkImageDescriptor),
+                        &image_descriptor, sizeof(DkImageDescriptor));
+            std::memcpy(static_cast<u8*>(descriptor_cpu_buffer) + sampler_offset +
+                            index * sizeof(DkSamplerDescriptor),
+                        &sampler_descriptor, sizeof(DkSamplerDescriptor));
+        }
 
-        dkImageDescriptorInitialize(&hw_image_descriptor, &texture->view, false, false);
-        dkSamplerDescriptorInitialize(&hw_sampler_descriptor, &texture->sampler);
-
-        std::memcpy(static_cast<u8*>(descriptor_cpu_buffer) + image_offset, &hw_image_descriptor,
-                    sizeof(DkImageDescriptor));
-        std::memcpy(static_cast<u8*>(descriptor_cpu_buffer) + sampler_offset, &hw_sampler_descriptor,
-                    sizeof(DkSamplerDescriptor));
-
-        dkCmdBufBindImageDescriptorSet(command_buffer, descriptor_gpu_addr + image_offset, 1);
-        dkCmdBufBindSamplerDescriptorSet(command_buffer, descriptor_gpu_addr + sampler_offset, 1);
+        dkCmdBufBindImageDescriptorSet(command_buffer, descriptor_gpu_addr + image_offset,
+                                       texture_count);
+        dkCmdBufBindSamplerDescriptorSet(command_buffer, descriptor_gpu_addr + sampler_offset,
+                                         texture_count);
     }
     dkCmdBufBindRasterizerState(command_buffer, &rasterizer_state);
     dkCmdBufBindMultisampleState(command_buffer, &multisample_state);

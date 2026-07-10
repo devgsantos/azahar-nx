@@ -132,7 +132,9 @@ private:
     bool TryDrawHardwareBatch(std::size_t& submitted_vertices);
     bool SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
                              const DkImageView* depth_target, std::size_t base_vertex,
-                             std::size_t vertex_count, const CachedTexture* texture);
+                             std::size_t vertex_count,
+                             const std::array<const CachedTexture*, 3>& textures,
+                             u32 texture_mask);
     const DkImageView* GetOrCreateDepthTarget();
     bool QueueHasError(const char* context);
     void FlushQueue();

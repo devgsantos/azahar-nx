@@ -3,7 +3,9 @@
 
 #include "video_core/renderer_deko3d/deko3d_texture_cache.h"
 
+#include <algorithm>
 #include <cstring>
+#include <limits>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -24,6 +26,48 @@ constexpr u32 UploadCommandSize = 16 * 1024;
 
 u32 AlignUp(u32 value, u32 alignment) {
     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+}
+
+bool RangesOverlap(PAddr lhs, u64 lhs_size, PAddr rhs, u64 rhs_size) {
+    if (lhs_size == 0 || rhs_size == 0) {
+        return false;
+    }
+    const u64 lhs_begin = lhs;
+    const u64 lhs_end = lhs_begin + lhs_size;
+    const u64 rhs_begin = rhs;
+    const u64 rhs_end = rhs_begin + rhs_size;
+    return lhs_begin < rhs_end && rhs_begin < lhs_end;
+}
+
+u32 TextureSourceBytes(u32 width, u32 height, Pica::TexturingRegs::TextureFormat format) {
+    using TextureFormat = Pica::TexturingRegs::TextureFormat;
+    switch (format) {
+    case TextureFormat::RGBA8:
+    case TextureFormat::RGB8:
+    case TextureFormat::RGB5A1:
+    case TextureFormat::RGB565:
+    case TextureFormat::RGBA4:
+    case TextureFormat::IA8:
+    case TextureFormat::RG8:
+    case TextureFormat::I8:
+    case TextureFormat::A8:
+    case TextureFormat::IA4:
+    case TextureFormat::I4:
+    case TextureFormat::A4: {
+        const u64 nibbles = static_cast<u64>(width) * height *
+                            Pica::TexturingRegs::NibblesPerPixel(format);
+        return static_cast<u32>((nibbles + 1) / 2);
+    }
+    case TextureFormat::ETC1:
+    case TextureFormat::ETC1A4: {
+        const u32 tiles_x = std::max(1u, (width + 7u) / 8u);
+        const u32 tiles_y = std::max(1u, (height + 7u) / 8u);
+        const u64 bytes = static_cast<u64>(tiles_x) * tiles_y *
+                          Pica::Texture::CalculateTileSize(format);
+        return bytes > std::numeric_limits<u32>::max() ? 0 : static_cast<u32>(bytes);
+    }
+    }
+    return 0;
 }
 
 DkWrapMode MapWrapMode(Pica::TexturingRegs::TextureConfig::WrapMode mode) {
@@ -155,12 +199,7 @@ const CachedTexture* TextureCache::GetTexture(
     const u64 key = ComputeTextureKey(config);
     auto it = cache.find(key);
     if (it != cache.end()) {
-        if (it->second->generation == generation) {
-            return it->second.get();
-        }
-        // Cached entry was invalidated; destroy and recreate.
-        DestroyTexture(*it->second);
-        cache.erase(it);
+        return it->second.get();
     }
 
     if (!MapTextureFormat(config.format)) {
@@ -169,6 +208,7 @@ const CachedTexture* TextureCache::GetTexture(
 
     auto cached = std::make_unique<CachedTexture>();
     cached->physical_address = config.config.GetPhysicalAddress();
+    cached->source_bytes = TextureSourceBytes(config.config.width, config.config.height, config.format);
     cached->width = config.config.width;
     cached->height = config.config.height;
     cached->format = config.format;
@@ -182,7 +222,6 @@ const CachedTexture* TextureCache::GetTexture(
         return nullptr;
     }
     cached->sampler = CreateSampler(config.config);
-    cached->generation = generation;
 
     const CachedTexture* result = cached.get();
     cache.emplace(key, std::move(cached));
@@ -355,23 +394,28 @@ std::optional<DkImageFormat> TextureCache::MapTextureFormat(
     case Pica::TexturingRegs::TextureFormat::IA4:
     case Pica::TexturingRegs::TextureFormat::I4:
     case Pica::TexturingRegs::TextureFormat::A4:
-        // All source formats are decoded to RGBA8 on the CPU before upload.
-        return DkImageFormat_RGBA8_Unorm;
     case Pica::TexturingRegs::TextureFormat::ETC1:
     case Pica::TexturingRegs::TextureFormat::ETC1A4:
-        // ETC1 would need a dedicated compressed GPU format; fall back for now.
-        return std::nullopt;
+        // All source formats are decoded to RGBA8 before upload.
+        return DkImageFormat_RGBA8_Unorm;
     }
     return std::nullopt;
 }
 
 u64 TextureCache::ComputeTextureKey(const Pica::TexturingRegs::FullTextureConfig& config) const {
-    // Pack address, dimensions, and format into a stable key.
     u64 key = static_cast<u64>(config.config.GetPhysicalAddress());
     key ^= static_cast<u64>(config.config.width) << 16;
     key ^= static_cast<u64>(config.config.height) << 32;
     key ^= static_cast<u64>(static_cast<u32>(config.format)) << 48;
     key ^= static_cast<u64>(config.config.type.Value()) << 56;
+    key ^= static_cast<u64>(config.config.wrap_s.Value()) << 4;
+    key ^= static_cast<u64>(config.config.wrap_t.Value()) << 7;
+    key ^= static_cast<u64>(config.config.min_filter.Value()) << 10;
+    key ^= static_cast<u64>(config.config.mag_filter.Value()) << 11;
+    key ^= static_cast<u64>(config.config.mip_filter.Value()) << 12;
+    key ^= static_cast<u64>(config.config.border_color.raw) << 20;
+    key ^= static_cast<u64>(config.config.lod.max_level.Value()) << 52;
+    key ^= static_cast<u64>(config.config.lod.min_level.Value()) << 56;
     return key;
 }
 
@@ -379,9 +423,15 @@ void TextureCache::InvalidateRegion(PAddr address, u32 size) {
     if (address == 0 || size == 0) {
         return;
     }
-    ++generation;
-    (void)address;
-    (void)size;
+    for (auto it = cache.begin(); it != cache.end();) {
+        CachedTexture& texture = *it->second;
+        if (!RangesOverlap(address, size, texture.physical_address, texture.source_bytes)) {
+            ++it;
+            continue;
+        }
+        DestroyTexture(texture);
+        it = cache.erase(it);
+    }
 }
 
 void TextureCache::FlushRegion(PAddr address, u32 size) {

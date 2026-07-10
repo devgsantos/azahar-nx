@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -26,6 +27,8 @@ namespace VideoCore::Deko3D {
 namespace {
 
 #ifdef __SWITCH__
+constexpr u32 PresentMemorySize = 4 * 1024;
+
 u64 AlignUp(u64 value, u64 alignment) {
     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
 }
@@ -76,6 +79,11 @@ bool RangesOverlap(PAddr lhs, u64 lhs_size, PAddr rhs, u64 rhs_size) {
     const u64 rhs_end = rhs_begin + rhs_size;
     return lhs_begin < rhs_end && rhs_begin < lhs_end;
 }
+
+struct PresentVertex {
+    float position[2];
+    float tex_coord[2];
+};
 #endif
 
 #ifdef __SWITCH__
@@ -204,6 +212,11 @@ bool State::Initialize() {
         return false;
     }
 
+    if (!CreatePresentResources()) {
+        Shutdown();
+        return false;
+    }
+
     SWITCH_TRACE_EVENTF("Deko3D", "State::Initialize", "screen buffer allocated",
                         "size=%u", screen_data_buffer_size);
 
@@ -269,6 +282,13 @@ void State::Shutdown() {
     upload_cpu_buffer = nullptr;
     upload_gpu_addr = 0;
     upload_buffer_size = 0;
+    if (present_mem_block) {
+        dkMemBlockDestroy(present_mem_block);
+        present_mem_block = nullptr;
+    }
+    present_cpu_buffer = nullptr;
+    present_gpu_addr = 0;
+    present_sampler = {};
     swapchain_background_initialized = {};
     present_fence = {};
     present_fence_pending = false;
@@ -698,6 +718,129 @@ bool State::CreateScreenTextures() {
     return true;
 }
 
+bool State::CreatePresentResources() {
+    DkMemBlockMaker mem_block_maker;
+    dkMemBlockMakerDefaults(&mem_block_maker, device,
+                            static_cast<u32>(AlignUp(PresentMemorySize, DK_MEMBLOCK_ALIGNMENT)));
+    mem_block_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+    present_mem_block = dkMemBlockCreate(&mem_block_maker);
+    if (!present_mem_block) {
+        SetError("Failed to create present descriptor/vertex memory block");
+        return false;
+    }
+
+    present_cpu_buffer = dkMemBlockGetCpuAddr(present_mem_block);
+    present_gpu_addr = dkMemBlockGetGpuAddr(present_mem_block);
+    if (!present_cpu_buffer || present_gpu_addr == 0) {
+        SetError("Failed to map present descriptor/vertex memory block");
+        return false;
+    }
+
+    dkSamplerDefaults(&present_sampler);
+    present_sampler.minFilter = DkFilter_Nearest;
+    present_sampler.magFilter = DkFilter_Nearest;
+    present_sampler.mipFilter = DkMipFilter_None;
+    present_sampler.wrapMode[0] = DkWrapMode_ClampToEdge;
+    present_sampler.wrapMode[1] = DkWrapMode_ClampToEdge;
+    present_sampler.wrapMode[2] = DkWrapMode_ClampToEdge;
+    return true;
+}
+
+bool State::DrawCachedTopRenderTarget(const CachedRenderTarget& target, u32 slot, u32 dst_x,
+                                      u32 dst_y, u32 dst_width, u32 dst_height) {
+    if (!present_vertex_shader || !present_fragment_shader || !present_cpu_buffer ||
+        present_gpu_addr == 0 || slot >= FramebufferCount) {
+        return false;
+    }
+
+    constexpr std::size_t ImageOffset = 0;
+    const std::size_t sampler_offset =
+        AlignUp(ImageOffset + sizeof(DkImageDescriptor), DK_IMAGE_DESCRIPTOR_ALIGNMENT);
+    const std::size_t vertex_offset =
+        AlignUp(sampler_offset + sizeof(DkSamplerDescriptor), 16);
+    const std::size_t required_size =
+        vertex_offset + sizeof(PresentVertex) * 4;
+    if (required_size > PresentMemorySize) {
+        return false;
+    }
+
+    DkImageDescriptor image_descriptor{};
+    DkSamplerDescriptor sampler_descriptor{};
+    dkImageDescriptorInitialize(&image_descriptor, &target.view, false, false);
+    dkSamplerDescriptorInitialize(&sampler_descriptor, &present_sampler);
+    std::memcpy(static_cast<u8*>(present_cpu_buffer) + ImageOffset, &image_descriptor,
+                sizeof(image_descriptor));
+    std::memcpy(static_cast<u8*>(present_cpu_buffer) + sampler_offset, &sampler_descriptor,
+                sizeof(sampler_descriptor));
+
+    const float src_top = 0.0f;
+    const float src_bottom =
+        static_cast<float>(std::min(target.key.height, 400u)) /
+        static_cast<float>(std::max(target.key.height, 1u));
+    const PresentVertex vertices[] = {
+        {{-1.0f, +1.0f}, {1.0f, src_top}},
+        {{-1.0f, -1.0f}, {0.0f, src_top}},
+        {{+1.0f, +1.0f}, {1.0f, src_bottom}},
+        {{+1.0f, -1.0f}, {0.0f, src_bottom}},
+    };
+    std::memcpy(static_cast<u8*>(present_cpu_buffer) + vertex_offset, vertices,
+                sizeof(vertices));
+
+    static const DkVtxAttribState attribs[] = {
+        {0, 0, offsetof(PresentVertex, position), DkVtxAttribSize_2x32, DkVtxAttribType_Float, 0},
+        {0, 0, offsetof(PresentVertex, tex_coord), DkVtxAttribSize_2x32, DkVtxAttribType_Float,
+         0},
+    };
+    static const DkVtxBufferState vtx_buffer_state[] = {{sizeof(PresentVertex), 0}};
+
+    DkRasterizerState rasterizer_state{};
+    DkMultisampleState multisample_state{};
+    DkColorState color_state{};
+    DkColorWriteState color_write_state{};
+    DkDepthStencilState depth_stencil_state{};
+    DkBlendState blend_state{};
+    dkRasterizerStateDefaults(&rasterizer_state);
+    dkMultisampleStateDefaults(&multisample_state);
+    dkColorStateDefaults(&color_state);
+    dkColorWriteStateDefaults(&color_write_state);
+    dkDepthStencilStateDefaults(&depth_stencil_state);
+    dkBlendStateDefaults(&blend_state);
+    rasterizer_state.cullMode = DkFace_None;
+    dkColorStateSetBlendEnable(&color_state, 0, false);
+    dkColorWriteStateSetMask(&color_write_state, 0, DkColorMask_RGBA);
+
+    const DkViewport viewport = {static_cast<float>(dst_x), static_cast<float>(dst_y),
+                                 static_cast<float>(dst_width),
+                                 static_cast<float>(dst_height), 0.0f, 1.0f};
+    const DkScissor scissor = {dst_x, dst_y, dst_width, dst_height};
+    const DkShader* shaders[] = {present_vertex_shader, present_fragment_shader};
+
+    dkCmdBufBindRenderTarget(cmdbuf, &framebuffer_views[slot], nullptr);
+    dkCmdBufSetViewports(cmdbuf, 0, &viewport, 1);
+    dkCmdBufSetScissors(cmdbuf, 0, &scissor, 1);
+    dkCmdBufBindShaders(cmdbuf, DkStageFlag_GraphicsMask, shaders, 2);
+    dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments,
+                    DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
+    dkCmdBufBindImageDescriptorSet(cmdbuf, present_gpu_addr + ImageOffset, 1);
+    dkCmdBufBindSamplerDescriptorSet(cmdbuf, present_gpu_addr + sampler_offset, 1);
+    dkCmdBufBindRasterizerState(cmdbuf, &rasterizer_state);
+    dkCmdBufBindMultisampleState(cmdbuf, &multisample_state);
+    dkCmdBufBindColorState(cmdbuf, &color_state);
+    dkCmdBufBindColorWriteState(cmdbuf, &color_write_state);
+    dkCmdBufBindBlendState(cmdbuf, 0, &blend_state);
+    dkCmdBufBindDepthStencilState(cmdbuf, &depth_stencil_state);
+    dkCmdBufBindVtxAttribState(cmdbuf, attribs, sizeof(attribs) / sizeof(attribs[0]));
+    dkCmdBufBindVtxBufferState(cmdbuf, vtx_buffer_state,
+                               sizeof(vtx_buffer_state) / sizeof(vtx_buffer_state[0]));
+    dkCmdBufBindVtxBuffer(cmdbuf, 0, present_gpu_addr + vertex_offset,
+                          static_cast<u32>(sizeof(vertices)));
+    dkCmdBufDraw(cmdbuf, DkPrimitive_TriangleStrip, 4, 1, 0, 0);
+    LOG_INFO(Render,
+             "Present cached top shader draw src={}x{} dst={}x{} uv_bottom={:.3f}",
+             target.key.width, target.key.height, dst_width, dst_height, src_bottom);
+    return true;
+}
+
 State::CachedRenderTarget* State::GetOrCreateRenderTarget(const RenderTargetKey& key) {
     if (!initialized || !device || key.color_address == 0 || key.width == 0 || key.height == 0) {
         return nullptr;
@@ -768,18 +911,43 @@ const State::CachedRenderTarget* State::FindGpuDirtyRenderTarget(PAddr address) 
             return target.get();
         }
     }
-    for (const auto& [display_address, target] : display_transfer_targets) {
-        if (display_address != address || !target || !target->gpu_dirty) {
+    for (const auto& alias : display_transfer_targets) {
+        const CachedRenderTarget* const target = alias.target;
+        if (alias.display_address != address || !target ||
+            target->deko_generation != alias.deko_generation) {
             continue;
         }
         LOG_INFO(Render,
                  "FindGpuDirtyRenderTarget: display addr=0x{:08x} using transfer RT "
                  "addr=0x{:08x} size={}x{} gen={}",
                  address, target->key.color_address, target->key.width, target->key.height,
-                 target->deko_generation);
+                 alias.deko_generation);
         return target;
     }
     return nullptr;
+}
+
+const State::CachedRenderTarget* State::FindNewestDisplayTransferRenderTarget() const {
+    const DisplayTransferTarget* newest = nullptr;
+    for (const auto& alias : display_transfer_targets) {
+        const CachedRenderTarget* const target = alias.target;
+        if (!target || target->deko_generation != alias.deko_generation ||
+            target->key.width != 240 || target->key.height < 400) {
+            continue;
+        }
+        if (!newest || alias.deko_generation > newest->deko_generation) {
+            newest = &alias;
+        }
+    }
+    if (!newest) {
+        return nullptr;
+    }
+    LOG_INFO(Render,
+             "FindNewestDisplayTransferRenderTarget: using dst=0x{:08x} RT addr=0x{:08x} "
+             "size={}x{} gen={}",
+             newest->display_address, newest->target->key.color_address,
+             newest->target->key.width, newest->target->key.height, newest->deko_generation);
+    return newest->target;
 }
 
 const State::CachedRenderTarget* State::GetSelectedPresentRenderTarget() const {
@@ -796,6 +964,9 @@ void State::SelectPresentRenderTarget(PAddr address) {
 
 void State::SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address) {
     selected_present_render_target = FindGpuDirtyRenderTarget(top_address);
+    if (!selected_present_render_target) {
+        selected_present_render_target = FindNewestDisplayTransferRenderTarget();
+    }
     selected_bottom_present_render_target =
         bottom_address != 0 ? FindGpuDirtyRenderTarget(bottom_address) : nullptr;
     if (!selected_present_render_target && !selected_bottom_present_render_target &&
@@ -858,11 +1029,18 @@ void State::RecordDisplayTransfer(PAddr input_address, PAddr output_address) {
 
     auto existing =
         std::find_if(display_transfer_targets.begin(), display_transfer_targets.end(),
-                     [output_address](const auto& entry) { return entry.first == output_address; });
+                     [output_address](const auto& entry) {
+                         return entry.display_address == output_address;
+                     });
     if (existing != display_transfer_targets.end()) {
-        existing->second = source;
+        existing->target = source;
+        existing->deko_generation = source->deko_generation;
     } else {
-        display_transfer_targets.emplace_back(output_address, source);
+        display_transfer_targets.emplace_back(DisplayTransferTarget{
+            .display_address = output_address,
+            .target = source,
+            .deko_generation = source->deko_generation,
+        });
     }
     LOG_INFO(Render,
              "Deko3D display transfer alias: dst=0x{:08x} src=0x{:08x} size={}x{} gen={}",
@@ -888,11 +1066,6 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
         }
         if (selected_bottom_present_render_target == target.get()) {
             selected_bottom_present_render_target = nullptr;
-        }
-        for (auto& entry : display_transfer_targets) {
-            if (entry.second == target.get()) {
-                entry.second = nullptr;
-            }
         }
     }
 }
@@ -999,10 +1172,10 @@ bool State::PresentScreenTexturesFrame() {
     const u8* const bottom_src = top_src + top_bytes;
     const CachedRenderTarget* const cached_present = selected_present_render_target;
     const CachedRenderTarget* const cached_bottom_present = selected_bottom_present_render_target;
-    if (!cached_present || !cached_present->gpu_dirty) {
+    if (!cached_present) {
         std::memcpy(upload_ptr, top_src, top_bytes);
     }
-    if (!cached_bottom_present || !cached_bottom_present->gpu_dirty) {
+    if (!cached_bottom_present) {
         std::memcpy(upload_ptr + top_bytes, bottom_src, bottom_bytes);
     }
 
@@ -1022,29 +1195,24 @@ bool State::PresentScreenTexturesFrame() {
     // Place top and bottom 3DS screens centered on Switch output.  Hardware-rasterized guest
     // render targets stay on the GPU and are blitted directly; CPU upload remains the fallback.
     DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
-    if (cached_present && cached_present->gpu_dirty) {
+    if (cached_present) {
         LOG_INFO(Render, "Present cached D1 before wait");
         WaitRasterQueue();
         LOG_INFO(Render, "Present cached D2 after wait");
-        // The RT is stored in portrait orientation (width=240).
-        // The top screen occupies the first 400 rows (portrait height),
-        // the bottom screen the next 320 rows (if RT height >= 720).
-        // Blit top-screen portion: src 240x400 portrait → dst 400x240 landscape.
-        const u32 rt_w = cached_present->key.width;
-        const u32 rt_h = cached_present->key.height;
-        const u32 top_src_h = std::min(rt_h, 400u);
-        // Flip vertically by reading the source from bottom to top (y = top_src_h, height wraps).
-        // Deko3D interprets src y+height as the end row; setting y=top_src_h and height=0-top_src_h
-        // (wrapping unsigned) is not valid. Instead use FlipY via swapped dst rect top/bottom:
-        // dst rect with y at bottom edge and negative-equivalent height achieved by two blits is
-        // complex; simplest valid approach is just blit normally for now and investigate rotation.
-        DkImageRect rt_src = {0, 0, 0, rt_w, top_src_h, 1};
-        dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
-        dkCmdBufBlitImage(cmdbuf, &cached_present->view, &rt_src,
-                          &framebuffer_views[slot], &top_copy_dst,
-                          DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
-        LOG_INFO(Render, "Present cached D3 blit done src={}x{} dst={}x{}",
-                 rt_w, top_src_h, top_copy_dst.width, top_copy_dst.height);
+        if (!DrawCachedTopRenderTarget(*cached_present, static_cast<u32>(slot), top_x, top_y,
+                                       top_width, top_height)) {
+            const u32 rt_w = cached_present->key.width;
+            const u32 rt_h = cached_present->key.height;
+            const u32 top_src_h = std::min(rt_h, 400u);
+            DkImageRect rt_src = {0, 0, 0, rt_w, top_src_h, 1};
+            dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
+            dkCmdBufBlitImage(cmdbuf, &cached_present->view, &rt_src,
+                              &framebuffer_views[slot], &top_copy_dst,
+                              DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
+            LOG_INFO(Render, "Present cached top shader unavailable; blit fallback src={}x{} "
+                             "dst={}x{}",
+                     rt_w, top_src_h, top_copy_dst.width, top_copy_dst.height);
+        }
     } else if (top_screen_gpu_dirty && top_screen_view) {
         DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
         dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
@@ -1058,7 +1226,7 @@ bool State::PresentScreenTexturesFrame() {
 
     bool bottom_from_rt = false;
     DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
-    if (cached_bottom_present && cached_bottom_present->gpu_dirty) {
+    if (cached_bottom_present) {
         WaitRasterQueue();
         DkImageRect bottom_rt_src = {0, 0, 0, cached_bottom_present->key.width,
                                      std::min(cached_bottom_present->key.height, 320u), 1};

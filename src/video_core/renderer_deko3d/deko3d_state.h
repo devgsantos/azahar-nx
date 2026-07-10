@@ -62,6 +62,11 @@ public:
     }
 
 #ifdef __SWITCH__
+    void SetPresentShaders(const DkShader* vertex_shader, const DkShader* fragment_shader) {
+        present_vertex_shader = vertex_shader;
+        present_fragment_shader = fragment_shader;
+    }
+
     [[nodiscard]] DkDevice GetDevice() const {
         return device;
     }
@@ -122,8 +127,15 @@ public:
         bool needs_clear = true;
     };
 
+    struct DisplayTransferTarget {
+        PAddr display_address = 0;
+        const CachedRenderTarget* target = nullptr;
+        u64 deko_generation = 0;
+    };
+
     CachedRenderTarget* GetOrCreateRenderTarget(const RenderTargetKey& key);
     [[nodiscard]] const CachedRenderTarget* FindGpuDirtyRenderTarget(PAddr address) const;
+    [[nodiscard]] const CachedRenderTarget* FindNewestDisplayTransferRenderTarget() const;
     [[nodiscard]] const CachedRenderTarget* GetSelectedPresentRenderTarget() const;
     [[nodiscard]] const CachedRenderTarget* GetSelectedBottomPresentRenderTarget() const;
     void SelectPresentRenderTarget(PAddr address);
@@ -154,6 +166,9 @@ private:
     bool CreateRasterQueue();
     bool RecordStaticCommands();
     bool CreateScreenTextures();
+    bool CreatePresentResources();
+    bool DrawCachedTopRenderTarget(const CachedRenderTarget& target, u32 slot, u32 dst_x,
+                                   u32 dst_y, u32 dst_width, u32 dst_height);
     bool QueueHasError(const char* context);
     void FlushQueue();
 
@@ -176,12 +191,18 @@ private:
     void* upload_cpu_buffer = nullptr;
     DkGpuAddr upload_gpu_addr = 0;
     u32 upload_buffer_size = 0;
+    DkMemBlock present_mem_block{};
+    void* present_cpu_buffer = nullptr;
+    DkGpuAddr present_gpu_addr = 0;
+    DkSampler present_sampler{};
+    const DkShader* present_vertex_shader = nullptr;
+    const DkShader* present_fragment_shader = nullptr;
     std::array<bool, FramebufferCount> swapchain_background_initialized{};
     DkFence present_fence{};
     bool present_fence_pending = false;
     bool top_screen_gpu_dirty = false;
     std::vector<std::unique_ptr<CachedRenderTarget>> render_targets;
-    std::vector<std::pair<PAddr, const CachedRenderTarget*>> display_transfer_targets;
+    std::vector<DisplayTransferTarget> display_transfer_targets;
     u64 render_target_generation = 0;
     const CachedRenderTarget* selected_present_render_target = nullptr;
     const CachedRenderTarget* selected_bottom_present_render_target = nullptr;
