@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <optional>
 #include <unordered_set>
 #include <vector>
@@ -49,6 +50,7 @@ public:
     void InvalidateRegion(PAddr addr, u32 size) override;
     void FlushAndInvalidateRegion(PAddr addr, u32 size) override;
     void ClearAll(bool flush) override;
+    bool AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) override;
     bool AccelerateDrawBatch(bool is_indexed) override;
 
 private:
@@ -77,6 +79,16 @@ private:
         bool supported = false;
         FallbackReason reason = FallbackReason::UnsupportedState;
         u32 blockers = 0;
+    };
+
+    struct DepthTarget {
+        DkMemBlock mem_block{};
+        DkImage image{};
+        DkImageView view{};
+        u32 width = 0;
+        u32 height = 0;
+        u32 format = 0;
+        bool needs_clear = true;
     };
 
     enum EligibilityBlocker : u32 {
@@ -120,7 +132,9 @@ private:
     bool TryDrawHardwareBatch(std::size_t& submitted_vertices);
     bool SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
                              const DkImageView* depth_target, std::size_t base_vertex,
-                             std::size_t vertex_count, const CachedTexture* texture);
+                             std::size_t vertex_count,
+                             const std::array<const CachedTexture*, 3>& textures,
+                             u32 texture_mask);
     const DkImageView* GetOrCreateDepthTarget();
     bool QueueHasError(const char* context);
     void FlushQueue();
@@ -146,13 +160,8 @@ private:
     DkMemBlock descriptor_mem_block{};
     void* descriptor_cpu_buffer = nullptr;
     DkGpuAddr descriptor_gpu_addr = 0;
-    DkMemBlock depth_mem_block{};
-    DkImage depth_image{};
-    DkImageView depth_view{};
-    u32 depth_width = 0;
-    u32 depth_height = 0;
-    u32 depth_format = 0;
-    bool depth_needs_clear = false;
+    std::deque<DepthTarget> depth_targets;
+    DepthTarget* active_depth_target = nullptr;
     std::array<FrameSlice, FrameSliceCount> frame_slices{};
     u32 current_frame_slice = 0;
     mutable std::unordered_set<std::size_t> observed_state_signatures;

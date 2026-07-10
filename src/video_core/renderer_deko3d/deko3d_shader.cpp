@@ -58,6 +58,10 @@ void ShaderCache::Shutdown() {
     tex_fragment_shader = {};
     tex_vertex_shader_valid = false;
     tex_fragment_shader_valid = false;
+    present_vertex_shader = {};
+    present_fragment_shader = {};
+    present_vertex_shader_valid = false;
+    present_fragment_shader_valid = false;
 #endif
     initialized = false;
 }
@@ -74,7 +78,10 @@ bool ShaderCache::LoadBuiltInShaders(DkDevice device) {
         AlignUp(static_cast<u32>(BuiltinShaders::PicaColorVshSize), DK_SHADER_CODE_ALIGNMENT) +
         AlignUp(static_cast<u32>(BuiltinShaders::PicaColorFshSize), DK_SHADER_CODE_ALIGNMENT) +
         AlignUp(static_cast<u32>(BuiltinShaders::PicaTexVshSize), DK_SHADER_CODE_ALIGNMENT) +
-        AlignUp(static_cast<u32>(BuiltinShaders::PicaTexFshSize), DK_SHADER_CODE_ALIGNMENT);
+        AlignUp(static_cast<u32>(BuiltinShaders::PicaTexFshSize), DK_SHADER_CODE_ALIGNMENT) +
+        AlignUp(static_cast<u32>(BuiltinShaders::PresentVshSize), DK_SHADER_CODE_ALIGNMENT) +
+        AlignUp(static_cast<u32>(BuiltinShaders::PresentFshSize), DK_SHADER_CODE_ALIGNMENT) +
+        DK_SHADER_CODE_UNUSABLE_SIZE;
 
     DkMemBlockMaker shader_mem_maker;
     dkMemBlockMakerDefaults(&shader_mem_maker, device, AlignUp(code_size, DK_MEMBLOCK_ALIGNMENT));
@@ -125,19 +132,39 @@ bool ShaderCache::LoadBuiltInShaders(DkDevice device) {
     }
     tex_fragment_shader_valid = dkShaderIsValid(&tex_fragment_shader);
 
+    u32 present_vertex_offset = 0;
+    if (!CopyShader({BuiltinShaders::PresentVsh, BuiltinShaders::PresentVshSize},
+                    present_vertex_offset, present_vertex_shader)) {
+        LOG_ERROR(Render, "Deko3D present vertex shader initialization failed");
+        return false;
+    }
+    present_vertex_shader_valid = dkShaderIsValid(&present_vertex_shader);
+
+    u32 present_fragment_offset = 0;
+    if (!CopyShader({BuiltinShaders::PresentFsh, BuiltinShaders::PresentFshSize},
+                    present_fragment_offset, present_fragment_shader)) {
+        LOG_ERROR(Render, "Deko3D present fragment shader initialization failed");
+        return false;
+    }
+    present_fragment_shader_valid = dkShaderIsValid(&present_fragment_shader);
+
     if (!color_vertex_shader_valid || !color_fragment_shader_valid || !tex_vertex_shader_valid ||
-        !tex_fragment_shader_valid) {
+        !tex_fragment_shader_valid || !present_vertex_shader_valid ||
+        !present_fragment_shader_valid) {
         LOG_ERROR(Render,
                   "Deko3D built-in shader validation failed color_v={} color_f={} tex_v={} "
-                  "tex_f={}",
+                  "tex_f={} present_v={} present_f={}",
                   color_vertex_shader_valid, color_fragment_shader_valid, tex_vertex_shader_valid,
-                  tex_fragment_shader_valid);
+                  tex_fragment_shader_valid, present_vertex_shader_valid,
+                  present_fragment_shader_valid);
         return false;
     }
 
     LOG_INFO(Render,
-             "Deko3D built-in shaders loaded color_v={} color_f={} tex_v={} tex_f={}",
-             vertex_offset, fragment_offset, tex_vertex_offset, tex_fragment_offset);
+             "Deko3D built-in shaders loaded color_v={} color_f={} tex_v={} tex_f={} "
+             "present_v={} present_f={}",
+             vertex_offset, fragment_offset, tex_vertex_offset, tex_fragment_offset,
+             present_vertex_offset, present_fragment_offset);
     return true;
 }
 

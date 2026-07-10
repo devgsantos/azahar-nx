@@ -39,6 +39,14 @@ public:
     [[nodiscard]] const DkShader* GetTexFragmentShader() const {
         return tex_fragment_shader_valid ? &tex_fragment_shader : nullptr;
     }
+
+    [[nodiscard]] const DkShader* GetPresentVertexShader() const {
+        return present_vertex_shader_valid ? &present_vertex_shader : nullptr;
+    }
+
+    [[nodiscard]] const DkShader* GetPresentFragmentShader() const {
+        return present_fragment_shader_valid ? &present_fragment_shader : nullptr;
+    }
 #endif
 
 private:
@@ -57,6 +65,10 @@ private:
     DkShader tex_fragment_shader{};
     bool tex_vertex_shader_valid = false;
     bool tex_fragment_shader_valid = false;
+    DkShader present_vertex_shader{};
+    DkShader present_fragment_shader{};
+    bool present_vertex_shader_valid = false;
+    bool present_fragment_shader_valid = false;
 #endif
 
     bool initialized = false;

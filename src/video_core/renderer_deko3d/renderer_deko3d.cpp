@@ -43,6 +43,8 @@ RendererDeko3D::RendererDeko3D(Core::System& system_, Pica::PicaCore& pica,
         SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.ShaderCache", "failed");
         throw std::runtime_error("Deko3D shader cache initialization failed");
     }
+    state.SetPresentShaders(shader_cache.GetPresentVertexShader(),
+                            shader_cache.GetPresentFragmentShader());
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.ShaderCache", "shader cache creation");
     LOG_INFO(Render, "Deko3D shader cache creation");
 
@@ -60,9 +62,10 @@ RendererDeko3D::RendererDeko3D(Core::System& system_, Pica::PicaCore& pica,
 }
 
 RendererDeko3D::~RendererDeko3D() {
-    rasterizer.Shutdown();
-    shader_cache.Shutdown();
     state.WaitIdle();
+    rasterizer.Shutdown();
+    texture_cache.Shutdown();
+    shader_cache.Shutdown();
 }
 
 void RendererDeko3D::SwapBuffers() {
