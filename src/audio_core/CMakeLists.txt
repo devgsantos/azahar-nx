@@ -40,6 +40,7 @@ add_library(audio_core STATIC EXCLUDE_FROM_ALL
     $<$<BOOL:${ENABLE_CUBEB}>:cubeb_sink.cpp cubeb_sink.h cubeb_input.cpp cubeb_input.h>
     $<$<BOOL:${ENABLE_LIBRETRO}>:libretro_sink.cpp libretro_sink.h libretro_input.cpp libretro_input.h>
     $<$<BOOL:${ENABLE_OPENAL}>:openal_input.cpp openal_input.h openal_sink.cpp openal_sink.h>
+    $<$<BOOL:${ENABLE_SWITCH_FRONTEND}>:audren_sink.cpp audren_sink.h>
 )
 
 create_target_directory_groups(audio_core)
@@ -61,6 +62,13 @@ if(ENABLE_OPENAL)
     target_link_libraries(audio_core PRIVATE OpenAL)
     target_compile_definitions(audio_core PUBLIC HAVE_OPENAL)
     add_definitions(-DAL_LIBTYPE_STATIC)
+endif()
+
+if(ENABLE_SWITCH_FRONTEND)
+    target_compile_definitions(audio_core PUBLIC HAVE_AUDREN)
+    if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+        target_link_libraries(audio_core PRIVATE nx)
+    endif()
 endif()
 
 if (CITRA_USE_PRECOMPILED_HEADERS)

@@ -31,7 +31,7 @@ RendererDeko3D::RendererDeko3D(Core::System& system_, Pica::PicaCore& pica,
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.State", "leave");
 
     SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.TextureCache", "enter");
-    if (!texture_cache.Initialize()) {
+    if (!texture_cache.Initialize(state, system_.Memory())) {
         SWITCH_TRACE_EVENT("Deko3D", "RendererDeko3D.TextureCache", "failed");
         throw std::runtime_error("Deko3D texture cache initialization failed");
     }

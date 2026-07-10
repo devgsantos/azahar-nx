@@ -1,6 +1,8 @@
 #version 460
 
 layout (location = 0) in vec4 inColor;
+layout (location = 1) in vec2 inTexCoord0;
+
 layout (location = 0) out vec4 outColor;
 
 layout (std140, binding = 0) uniform PicaFragmentState {
@@ -9,6 +11,8 @@ layout (std140, binding = 0) uniform PicaFragmentState {
     float alpha_test_ref;
     float alpha_test_pad;
 } pica;
+
+layout (binding = 0) uniform sampler2D texture0;
 
 bool AlphaTestPassed(float a) {
     if (pica.alpha_test_enabled == 0) {
@@ -27,7 +31,7 @@ bool AlphaTestPassed(float a) {
 
 void main()
 {
-    outColor = inColor;
+    outColor = texture(texture0, inTexCoord0) * inColor;
     if (!AlphaTestPassed(outColor.a)) {
         discard;
     }

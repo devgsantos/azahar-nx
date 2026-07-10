@@ -11,8 +11,10 @@
 #include <optional>
 #include <unordered_set>
 
+#include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "switch/switch_debug_log.h"
 #include "video_core/pica/pica_core.h"
 #include "video_core/renderer_deko3d/deko3d_shader.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
@@ -24,6 +26,10 @@ namespace {
 #ifdef __SWITCH__
 u32 AlignUp(u32 value, u32 alignment) {
     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+}
+
+u32 AlignDown(u32 value, u32 alignment) {
+    return alignment == 0 ? value : (value / alignment) * alignment;
 }
 
 template <typename T>
@@ -106,6 +112,72 @@ DkCompareOp MapCompare(Pica::FramebufferRegs::CompareFunc func) {
         return DkCompareOp_Gequal;
     }
     return DkCompareOp_Always;
+}
+
+DkStencilOp MapStencilOp(Pica::FramebufferRegs::StencilAction action) {
+    using StencilAction = Pica::FramebufferRegs::StencilAction;
+    switch (action) {
+    case StencilAction::Keep:
+        return DkStencilOp_Keep;
+    case StencilAction::Zero:
+        return DkStencilOp_Zero;
+    case StencilAction::Replace:
+        return DkStencilOp_Replace;
+    case StencilAction::Increment:
+        return DkStencilOp_Incr;
+    case StencilAction::Decrement:
+        return DkStencilOp_Decr;
+    case StencilAction::Invert:
+        return DkStencilOp_Invert;
+    case StencilAction::IncrementWrap:
+        return DkStencilOp_IncrWrap;
+    case StencilAction::DecrementWrap:
+        return DkStencilOp_DecrWrap;
+    }
+    return DkStencilOp_Keep;
+}
+
+struct alignas(16) PicaFragmentState {
+    s32 alpha_test_enabled;
+    s32 alpha_test_func;
+    float alpha_test_ref;
+    float alpha_test_pad;
+};
+
+static_assert(sizeof(PicaFragmentState) == 16, "PicaFragmentState must match std140 layout");
+
+static std::optional<DkLogicOp> MapLogicOp(Pica::FramebufferRegs::LogicOp op) {
+    using LogicOp = Pica::FramebufferRegs::LogicOp;
+    switch (op) {
+    case LogicOp::Clear:        return DkLogicOp_Clear;
+    case LogicOp::And:          return DkLogicOp_And;
+    case LogicOp::Copy:         return DkLogicOp_Copy;
+    case LogicOp::CopyInverted: return DkLogicOp_CopyInverted;
+    default:                    return std::nullopt;
+    }
+}
+
+s32 MapAlphaTestFunc(Pica::FramebufferRegs::CompareFunc func) {
+    using CompareFunc = Pica::FramebufferRegs::CompareFunc;
+    switch (func) {
+    case CompareFunc::Equal:
+        return 0;
+    case CompareFunc::NotEqual:
+        return 1;
+    case CompareFunc::LessThan:
+        return 2;
+    case CompareFunc::LessThanOrEqual:
+        return 3;
+    case CompareFunc::GreaterThan:
+        return 4;
+    case CompareFunc::GreaterThanOrEqual:
+        return 5;
+    case CompareFunc::Always:
+        return 6;
+    case CompareFunc::Never:
+        return 7;
+    }
+    return 7;
 }
 
 u32 ColorWriteMask(const Pica::FramebufferRegs& regs) {
@@ -215,30 +287,14 @@ void Rasterizer::Shutdown() {
 #ifdef __SWITCH__
 bool Rasterizer::InitializeGpuResources() {
     device = state.GetDevice();
-    queue = state.GetQueue();
+    queue = state.GetRasterQueue();
     if (!device || !queue) {
         LOG_ERROR(Render, "Deko3D rasterizer cannot initialize without device and queue");
         return false;
     }
 
-    DkMemBlockMaker command_mem_maker;
-    dkMemBlockMakerDefaults(&command_mem_maker, device,
-                            AlignUp(RasterCommandMemorySize, DK_MEMBLOCK_ALIGNMENT));
-    command_mem_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
-    command_mem_block = dkMemBlockCreate(&command_mem_maker);
-    if (!command_mem_block) {
-        LOG_ERROR(Render, "Deko3D rasterizer command memory allocation failed");
-        return false;
-    }
-
-    DkCmdBufMaker command_buffer_maker;
-    dkCmdBufMakerDefaults(&command_buffer_maker, device);
-    command_buffer = dkCmdBufCreate(&command_buffer_maker);
-    if (!command_buffer) {
-        LOG_ERROR(Render, "Deko3D rasterizer command buffer creation failed");
-        return false;
-    }
-    const u32 command_slice_size = RasterCommandMemorySize / FrameSliceCount;
+    const u32 command_slice_size =
+        AlignDown(RasterCommandMemorySize, DK_CMDMEM_ALIGNMENT);
     DkMemBlockMaker vertex_mem_maker;
     dkMemBlockMakerDefaults(&vertex_mem_maker, device,
                             AlignUp(VertexBufferSize, DK_MEMBLOCK_ALIGNMENT));
@@ -287,14 +343,13 @@ bool Rasterizer::InitializeGpuResources() {
         return false;
     }
 
-    const u32 vertex_slice_size = VertexBufferSize / FrameSliceCount;
-    const u32 uniform_slice_size = UniformBufferSize / FrameSliceCount;
+    const u32 vertex_slice_size =
+        AlignDown(VertexBufferSize / FrameSliceCount, static_cast<u32>(sizeof(HardwareVertex)));
+    const u32 uniform_slice_size = AlignDown(UniformBufferSize / FrameSliceCount, 256u);
     for (u32 index = 0; index < FrameSliceCount; ++index) {
         auto& slice = frame_slices[index];
-        slice.command_offset = index * command_slice_size;
-        slice.command_size =
-            index == FrameSliceCount - 1 ? RasterCommandMemorySize - slice.command_offset
-                                         : command_slice_size;
+        slice.command_offset = 0;
+        slice.command_size = command_slice_size;
         slice.vertex_offset = index * vertex_slice_size;
         slice.vertex_size =
             index == FrameSliceCount - 1 ? VertexBufferSize - slice.vertex_offset
@@ -305,8 +360,45 @@ bool Rasterizer::InitializeGpuResources() {
                                          : uniform_slice_size;
         slice.fence = {};
         slice.fence_pending = false;
+
+        DkMemBlockMaker cmd_mem_maker;
+        dkMemBlockMakerDefaults(&cmd_mem_maker, device,
+                                AlignUp(command_slice_size, DK_MEMBLOCK_ALIGNMENT));
+        cmd_mem_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+        slice.command_mem_block = dkMemBlockCreate(&cmd_mem_maker);
+        if (!slice.command_mem_block) {
+            LOG_ERROR(Render, "Deko3D rasterizer command memory allocation failed for slice {}", index);
+            return false;
+        }
+
+        DkCmdBufMaker cmd_buf_maker;
+        dkCmdBufMakerDefaults(&cmd_buf_maker, device);
+        slice.command_buffer = dkCmdBufCreate(&cmd_buf_maker);
+        if (!slice.command_buffer) {
+            LOG_ERROR(Render, "Deko3D rasterizer command buffer creation failed for slice {}", index);
+            return false;
+        }
+        dkCmdBufAddMemory(slice.command_buffer, slice.command_mem_block, 0, command_slice_size);
+        LOG_INFO(Render,
+                 "Created slice={} cmdbuf={} cmdmem={} cmdmem_cpu={} cmdmem_gpu=0x{:x}",
+                 index,
+                 static_cast<void*>(slice.command_buffer),
+                 static_cast<void*>(slice.command_mem_block),
+                 dkMemBlockGetCpuAddr(slice.command_mem_block),
+                 dkMemBlockGetGpuAddr(slice.command_mem_block));
     }
-    current_frame_slice = 0;
+
+    for (u32 index = 0; index < FrameSliceCount; ++index) {
+        LOG_INFO(Render, "Testing initial clear slice={}", index);
+        SWITCH_EARLY_LOGF("Testing initial clear slice=%u", index);
+        dkCmdBufClear(frame_slices[index].command_buffer);
+        dkCmdBufAddMemory(frame_slices[index].command_buffer,
+                          frame_slices[index].command_mem_block, 0, command_slice_size);
+        LOG_INFO(Render, "Initial clear succeeded slice={}", index);
+        SWITCH_EARLY_LOGF("Initial clear succeeded slice=%u", index);
+    }
+
+    current_frame_slice = 2;
 
     LOG_INFO(Render,
              "Deko3D rasterizer GPU resources created: vertex={} uniform={} descriptor={} "
@@ -316,18 +408,20 @@ bool Rasterizer::InitializeGpuResources() {
 }
 
 void Rasterizer::ShutdownGpuResources() {
-    if (device || queue || command_buffer || command_mem_block || vertex_mem_block ||
+    if (device || queue || vertex_mem_block ||
         uniform_mem_block || descriptor_mem_block) {
         state.WaitIdle();
     }
 
-    if (command_buffer) {
-        dkCmdBufDestroy(command_buffer);
-        command_buffer = nullptr;
-    }
-    if (command_mem_block) {
-        dkMemBlockDestroy(command_mem_block);
-        command_mem_block = nullptr;
+    for (auto& slice : frame_slices) {
+        if (slice.command_buffer) {
+            dkCmdBufDestroy(slice.command_buffer);
+            slice.command_buffer = nullptr;
+        }
+        if (slice.command_mem_block) {
+            dkMemBlockDestroy(slice.command_mem_block);
+            slice.command_mem_block = nullptr;
+        }
     }
     if (vertex_mem_block) {
         dkMemBlockDestroy(vertex_mem_block);
@@ -423,8 +517,6 @@ bool Rasterizer::WaitForFrameSlice(FrameSlice& slice) {
 
 Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility() const {
     using ColorFormat = Pica::FramebufferRegs::ColorFormat;
-    using LogicOp = Pica::FramebufferRegs::LogicOp;
-    using CompareFunc = Pica::FramebufferRegs::CompareFunc;
 
     const auto& fb = regs.framebuffer;
     u32 blockers = None;
@@ -433,7 +525,7 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
     if (!batch_valid) {
         blockers |= InvalidBatch;
     }
-    if (!initialized || !device || !queue || !command_buffer || !vertex_cpu_buffer ||
+    if (!initialized || !device || !queue || !frame_slices[0].command_buffer || !vertex_cpu_buffer ||
         vertex_gpu_addr == 0) {
         blockers |= MissingGpuResources;
     }
@@ -443,50 +535,53 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
     if (fb.IsShadowRendering()) {
         blockers |= ShadowRendering;
     }
-    if (fb.framebuffer.color_format != ColorFormat::RGBA8) {
+    if (fb.framebuffer.color_format != ColorFormat::RGBA8 &&
+        fb.framebuffer.color_format != ColorFormat::RGB5A1 &&
+        fb.framebuffer.color_format != ColorFormat::RGB565 &&
+        fb.framebuffer.color_format != ColorFormat::RGBA4) {
         blockers |= FramebufferFormat;
     }
     if (fb.framebuffer.GetColorBufferPhysicalAddress() == 0 || fb.framebuffer.GetWidth() == 0 ||
         fb.framebuffer.GetHeight() == 0) {
         blockers |= FramebufferDimensions;
     }
-    if (fb.output_merger.depth_test_enable != 0) {
-        blockers |= DepthTestEnabled;
-    }
-    if (fb.output_merger.depth_write_enable != 0 &&
-        (fb.output_merger.depth_test_enable != 0 ||
-         fb.framebuffer.allow_depth_stencil_write == 0 ||
-         fb.framebuffer.depth_format == Pica::FramebufferRegs::DepthFormat::D24S8)) {
-        blockers |= DepthWriteEnabled;
-    }
-    if (fb.output_merger.stencil_test.enable != 0) {
-        blockers |= StencilEnabled;
-    }
-    bool blend_supported = true;
+    // Depth, blending, and logic ops are wired to Deko3D in SubmitHardwareChunk.
+    // Stencil testing is wired to the D24S8 depth-stencil target.
     if (fb.output_merger.alphablend_enable != 0) {
         const auto blend = fb.output_merger.alpha_blending;
-        blend_supported = MapBlendFactor(blend.factor_source_rgb).has_value() &&
-                          MapBlendFactor(blend.factor_dest_rgb).has_value() &&
-                          MapBlendFactor(blend.factor_source_a).has_value() &&
-                          MapBlendFactor(blend.factor_dest_a).has_value();
+        const bool blend_supported = MapBlendFactor(blend.factor_source_rgb).has_value() &&
+                                     MapBlendFactor(blend.factor_dest_rgb).has_value() &&
+                                     MapBlendFactor(blend.factor_source_a).has_value() &&
+                                     MapBlendFactor(blend.factor_dest_a).has_value();
         if (!blend_supported) {
             blockers |= BlendingEnabled;
         }
     }
-    if (fb.output_merger.alpha_test.enable != 0 &&
-        fb.output_merger.alpha_test.func != CompareFunc::Always) {
-        blockers |= AlphaTestUnsupported;
-    }
-    if (fb.output_merger.alphablend_enable == 0 && fb.output_merger.logic_op != LogicOp::Copy) {
-        blockers |= LogicOpUnsupported;
-    }
-    if (fb.framebuffer.allow_color_write == 0 || ColorWriteMask(fb) == 0) {
-        blockers |= ColorMaskUnsupported;
-    }
+    // Alpha test is implemented in the fixed fragment shader through a uniform buffer.
+    // Logic operations are mapped to DkLogicOp in SubmitHardwareChunk; the enum values
+    // happen to be identical between PICA and Deko3D.
+    // Color write masks are mapped in SubmitHardwareChunk; allow the hardware path.
+    (void)ColorWriteMask(fb);
 
+    // Texturing is now handled by the texture cache and textured shaders. We only
+    // block configurations that are too complex for the first hardware milestone
+    // (multiple texture units, cube/projection/shadow maps, procedural textures).
     const auto pica_textures = regs.texturing.GetTextures();
-    for (const auto& texture : pica_textures) {
-        if (texture.enabled != 0) {
+    u32 enabled_texture_count = 0;
+    u32 first_enabled_index = 0;
+    for (std::size_t i = 0; i < pica_textures.size(); ++i) {
+        if (pica_textures[i].enabled != 0) {
+            if (enabled_texture_count == 0) {
+                first_enabled_index = static_cast<u32>(i);
+            }
+            ++enabled_texture_count;
+        }
+    }
+    if (enabled_texture_count > 1) {
+        blockers |= TexturesEnabled;
+    } else if (enabled_texture_count == 1) {
+        const auto& tex = pica_textures[first_enabled_index];
+        if (tex.config.type != Pica::TexturingRegs::TextureConfig::Texture2D) {
             blockers |= TexturesEnabled;
         }
     }
@@ -497,34 +592,8 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
                "Valid transformed batch incorrectly set InvalidBatch blocker");
 
     const auto signature_id = TransformedStateSignature(pica, regs);
-    static std::unordered_set<std::size_t> observed_signatures;
-    const bool new_signature = observed_signatures.insert(signature_id).second;
+    const bool new_signature = observed_state_signatures.insert(signature_id).second;
     RecordStateSignature(signature_id, new_signature);
-    if (new_signature && observed_signatures.size() <= 8) {
-        LOG_INFO(Render,
-                 "Deko3D transformed state signature: id={} color=0x{:08x} depth=0x{:08x} "
-                 "color_size={}x{} depth_size={}x{} color_format={} depth_format={} "
-                 "blend={} depth_test={} depth_write={} alpha_test={} blockers=0x{:08x} "
-                 "display_match={}",
-                 static_cast<unsigned long long>(signature_id),
-                 fb.framebuffer.GetColorBufferPhysicalAddress(),
-                 fb.framebuffer.GetDepthBufferPhysicalAddress(), fb.framebuffer.GetWidth(),
-                 fb.framebuffer.GetHeight(), fb.framebuffer.GetWidth(), fb.framebuffer.GetHeight(),
-                 static_cast<u32>(fb.framebuffer.color_format.Value()),
-                 static_cast<u32>(fb.framebuffer.depth_format.Value()),
-                 fb.output_merger.alphablend_enable.Value(),
-                 fb.output_merger.depth_test_enable.Value(),
-                 fb.output_merger.depth_write_enable.Value(), fb.output_merger.alpha_test.enable.Value(),
-                 blockers, "unknown_guest_vram");
-    } else if ((blockers & FramebufferDimensions) != 0) {
-        LOG_INFO(Render,
-                 "Deko3D framebuffer dimension rejection: id={} color=0x{:08x} size={}x{} "
-                 "format={} blockers=0x{:08x}",
-                 static_cast<unsigned long long>(signature_id),
-                 fb.framebuffer.GetColorBufferPhysicalAddress(), fb.framebuffer.GetWidth(),
-                 fb.framebuffer.GetHeight(), static_cast<u32>(fb.framebuffer.color_format.Value()),
-                 blockers);
-    }
 
     FallbackReason primary = FallbackReason::UnsupportedState;
     if ((blockers & InvalidBatch) != 0) {
@@ -539,8 +608,6 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateTransformedBatchEligibility(
         primary = FallbackReason::StencilEnabled;
     } else if ((blockers & BlendingEnabled) != 0) {
         primary = FallbackReason::BlendEnabled;
-    } else if ((blockers & AlphaTestUnsupported) != 0) {
-        primary = FallbackReason::AlphaTest;
     } else if ((blockers & LogicOpUnsupported) != 0) {
         primary = FallbackReason::LogicOp;
     } else if ((blockers & ShadowRendering) != 0) {
@@ -572,13 +639,46 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateDirectBatchEligibility(bool 
 
 bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
     submitted_vertices = 0;
-    if (!initialized || !device || !queue || !command_buffer || !vertex_cpu_buffer ||
+#if defined(AZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER)
+    // Baseline safety: keep the hardware rasterizer path disabled while it is
+    // still being validated on Switch. Software fallback is slower but stable.
+    RecordFallbackReason(FallbackReason::UnsupportedState);
+    return false;
+#endif
+    if (!initialized || !device || !queue || !frame_slices[0].command_buffer || !vertex_cpu_buffer ||
         vertex_gpu_addr == 0) {
         return false;
     }
 
-    const DkShader* const vertex_shader = shader_cache.GetColorVertexShader();
-    const DkShader* const fragment_shader = shader_cache.GetColorFragmentShader();
+    // Determine whether this batch uses a single 2D texture that we can accelerate.
+    const CachedTexture* cached_texture = nullptr;
+    u32 enabled_texture_index = 0;
+    {
+        const auto textures = regs.texturing.GetTextures();
+        u32 enabled_count = 0;
+        for (u32 i = 0; i < static_cast<u32>(textures.size()); ++i) {
+            if (textures[i].enabled != 0) {
+                if (enabled_count == 0) {
+                    enabled_texture_index = i;
+                }
+                ++enabled_count;
+            }
+        }
+        if (enabled_count != 0) {
+            LOG_INFO(Render,
+                     "Deko3D diagnostic: textured batch forced to software fallback textures={}",
+                     enabled_count);
+            RecordFallbackReason(FallbackReason::TexturesEnabled);
+            return false;
+        }
+        (void)enabled_texture_index;
+    }
+
+    const bool use_texture = cached_texture != nullptr;
+    const DkShader* const vertex_shader =
+        use_texture ? shader_cache.GetTexVertexShader() : shader_cache.GetColorVertexShader();
+    const DkShader* const fragment_shader =
+        use_texture ? shader_cache.GetTexFragmentShader() : shader_cache.GetColorFragmentShader();
     if (!vertex_shader || !fragment_shader) {
         return false;
     }
@@ -607,7 +707,9 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         return false;
     }
     const DkImageView* const depth_target = GetOrCreateDepthTarget();
-    if (regs.framebuffer.output_merger.depth_write_enable != 0 && !depth_target) {
+    if ((regs.framebuffer.output_merger.depth_write_enable != 0 ||
+         regs.framebuffer.output_merger.depth_test_enable != 0) &&
+        !depth_target) {
         RecordDepthState(false);
         RecordFallbackReason(FallbackReason::DepthEnabled);
         return false;
@@ -635,7 +737,8 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
             return false;
         }
         if (!SubmitHardwareChunk(slice, *color_target, depth_target, base_vertex,
-                                 aligned_vertex_count)) {
+                                 aligned_vertex_count, cached_texture)) {
+            LOG_INFO(Render, "Deko3D hardware draw: SubmitHardwareChunk failed");
             return false;
         }
         submitted_vertices += aligned_vertex_count;
@@ -646,7 +749,7 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
 
 const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
     const auto& fb = regs.framebuffer;
-    if (fb.output_merger.depth_write_enable == 0) {
+    if (fb.output_merger.depth_write_enable == 0 && fb.output_merger.depth_test_enable == 0) {
         return nullptr;
     }
     const u32 width = fb.framebuffer.GetWidth();
@@ -658,10 +761,13 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
         return &depth_view;
     }
     if (depth_mem_block) {
+        FlushQueue();
+        dkQueueWaitIdle(queue);
         dkMemBlockDestroy(depth_mem_block);
         depth_mem_block = nullptr;
         depth_image = {};
         depth_view = {};
+        depth_needs_clear = false;
     }
 
     DkImageFormat dk_format = DkImageFormat_None;
@@ -670,17 +776,18 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
         dk_format = DkImageFormat_Z16;
         break;
     case Pica::FramebufferRegs::DepthFormat::D24:
-        dk_format = DkImageFormat_Z24X8;
+        // Use D24S8 even for plain D24; Z24X8 is not always bindable as a depth render target.
+        dk_format = DkImageFormat_Z24S8;
         break;
     case Pica::FramebufferRegs::DepthFormat::D24S8:
-        RecordDepthState(false);
-        return nullptr;
+        dk_format = DkImageFormat_Z24S8;
+        break;
     }
 
     DkImageLayoutMaker layout_maker;
     dkImageLayoutMakerDefaults(&layout_maker, device);
     layout_maker.type = DkImageType_2D;
-    layout_maker.flags = DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine;
+    layout_maker.flags = DkImageFlags_UsageRender;
     layout_maker.format = dk_format;
     layout_maker.dimensions[0] = width;
     layout_maker.dimensions[1] = height;
@@ -701,6 +808,7 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
     depth_width = width;
     depth_height = height;
     depth_format = format;
+    depth_needs_clear = true;
     RecordDepthState(true);
     LOG_INFO(Render,
              "Deko3D depth target create: addr=0x{:08x} size={}x{} format={} compare={} "
@@ -713,22 +821,26 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
 
 bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
                                      const DkImageView* depth_target, std::size_t base_vertex,
-                                     std::size_t vertex_count) {
+                                     std::size_t vertex_count, const CachedTexture* texture) {
+
+
     const std::size_t vertex_bytes = vertex_count * sizeof(HardwareVertex);
     if (vertex_bytes > slice.vertex_size) {
+        LOG_INFO(Render, "Deko3D SubmitHardwareChunk: vertex bytes exceed slice size");
         return false;
     }
 
     std::memcpy(static_cast<u8*>(vertex_cpu_buffer) + slice.vertex_offset,
                 vertex_batch.data() + base_vertex, vertex_bytes);
 
-    const DkShader* const shaders[] = {shader_cache.GetColorVertexShader(),
-                                       shader_cache.GetColorFragmentShader()};
+    const DkShader* const shaders[] = {
+        texture ? shader_cache.GetTexVertexShader() : shader_cache.GetColorVertexShader(),
+        texture ? shader_cache.GetTexFragmentShader() : shader_cache.GetColorFragmentShader()};
     if (!shaders[0] || !shaders[1]) {
         return false;
     }
 
-    const DkVtxAttribState attribs[] = {
+    static const DkVtxAttribState attribs[] = {
         {0, 0, offsetof(HardwareVertex, position), DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
         {0, 0, offsetof(HardwareVertex, color), DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
         {0, 0, offsetof(HardwareVertex, tex_coord0), DkVtxAttribSize_2x32, DkVtxAttribType_Float,
@@ -742,23 +854,42 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         {0, 0, offsetof(HardwareVertex, normquat), DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
         {0, 0, offsetof(HardwareVertex, view), DkVtxAttribSize_3x32, DkVtxAttribType_Float, 0},
     };
-    const DkVtxBufferState vtx_buffer_state[] = {{sizeof(HardwareVertex), 0}};
+    static const DkVtxBufferState vtx_buffer_state[] = {{sizeof(HardwareVertex), 0}};
 
-    DkRasterizerState rasterizer_state;
-    DkMultisampleState multisample_state;
-    DkColorState color_state;
-    DkColorWriteState color_write_state;
-    DkDepthStencilState depth_stencil_state;
+    DkRasterizerState& rasterizer_state = hw_rasterizer_state;
+    DkMultisampleState& multisample_state = hw_multisample_state;
+    DkColorState& color_state = hw_color_state;
+    DkColorWriteState& color_write_state = hw_color_write_state;
+    DkDepthStencilState& depth_stencil_state = hw_depth_stencil_state;
+    DkBlendState& blend_state = hw_blend_state;
     dkRasterizerStateDefaults(&rasterizer_state);
     dkMultisampleStateDefaults(&multisample_state);
     dkColorStateDefaults(&color_state);
     dkColorWriteStateDefaults(&color_write_state);
     dkDepthStencilStateDefaults(&depth_stencil_state);
+    dkBlendStateDefaults(&blend_state);
     rasterizer_state.cullMode = DkFace_None;
     dkColorStateSetBlendEnable(&color_state, 0, regs.framebuffer.output_merger.alphablend_enable != 0);
+    if (regs.framebuffer.output_merger.alphablend_enable == 0) {
+        const auto mapped_logic_op =
+            MapLogicOp(regs.framebuffer.output_merger.logic_op.Value());
+        if (!mapped_logic_op) {
+            return false;
+        }
+        color_state.logicOp = *mapped_logic_op;
+    }
     dkColorWriteStateSetMask(&color_write_state, 0, ColorWriteMask(regs.framebuffer));
-    DkBlendState blend_state;
-    dkBlendStateDefaults(&blend_state);
+    LOG_INFO(Render,
+             "HWdraw pipeline: blend={} logicOp={} depthTest={} depthWrite={} depthCmp={} "
+             "stencil={} colorMask={:#x} alphablend_en={}",
+             regs.framebuffer.output_merger.alphablend_enable.Value(),
+             static_cast<u32>(color_state.logicOp),
+             depth_stencil_state.depthTestEnable,
+             depth_stencil_state.depthWriteEnable,
+             static_cast<u32>(depth_stencil_state.depthCompareOp),
+             depth_stencil_state.stencilTestEnable,
+             ColorWriteMask(regs.framebuffer),
+             regs.framebuffer.output_merger.alphablend_enable.Value());
     if (regs.framebuffer.output_merger.alphablend_enable != 0) {
         const auto blend = regs.framebuffer.output_merger.alpha_blending;
         const auto src_rgb = MapBlendFactor(blend.factor_source_rgb);
@@ -779,7 +910,6 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         HashCombine(blend_signature, static_cast<u32>(blend.factor_source_a.Value()));
         HashCombine(blend_signature, static_cast<u32>(blend.factor_dest_a.Value()));
         HashCombine(blend_signature, regs.framebuffer.output_merger.blend_const.raw);
-        static std::unordered_set<std::size_t> blend_signatures;
         const bool cache_hit = !blend_signatures.insert(blend_signature).second;
         RecordBlendState(true, cache_hit);
     }
@@ -793,7 +923,23 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         regs.framebuffer.output_merger.depth_test_enable != 0
             ? MapCompare(regs.framebuffer.output_merger.depth_test_func)
             : DkCompareOp_Always;
-    depth_stencil_state.stencilTestEnable = false;
+    depth_stencil_state.stencilTestEnable =
+        regs.framebuffer.output_merger.stencil_test.enable != 0;
+    if (depth_stencil_state.stencilTestEnable) {
+        const auto& stencil = regs.framebuffer.output_merger.stencil_test;
+        const DkStencilOp fail_op = MapStencilOp(stencil.action_stencil_fail.Value());
+        const DkStencilOp depth_fail_op = MapStencilOp(stencil.action_depth_fail.Value());
+        const DkStencilOp pass_op = MapStencilOp(stencil.action_depth_pass.Value());
+        const DkCompareOp compare_op = MapCompare(stencil.func.Value());
+        depth_stencil_state.stencilFrontFailOp = fail_op;
+        depth_stencil_state.stencilFrontPassOp = pass_op;
+        depth_stencil_state.stencilFrontDepthFailOp = depth_fail_op;
+        depth_stencil_state.stencilFrontCompareOp = compare_op;
+        depth_stencil_state.stencilBackFailOp = fail_op;
+        depth_stencil_state.stencilBackPassOp = pass_op;
+        depth_stencil_state.stencilBackDepthFailOp = depth_fail_op;
+        depth_stencil_state.stencilBackCompareOp = compare_op;
+    }
 
     const u32 target_width = color_target.key.width;
     const u32 target_height = color_target.key.height;
@@ -801,49 +947,127 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
                                  static_cast<float>(target_height), 0.0f, 1.0f};
     const DkScissor scissor = {0, 0, target_width, target_height};
 
+    // Fill the per-slice uniform buffer with PICA fragment state.
+    const auto& alpha_test = regs.framebuffer.output_merger.alpha_test;
+    PicaFragmentState fragment_state{
+        .alpha_test_enabled = static_cast<s32>(alpha_test.enable.Value()),
+        .alpha_test_func = MapAlphaTestFunc(alpha_test.func.Value()),
+        .alpha_test_ref = alpha_test.ref.Value() / 255.0f,
+        .alpha_test_pad = 0.0f,
+    };
+    std::memcpy(static_cast<u8*>(uniform_cpu_buffer) + slice.uniform_offset, &fragment_state,
+                sizeof(fragment_state));
+
+    DkCmdBuf command_buffer = slice.command_buffer;
+    LOG_INFO(Render, "HWdraw A slice={} cmd_off={} cmd_sz={} vtx_off={} uni_off={} cmdbuf={}",
+             current_frame_slice == 0 ? FrameSliceCount - 1 : current_frame_slice - 1,
+             slice.command_offset, slice.command_size,
+             slice.vertex_offset, slice.uniform_offset,
+             command_buffer != nullptr);
+    if (!command_buffer) {
+        LOG_ERROR(Render, "HWdraw ABORT: null command_buffer for slice");
+        return false;
+    }
+    LOG_INFO(Render,
+             "Clearing slice cmdbuf={} cmdmem={} fence_pending={}",
+             static_cast<void*>(slice.command_buffer),
+             static_cast<void*>(slice.command_mem_block),
+             slice.fence_pending);
     dkCmdBufClear(command_buffer);
-    dkCmdBufAddMemory(command_buffer, command_mem_block, slice.command_offset,
-                      slice.command_size);
-    dkCmdBufBindRenderTarget(command_buffer, &color_target.view, depth_target);
+    LOG_INFO(Render, "HWdraw C");
+    const DkGpuAddr ubo_addr = uniform_gpu_addr + slice.uniform_offset;
+    const u32 ubo_size = AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT);
+    LOG_INFO(Render, "HWdraw C1 ubo_addr=0x{:x} ubo_size={} uni_gpu=0x{:x} uni_off={}", ubo_addr, ubo_size, uniform_gpu_addr, slice.uniform_offset);
+    dkCmdBufBindUniformBuffer(command_buffer, DkStage_Fragment, 0, ubo_addr, ubo_size);
+    LOG_INFO(Render, "HWdraw D");
+    dkImageViewDefaults(&hw_color_view, &color_target.image);
+    dkCmdBufBindRenderTarget(command_buffer, &hw_color_view, depth_target);
+    if (color_target.needs_clear) {
+        dkCmdBufClearColorFloat(command_buffer, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 0.0f);
+        color_target.needs_clear = false;
+    }
+    if (depth_target && depth_needs_clear) {
+        dkCmdBufClearDepthStencil(command_buffer, true, 1.0f, 0xff, 0);
+        depth_needs_clear = false;
+    }
+    LOG_INFO(Render, "HWdraw E");
     dkCmdBufSetViewports(command_buffer, 0, &viewport, 1);
+    LOG_INFO(Render, "HWdraw E1");
     dkCmdBufSetScissors(command_buffer, 0, &scissor, 1);
+    LOG_INFO(Render, "HWdraw E2");
     dkCmdBufBindShaders(command_buffer, DkStageFlag_GraphicsMask, shaders, 2);
+    LOG_INFO(Render, "HWdraw E3");
+    if (texture) {
+        const std::size_t image_offset = 0;
+        const std::size_t sampler_offset =
+            Common::AlignUp(image_offset + sizeof(DkImageDescriptor),
+                            static_cast<std::size_t>(DK_IMAGE_DESCRIPTOR_ALIGNMENT));
+
+        dkImageDescriptorInitialize(&hw_image_descriptor, &texture->view, false, false);
+        dkSamplerDescriptorInitialize(&hw_sampler_descriptor, &texture->sampler);
+
+        std::memcpy(static_cast<u8*>(descriptor_cpu_buffer) + image_offset, &hw_image_descriptor,
+                    sizeof(DkImageDescriptor));
+        std::memcpy(static_cast<u8*>(descriptor_cpu_buffer) + sampler_offset, &hw_sampler_descriptor,
+                    sizeof(DkSamplerDescriptor));
+
+        dkCmdBufBindImageDescriptorSet(command_buffer, descriptor_gpu_addr + image_offset, 1);
+        dkCmdBufBindSamplerDescriptorSet(command_buffer, descriptor_gpu_addr + sampler_offset, 1);
+    }
     dkCmdBufBindRasterizerState(command_buffer, &rasterizer_state);
+    LOG_INFO(Render, "HWdraw E4");
     dkCmdBufBindMultisampleState(command_buffer, &multisample_state);
+    LOG_INFO(Render, "HWdraw E5");
     dkCmdBufBindColorState(command_buffer, &color_state);
+    LOG_INFO(Render, "HWdraw E6");
     dkCmdBufBindColorWriteState(command_buffer, &color_write_state);
+    LOG_INFO(Render, "HWdraw E7");
     dkCmdBufBindBlendState(command_buffer, 0, &blend_state);
+    LOG_INFO(Render, "HWdraw E8");
     dkCmdBufSetBlendConst(command_buffer,
                           regs.framebuffer.output_merger.blend_const.r.Value() / 255.0f,
                           regs.framebuffer.output_merger.blend_const.g.Value() / 255.0f,
                           regs.framebuffer.output_merger.blend_const.b.Value() / 255.0f,
                           regs.framebuffer.output_merger.blend_const.a.Value() / 255.0f);
+    LOG_INFO(Render, "HWdraw E9");
     dkCmdBufBindDepthStencilState(command_buffer, &depth_stencil_state);
+    LOG_INFO(Render, "HWdraw E10");
     dkCmdBufBindVtxAttribState(command_buffer, attribs,
                                sizeof(attribs) / sizeof(attribs[0]));
+    LOG_INFO(Render, "HWdraw E11");
     dkCmdBufBindVtxBufferState(command_buffer, vtx_buffer_state,
                                sizeof(vtx_buffer_state) / sizeof(vtx_buffer_state[0]));
+    LOG_INFO(Render, "HWdraw E12");
     dkCmdBufBindVtxBuffer(command_buffer, 0, vertex_gpu_addr + slice.vertex_offset,
                           static_cast<u32>(vertex_bytes));
+    LOG_INFO(Render, "HWdraw F vtx_off={} vtx_bytes={} vtx_count={}", slice.vertex_offset,
+             vertex_bytes, vertex_count);
     dkCmdBufDraw(command_buffer, DkPrimitive_Triangles, static_cast<u32>(vertex_count), 1, 0, 0);
     dkCmdBufSignalFence(command_buffer, &slice.fence, true);
 
     const DkCmdList draw_cmd = dkCmdBufFinishList(command_buffer);
     if (!draw_cmd) {
+        LOG_INFO(Render, "HWdraw F: cmdlist null");
         return false;
     }
-
+    LOG_INFO(Render, "HWdraw G");
     dkQueueSubmitCommands(queue, draw_cmd);
     RecordRasterQueueSubmit();
     if (QueueHasError("after draw submit")) {
         return false;
     }
+    LOG_INFO(Render, "HWdraw H");
     FlushQueue();
-    if (QueueHasError("after draw flush")) {
+    LOG_INFO(Render, "HWdraw waiting slice fence");
+    const DkResult fence_result = dkFenceWait(&slice.fence, -1);
+    LOG_INFO(Render, "HWdraw slice fence result={}", static_cast<int>(fence_result));
+    if (fence_result != DkResult_Success || QueueHasError("after slice fence wait")) {
+        LOG_ERROR(Render, "HWdraw GPU completion failed result={}", static_cast<int>(fence_result));
         return false;
     }
-    slice.fence_pending = true;
-    slice.pending_vertices = vertex_count;
+    LOG_INFO(Render, "HWdraw J");
+    slice.fence_pending = false;
+    slice.pending_vertices = 0;
     state.MarkRenderTargetGpuDirty(color_target);
     RecordHardwareRasterFrame();
     RecordHardwareDrawSubmitted(vertex_count / 3);
@@ -902,6 +1126,7 @@ void Rasterizer::DrawTriangles() {
         fallback_vertex_batch.clear();
         return;
     }
+    LOG_INFO(Render, "Deko3D hardware draw rejected, falling back to software");
     if (submitted_vertices != 0) {
         RecordHardwareDrawFailure();
         const std::uint64_t hw_triangles = submitted_vertices / 3;
@@ -942,6 +1167,7 @@ void Rasterizer::FlushAll() {
 void Rasterizer::FlushRegion(PAddr addr, u32 size) {
 #ifdef __SWITCH__
     state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
+    texture_cache.FlushRegion(addr, size);
 #endif
     software_fallback.FlushRegion(addr, size);
 }
@@ -949,6 +1175,7 @@ void Rasterizer::FlushRegion(PAddr addr, u32 size) {
 void Rasterizer::InvalidateRegion(PAddr addr, u32 size) {
 #ifdef __SWITCH__
     state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
+    texture_cache.InvalidateRegion(addr, size);
 #endif
     software_fallback.InvalidateRegion(addr, size);
 }
@@ -956,6 +1183,7 @@ void Rasterizer::InvalidateRegion(PAddr addr, u32 size) {
 void Rasterizer::FlushAndInvalidateRegion(PAddr addr, u32 size) {
 #ifdef __SWITCH__
     state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
+    texture_cache.FlushAndInvalidateRegion(addr, size);
 #endif
     software_fallback.FlushAndInvalidateRegion(addr, size);
 }

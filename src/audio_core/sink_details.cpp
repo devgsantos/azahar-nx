@@ -20,6 +20,9 @@
 #ifdef HAVE_OPENAL
 #include "audio_core/openal_sink.h"
 #endif
+#ifdef HAVE_AUDREN
+#include "audio_core/audren_sink.h"
+#endif
 #include "common/logging/log.h"
 
 namespace AudioCore {
@@ -46,6 +49,13 @@ constexpr std::array sink_details = {
                     return std::make_unique<OpenALSink>(std::string(device_id));
                 },
                 &ListOpenALSinkDevices},
+#endif
+#ifdef HAVE_AUDREN
+    SinkDetails{SinkType::Audren, "audren",
+                [](std::string_view device_id) -> std::unique_ptr<Sink> {
+                    return std::make_unique<AudrenSink>(device_id);
+                },
+                &ListAudrenSinkDevices},
 #endif
 #ifdef HAVE_SDL2
     SinkDetails{SinkType::SDL2, "SDL2",

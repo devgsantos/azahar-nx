@@ -123,6 +123,8 @@ if (ENABLE_SWITCH_FRONTEND)
     set(DEKO3D_SHADER_HEADER "${DEKO3D_SHADER_GEN_DIR}/deko3d_builtin_shaders.h")
     set(DEKO3D_COLOR_VSH "${DEKO3D_SHADER_GEN_DIR}/pica_color_vsh.dksh")
     set(DEKO3D_COLOR_FSH "${DEKO3D_SHADER_GEN_DIR}/pica_color_fsh.dksh")
+    set(DEKO3D_TEX_VSH "${DEKO3D_SHADER_GEN_DIR}/pica_tex_vsh.dksh")
+    set(DEKO3D_TEX_FSH "${DEKO3D_SHADER_GEN_DIR}/pica_tex_fsh.dksh")
 
     target_sources(video_core PRIVATE
         renderer_software/sw_clipper.cpp
@@ -151,6 +153,8 @@ if (ENABLE_SWITCH_FRONTEND)
         renderer_deko3d/deko3d_texture_cache.h
         renderer_deko3d/shaders/pica_color_vsh.glsl
         renderer_deko3d/shaders/pica_color_fsh.glsl
+        renderer_deko3d/shaders/pica_tex_vsh.glsl
+        renderer_deko3d/shaders/pica_tex_fsh.glsl
         ${DEKO3D_SHADER_HEADER}
         renderer_deko3d/renderer_deko3d.cpp
         renderer_deko3d/renderer_deko3d.h
@@ -177,14 +181,22 @@ if (ENABLE_SWITCH_FRONTEND)
                     ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_color_vsh.glsl
             COMMAND ${UAM_EXECUTABLE} -s frag -o ${DEKO3D_COLOR_FSH}
                     ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_color_fsh.glsl
+            COMMAND ${UAM_EXECUTABLE} -s vert -o ${DEKO3D_TEX_VSH}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_tex_vsh.glsl
+            COMMAND ${UAM_EXECUTABLE} -s frag -o ${DEKO3D_TEX_FSH}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_tex_fsh.glsl
             COMMAND ${CMAKE_COMMAND}
                     -DOUTPUT=${DEKO3D_SHADER_HEADER}
                     -DVERT=${DEKO3D_COLOR_VSH}
                     -DFRAG=${DEKO3D_COLOR_FSH}
+                    -DTEX_VERT=${DEKO3D_TEX_VSH}
+                    -DTEX_FRAG=${DEKO3D_TEX_FSH}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/EmbedDeko3DShaders.cmake
             DEPENDS
                 ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_color_vsh.glsl
                 ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_color_fsh.glsl
+                ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_tex_vsh.glsl
+                ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/shaders/pica_tex_fsh.glsl
                 ${CMAKE_CURRENT_SOURCE_DIR}/renderer_deko3d/EmbedDeko3DShaders.cmake
             VERBATIM)
         add_custom_target(deko3d_builtin_shaders DEPENDS ${DEKO3D_SHADER_HEADER})

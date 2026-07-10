@@ -17,6 +17,7 @@
 #include "input_common/sdl/sdl.h"
 #include "input_common/sdl/sdl_impl.h"
 #endif
+#include "input_common/switch/switch_input.h"
 #include "input_common/touch_from_button.h"
 #ifndef AZAHAR_SWITCH
 #include "input_common/udp/udp.h"
@@ -31,7 +32,11 @@ std::shared_ptr<GCAdapter::Adapter> gcadapter;
 #endif
 static std::shared_ptr<Keyboard> keyboard;
 static std::shared_ptr<MotionEmu> motion_emu;
-#ifndef AZAHAR_SWITCH
+#ifdef AZAHAR_SWITCH
+static std::shared_ptr<Switch::ButtonFactory> switch_buttons;
+static std::shared_ptr<Switch::AnalogFactory> switch_analogs;
+static std::shared_ptr<Switch::TouchFactory> switch_touch;
+#else
 static std::unique_ptr<CemuhookUDP::State> udp;
 static std::unique_ptr<SDL::State> sdl;
 #endif
@@ -53,7 +58,14 @@ void Init() {
     Input::RegisterFactory<Input::TouchDevice>("touch_from_button",
                                                std::make_shared<TouchFromButtonFactory>());
 
-#ifndef AZAHAR_SWITCH
+#ifdef AZAHAR_SWITCH
+    switch_buttons = std::make_shared<Switch::ButtonFactory>();
+    Input::RegisterFactory<Input::ButtonDevice>("switch", switch_buttons);
+    switch_analogs = std::make_shared<Switch::AnalogFactory>();
+    Input::RegisterFactory<Input::AnalogDevice>("switch", switch_analogs);
+    switch_touch = std::make_shared<Switch::TouchFactory>();
+    Input::RegisterFactory<Input::TouchDevice>("switch", switch_touch);
+#else
     sdl = SDL::Init();
     udp = CemuhookUDP::Init();
 #endif
@@ -73,7 +85,14 @@ void Shutdown() {
     motion_emu.reset();
     Input::UnregisterFactory<Input::TouchDevice>("emu_window");
     Input::UnregisterFactory<Input::TouchDevice>("touch_from_button");
-#ifndef AZAHAR_SWITCH
+#ifdef AZAHAR_SWITCH
+    Input::UnregisterFactory<Input::ButtonDevice>("switch");
+    switch_buttons.reset();
+    Input::UnregisterFactory<Input::AnalogDevice>("switch");
+    switch_analogs.reset();
+    Input::UnregisterFactory<Input::TouchDevice>("switch");
+    switch_touch.reset();
+#else
     sdl.reset();
     udp.reset();
 #endif

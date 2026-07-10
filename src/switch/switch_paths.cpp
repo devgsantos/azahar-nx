@@ -81,6 +81,7 @@ void ApplySwitchSettings() {
     Settings::values.resolution_factor = 1;
     Settings::values.use_disk_shader_cache = true;
     Settings::values.async_shader_compilation = true;
+    Settings::values.use_shader_jit = true;
     Settings::values.texture_filter = Settings::TextureFilter::NoFilter;
     Settings::values.texture_sampling = Settings::TextureSampling::GameControlled;
     Settings::values.custom_textures = false;
@@ -88,11 +89,32 @@ void ApplySwitchSettings() {
     Settings::values.filter_mode = false;
     Settings::values.pp_shader_name = "None (builtin)";
     Settings::values.audio_emulation = Settings::AudioEmulation::HLE;
-    Settings::values.output_type = AudioCore::SinkType::Null;
+    Settings::values.output_type = AudioCore::SinkType::Audren;
     Settings::values.input_type = AudioCore::InputType::Null;
     Settings::values.frame_limit = 100.0;
     Settings::values.use_gdbstub = false;
     Settings::values.enable_rpc_server = false;
+
+    auto& profile = Settings::values.current_input_profile;
+    profile.name = "Switch Default";
+    profile.buttons.fill("engine:null");
+    profile.buttons[Settings::NativeButton::A] = "engine:switch,code:a";
+    profile.buttons[Settings::NativeButton::B] = "engine:switch,code:b";
+    profile.buttons[Settings::NativeButton::X] = "engine:switch,code:x";
+    profile.buttons[Settings::NativeButton::Y] = "engine:switch,code:y";
+    profile.buttons[Settings::NativeButton::Up] = "engine:switch,code:up";
+    profile.buttons[Settings::NativeButton::Down] = "engine:switch,code:down";
+    profile.buttons[Settings::NativeButton::Left] = "engine:switch,code:left";
+    profile.buttons[Settings::NativeButton::Right] = "engine:switch,code:right";
+    profile.buttons[Settings::NativeButton::L] = "engine:switch,code:l";
+    profile.buttons[Settings::NativeButton::R] = "engine:switch,code:r";
+    profile.buttons[Settings::NativeButton::ZL] = "engine:switch,code:zl";
+    profile.buttons[Settings::NativeButton::ZR] = "engine:switch,code:zr";
+    profile.buttons[Settings::NativeButton::Start] = "engine:switch,code:plus";
+    profile.buttons[Settings::NativeButton::Select] = "engine:switch,code:minus";
+    profile.analogs[Settings::NativeAnalog::CirclePad] = "engine:switch,stick:left";
+    profile.analogs[Settings::NativeAnalog::CStick] = "engine:switch,stick:right";
+    profile.touch_device = "engine:switch";
 
     LOG_INFO(Frontend, "Switch CPU JIT requested: {}", Settings::values.use_cpu_jit.GetValue());
     LOG_INFO(Frontend, "Switch performance profile applied: JIT enabled, native resolution, "

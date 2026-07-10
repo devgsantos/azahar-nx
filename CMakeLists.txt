@@ -41,6 +41,20 @@ option(ENABLE_LIBRETRO "Build as a LibRetro core" OFF)
 option(ENABLE_SWITCH_FRONTEND "Build the native Nintendo Switch frontend" OFF)
 option(AZAHAR_DEKO3D_VALIDATION "Use Deko3D debug validation library and callback" OFF)
 option(AZAHAR_DEKO3D_VERBOSE_TELEMETRY "Enable verbose Deko3D graphics telemetry logs" OFF)
+option(AZAHAR_SWITCH_PERF_DIAGNOSTICS "Enable detailed Switch performance logging (FPS/JIT/Deko3D)" OFF)
+option(AZAHAR_SWITCH_TRACE_ENABLED "Enable low-level Switch early-trace SD writes" OFF)
+option(AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS "Enable safe Dynarmic JIT optimizations on Switch (may crash on rare blocks)" ON)
+option(AZAHAR_SWITCH_JIT_PARTIAL_PUBLISH "Use partial JIT code publish instead of full region transitions" OFF)
+option(AZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER "Force software rasterizer fallback on Switch (safer baseline)" OFF)
+option(AZAHAR_SWITCH_PICA_SHADER_JIT "Enable AArch64 PICA shader JIT on Switch" ON)
+
+# Override stale cache values when these defaults change.
+set(AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS ON CACHE BOOL
+    "Enable safe Dynarmic JIT optimizations on Switch (may crash on rare blocks)" FORCE)
+set(AZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER OFF CACHE BOOL
+    "Force software rasterizer fallback on Switch (safer baseline)" FORCE)
+set(AZAHAR_SWITCH_PICA_SHADER_JIT ON CACHE BOOL
+    "Enable AArch64 PICA shader JIT on Switch" FORCE)
 
 # Some submodules like to pick their own default build type if not specified.
 # Make sure we default to Release build type always, unless the generator has custom types.
@@ -183,6 +197,30 @@ if(ENABLE_SWITCH_FRONTEND)
     set(CITRA_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "Faster cross-build iteration for Switch" FORCE)
     add_definitions(-DAZAHAR_SWITCH)
     add_definitions(-DAZAHAR_ENABLE_DEKO3D)
+    if(AZAHAR_SWITCH_PERF_DIAGNOSTICS)
+        add_definitions(-DAZAHAR_SWITCH_PERF_DIAGNOSTICS)
+        message(STATUS "Switch performance diagnostics enabled")
+    endif()
+    if(AZAHAR_SWITCH_TRACE_ENABLED)
+        add_definitions(-DAZAHAR_SWITCH_TRACE_ENABLED)
+        message(STATUS "Switch early trace enabled")
+    endif()
+    if(AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS)
+        add_definitions(-DAZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS)
+        message(STATUS "Switch Dynarmic safe optimizations enabled")
+    endif()
+    if(AZAHAR_SWITCH_JIT_PARTIAL_PUBLISH)
+        add_definitions(-DAZAHAR_SWITCH_JIT_PARTIAL_PUBLISH)
+        message(STATUS "Switch JIT partial publish enabled")
+    endif()
+    if(AZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER)
+        add_definitions(-DAZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER)
+        message(STATUS "Switch Deko3D software rasterizer forced")
+    endif()
+    if(AZAHAR_SWITCH_PICA_SHADER_JIT)
+        add_definitions(-DAZAHAR_SWITCH_PICA_SHADER_JIT)
+        message(STATUS "Switch PICA shader JIT enabled")
+    endif()
 endif()
 
 # Handle incompatible options for libretro builds

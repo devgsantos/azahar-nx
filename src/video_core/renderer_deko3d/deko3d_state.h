@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,17 @@ public:
         return queue;
     }
 
+    [[nodiscard]] DkQueue GetRasterQueue() const {
+        return queue; // share the single presenter queue — two Graphics queues on same device fault
+    }
+
+    void WaitRasterQueue() {
+        if (queue) {
+            dkQueueFlush(queue);
+            dkQueueWaitIdle(queue);
+        }
+    }
+
     [[nodiscard]] const DkImageView* GetTopScreenRenderTargetView() const {
         return top_screen_view;
     }
@@ -107,6 +119,7 @@ public:
         u64 last_presented_generation = 0;
         bool gpu_dirty = false;
         bool cpu_dirty = false;
+        bool needs_clear = true;
     };
 
     CachedRenderTarget* GetOrCreateRenderTarget(const RenderTargetKey& key);
@@ -135,6 +148,7 @@ private:
     bool CreateFramebuffers();
     bool CreateCommandBuffer();
     bool CreateQueue();
+    bool CreateRasterQueue();
     bool RecordStaticCommands();
     bool CreateScreenTextures();
     bool QueueHasError(const char* context);
@@ -142,6 +156,7 @@ private:
 
     DkDevice device{};
     DkQueue queue{};
+    DkQueue raster_queue{};
     DkMemBlock framebuffer_mem_block{};
     std::array<DkImage, FramebufferCount> framebuffers{};
     std::array<DkImageView, FramebufferCount> framebuffer_views{};
@@ -162,7 +177,7 @@ private:
     DkFence present_fence{};
     bool present_fence_pending = false;
     bool top_screen_gpu_dirty = false;
-    std::vector<CachedRenderTarget> render_targets;
+    std::vector<std::unique_ptr<CachedRenderTarget>> render_targets;
     u64 render_target_generation = 0;
     const CachedRenderTarget* selected_present_render_target = nullptr;
 

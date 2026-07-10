@@ -12,6 +12,7 @@
 #include "common/logging/log.h"
 #include "common/switch_trace.h"
 #include "core/core.h"
+#include "input_common/main.h"
 #include "network/network.h"
 #include "switch_debug_log.h"
 #include "switch_input.h"
@@ -139,6 +140,10 @@ bool SwitchApp::InitializePlatform() {
     InitializeInput();
     SWITCH_EARLY_LOG("InitializeInput end");
 
+    SWITCH_EARLY_LOG("InputCommon::Init start");
+    InputCommon::Init();
+    SWITCH_EARLY_LOG("InputCommon::Init end");
+
     SWITCH_EARLY_LOG("Network::Init start");
     const bool network_ok = Network::Init();
     SWITCH_EARLY_LOGF("Network::Init end result=%s", network_ok ? "true" : "false");
@@ -195,6 +200,8 @@ int SwitchApp::Run() {
 
     SWITCH_EARLY_LOG("Frontend shutting down");
     audio.Shutdown();
+    SWITCH_EARLY_LOG("InputCommon::Shutdown");
+    InputCommon::Shutdown();
     SWITCH_EARLY_LOG("nxlink live logging shutdown");
     NxLink::Shutdown();
     Network::Shutdown();
@@ -280,15 +287,32 @@ int SwitchApp::LaunchGame(const std::string& path) {
         int loop_count = 0;
         auto last_perf_sample = std::chrono::steady_clock::now();
         while (system.IsPoweredOn()) {
+            if (loop_count < 10) {
+                SWITCH_EARLY_LOGF("emulation loop iteration %d enter", loop_count);
+            }
             window.PollEvents();
+            if (loop_count < 10) {
+                SWITCH_EARLY_LOGF("emulation loop iteration %d events polled", loop_count);
+            }
             const InputState input = PollInput();
-            if (input.plus && input.minus) {
+            if (loop_count < 10) {
+                SWITCH_EARLY_LOGF("emulation loop iteration %d input polled", loop_count);
+            }
+            using Button = InputCommon::Switch::Button;
+            if (IsButtonPressed(input, Button::Plus) && IsButtonPressed(input, Button::Minus)) {
                 LOG_INFO(Frontend, "Plus+Minus pressed; requesting shutdown");
                 SWITCH_EARLY_LOG("Plus+Minus pressed; requesting shutdown");
                 system.RequestShutdown();
             }
 
+            if (loop_count < 10) {
+                SWITCH_EARLY_LOGF("emulation loop iteration %d before RunLoop", loop_count);
+            }
             const Core::System::ResultStatus run = system.RunLoop();
+            if (loop_count < 10) {
+                SWITCH_EARLY_LOGF("emulation loop iteration %d after RunLoop status=%s", loop_count,
+                                  ResultToString(run));
+            }
             ++loop_count;
 
             if (run == Core::System::ResultStatus::ShutdownRequested) {
@@ -315,90 +339,21 @@ int SwitchApp::LaunchGame(const std::string& path) {
                 last_perf_sample = now;
 
                 LOG_INFO(Frontend,
-                         "Switch performance: FPS {:.2f} SystemFPS {:.2f} Speed {:.2f}% "
-                         "vblank {:.2f}ms hle_svc {:.2f}ms hle_ipc {:.2f}ms gpu {:.2f}ms "
-                         "swap {:.2f}ms other {:.2f}ms jit_ms {:.2f} jit_calls {} "
-                         "jit_req {} jit_exec {} jit_zero {} jit_publish_partial {} "
-                         "jit_publish_full {} jit_publish_bytes {} jit_publish_invalidated {} "
-                         "jit_cache_clears {} jit_blocks_compiled {} "
-                         "deko_hw_draws {} deko_hw_triangles {} deko_hw_draw_attempts {} "
-                         "deko_hw_draw_successes {} deko_hw_draw_failures {} "
-                         "deko_hw_coverage_percent {:.2f} deko_sw_fallback_draws {} "
-                         "deko_sw_fallback_triangles {} deko_texture_cache_hits {} "
-                         "deko_texture_cache_misses {} deko_texture_upload_bytes {} "
-                         "deko_render_target_cache_hits {} deko_render_target_cache_misses {} "
-                         "deko_render_target_readbacks {} deko_render_target_readback_bytes {} "
-                         "deko_unsupported_texture_format {} deko_unsupported_tev {} "
-                         "deko_unsupported_blend {} deko_unsupported_depth {} deko_ring_waits {} "
-                         "deko_hw_draws_submitted {} deko_hw_draws_completed {} "
-                         "deko_hw_triangles_submitted {} deko_hw_triangles_completed {} "
-                         "deko_fence_poll_successes {} deko_fence_waits {} "
-                         "deko_fence_timeouts {} deko_max_fence_wait_ms {} "
-                         "deko_queue_errors {} deko_queue_flushes {} "
-                         "deko_fallback_textures_enabled {} deko_fallback_depth_enabled {} "
-                         "deko_fallback_stencil_enabled {} deko_fallback_blend_enabled {} "
-                         "deko_fallback_alpha_test {} deko_fallback_logic_op {} "
-                         "deko_fallback_geometry_shader {} deko_fallback_wrong_render_target {} "
-                         "deko_fallback_framebuffer_format {} deko_fallback_topology {} "
-                         "deko_fallback_shadow {} deko_fallback_unsupported_state {}",
+                         "Switch perf: FPS {:.2f} SystemFPS {:.2f} Speed {:.2f}% | "
+                         "GPU {:.2f}ms Swap {:.2f}ms | HW draws={} tris={} SW fallback={} | "
+                         "JIT calls={} blocks={} partial_pub={} full_pub={} | "
+                         "Tex hits={} misses={}",
                          perf.game_fps, perf.system_fps, perf.emulation_speed * 100.0,
-                         perf.time_vblank_interval * 1000.0,
-                         perf.time_hle_svc * 1000.0,
-                         perf.time_hle_ipc * 1000.0,
-                         perf.time_gpu * 1000.0,
-                         perf.time_swap * 1000.0,
-                         perf.time_remaining * 1000.0,
-                         static_cast<double>(jit_stats.host_ns) / 1'000'000.0,
-                         jit_stats.calls, jit_stats.requested_ticks,
-                         jit_stats.executed_ticks, jit_stats.zero_tick_calls,
+                         perf.time_gpu * 1000.0, perf.time_swap * 1000.0,
+                         deko_stats.hw_draws, deko_stats.hw_triangles,
+                         deko_stats.sw_fallback_draws, jit_stats.calls,
+                         jit_publish_stats.blocks_compiled,
                          jit_publish_stats.partial_publishes,
                          jit_publish_stats.full_publishes,
-                         jit_publish_stats.bytes_flushed,
-                         jit_publish_stats.bytes_invalidated,
-                         jit_publish_stats.cache_clears,
-                         jit_publish_stats.blocks_compiled,
-                         deko_stats.hw_draws,
-                         deko_stats.hw_triangles,
-                         deko_stats.hw_draw_attempts,
-                         deko_stats.hw_draw_successes,
-                         deko_stats.hw_draw_failures,
-                         deko_stats.hw_coverage_percent,
-                         deko_stats.sw_fallback_draws,
-                         deko_stats.sw_fallback_triangles,
                          deko_stats.texture_cache_hits,
-                         deko_stats.texture_cache_misses,
-                         deko_stats.texture_upload_bytes,
-                         deko_stats.render_target_cache_hits,
-                         deko_stats.render_target_cache_misses,
-                         deko_stats.render_target_readbacks,
-                         deko_stats.render_target_readback_bytes,
-                         deko_stats.unsupported_texture_format,
-                         deko_stats.unsupported_tev,
-                         deko_stats.unsupported_blend,
-                         deko_stats.unsupported_depth,
-                         deko_stats.ring_waits,
-                         deko_stats.hw_draws_submitted,
-                         deko_stats.hw_draws_completed,
-                         deko_stats.hw_triangles_submitted,
-                         deko_stats.hw_triangles_completed,
-                         deko_stats.fence_poll_successes,
-                         deko_stats.fence_waits,
-                         deko_stats.fence_timeouts,
-                         deko_stats.max_fence_wait_ms,
-                         deko_stats.queue_errors,
-                         deko_stats.queue_flushes,
-                         deko_stats.fallback_textures_enabled,
-                         deko_stats.fallback_depth_enabled,
-                         deko_stats.fallback_stencil_enabled,
-                         deko_stats.fallback_blend_enabled,
-                         deko_stats.fallback_alpha_test,
-                         deko_stats.fallback_logic_op,
-                         deko_stats.fallback_geometry_shader,
-                         deko_stats.fallback_wrong_render_target,
-                         deko_stats.fallback_framebuffer_format,
-                         deko_stats.fallback_topology,
-                         deko_stats.fallback_shadow,
-                         deko_stats.fallback_unsupported_state);
+                         deko_stats.texture_cache_misses);
+
+#ifdef AZAHAR_SWITCH_PERF_DIAGNOSTICS
                 SWITCH_EARLY_LOGF(
                     "performance fps=%.2f system_fps=%.2f speed=%.2f%% "
                     "vblank=%.2fms hle_svc=%.2fms hle_ipc=%.2fms gpu=%.2fms "
@@ -490,31 +445,13 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     static_cast<unsigned long long>(deko_stats.fallback_unsupported_state));
                 LOG_INFO(
                     Frontend,
-                    "Switch graphics summary: graphics_interval_transformed_batch_checks {} "
-                    "graphics_interval_transformed_batch_valid {} "
-                    "graphics_interval_transformed_batch_eligible {} "
-                    "graphics_interval_transformed_batch_submitted {} "
-                    "graphics_interval_transformed_batch_completed {} "
-                    "graphics_interval_hw_triangles_completed {} "
-                    "graphics_interval_rt_creations {} graphics_interval_blend_supported {} "
-                    "graphics_interval_present_cached_rt {} graphics_interval_present_repeated {} "
-                    "graphics_interval_raster_queue_errors {} "
-                    "graphics_interval_raster_fence_timeouts {} "
-                    "graphics_interval_present_queue_errors {} "
-                    "graphics_interval_present_fence_timeouts {} "
-                    "graphics_total_transformed_batch_checks {} "
-                    "graphics_total_transformed_batch_valid {} "
-                    "graphics_total_transformed_batch_eligible {} "
-                    "graphics_total_transformed_batch_submitted {} "
-                    "graphics_total_transformed_batch_completed {} "
-                    "graphics_total_hw_triangles_completed {} graphics_total_output_triangles {} "
-                    "graphics_total_display_transfers {} graphics_total_present_calls {} "
-                    "graphics_total_changed_presents {} graphics_total_repeated_presents {} "
-                    "graphics_total_transformed_blocker_invalid_batch {} "
-                    "graphics_total_transformed_blocker_framebuffer_dimensions {} "
-                    "graphics_total_transformed_blocker_textures_enabled {} "
-                    "graphics_total_direct_blocker_unimplemented {} "
-                    "graphics_total_queue_errors {} graphics_total_fence_timeouts {}",
+                    "Switch graphics summary: interval_batch_checks={} valid={} eligible={} "
+                    "submitted={} completed={} hw_tris={} rt_creations={} blend_supported={} "
+                    "present_cached={} present_repeated={} raster_qerr={} raster_to={} "
+                    "present_qerr={} present_to={} total_batch_checks={} valid={} eligible={} "
+                    "submitted={} completed={} hw_tris={} out_tris={} disp_xfers={} "
+                    "presents={} changed={} repeated={} blocker_invalid={} "
+                    "blocker_fb_dims={} blocker_tex={} direct_unimpl={} qerr={} to={}",
                     deko_stats.transformed_batch_checks, deko_stats.transformed_batch_valid,
                     deko_stats.transformed_batch_eligible, deko_stats.transformed_batch_submitted,
                     deko_stats.transformed_batch_completed, deko_stats.hw_triangles_completed,
@@ -626,6 +563,7 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     deko_stats.present_fence_timeouts, deko_stats.present_max_fence_wait_us,
                     deko_stats.present_queue_errors);
 #endif
+#endif
             }
         }
     } catch (const std::exception& e) {
@@ -675,7 +613,7 @@ void SwitchApp::DrawFatal(const std::string& message) const {
         const InputState input = PollInput();
         const InputState pressed = NewlyPressed(previous, input);
         previous = input;
-        if (pressed.b) {
+        if (IsButtonPressed(pressed, InputCommon::Switch::Button::B)) {
             return;
         }
         WaitForVBlank();
@@ -701,7 +639,8 @@ void SwitchApp::DrawExternalDataWarning(const ExternalDataStatus& status) const 
         const InputState input = PollInput();
         const InputState pressed = NewlyPressed(previous, input);
         previous = input;
-        if (pressed.a || pressed.b) {
+        if (IsButtonPressed(pressed, InputCommon::Switch::Button::A) ||
+            IsButtonPressed(pressed, InputCommon::Switch::Button::B)) {
             return;
         }
         WaitForVBlank();
@@ -709,6 +648,9 @@ void SwitchApp::DrawExternalDataWarning(const ExternalDataStatus& status) const 
 }
 
 } // namespace Azahar::Switch
+
+extern "C" u32 __nx_applet_exit_mode = 0;
+extern "C" u64 __nx_main_thread_stack_size = 4 * 1024 * 1024;
 
 int main(int, char**) {
     Azahar::Switch::DebugLog::Initialize();

@@ -68,21 +68,22 @@ std::optional<std::string> RomBrowser::Run() {
         const InputState pressed = NewlyPressed(previous, input);
         previous = input;
 
-        if (pressed.down || pressed.stick_down) {
+        using Button = InputCommon::Switch::Button;
+        if (IsButtonPressed(pressed, Button::DpadDown) || IsButtonPressed(pressed, Button::StickDown)) {
             selected = std::min(selected + 1, entries.empty() ? 0 : entries.size() - 1);
         }
-        if (pressed.up || pressed.stick_up) {
+        if (IsButtonPressed(pressed, Button::DpadUp) || IsButtonPressed(pressed, Button::StickUp)) {
             selected = selected == 0 ? 0 : selected - 1;
         }
-        if (pressed.a && !entries.empty()) {
+        if (IsButtonPressed(pressed, Button::A) && !entries.empty()) {
             LOG_INFO(Frontend, "Selected ROM: {}", entries[selected].path);
             SWITCH_EARLY_LOGF("Selected ROM full path=%s", entries[selected].path.c_str());
             return entries[selected].path;
         }
-        if (pressed.b) {
+        if (IsButtonPressed(pressed, Button::B)) {
             return std::nullopt;
         }
-        if (pressed.x) {
+        if (IsButtonPressed(pressed, Button::X)) {
             Refresh();
         }
 

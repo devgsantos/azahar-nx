@@ -146,6 +146,10 @@ bool Presenter::PresentFrame() {
                                           : PresentSource::RepeatedPreviousFrame);
         }
 
+        // Top screen: skip CPU readback when the GPU already has a dirty cached render target,
+        // because PresentScreenTexturesFrame will blit it directly.
+        const bool top_use_gpu_blit = cached_target && cached_target->gpu_dirty;
+
         auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
         if (!screen_buffer ||
             state.GetScreenDataSize() <
@@ -155,8 +159,8 @@ bool Presenter::PresentFrame() {
             return false;
         }
 
-        // Copy top screen (400x240 RGB565 or RGBA8)
-        {
+        // Copy top screen (400x240 RGB565 or RGBA8) only when no GPU blit path exists.
+        if (!top_use_gpu_blit) {
             const auto& fb0 = framebuffer_config[0];
             const u32 width = fb0.width.Value();
             const u32 height = fb0.height.Value();
@@ -171,7 +175,7 @@ bool Presenter::PresentFrame() {
             }
         }
 
-        // Copy bottom screen (320x240 RGB565 or RGBA8)
+        // Copy bottom screen (320x240 RGB565 or RGBA8) from guest VRAM.
         {
             const auto& fb1 = framebuffer_config[1];
             const u32 width = fb1.width.Value();
@@ -179,13 +183,12 @@ bool Presenter::PresentFrame() {
             const u32 stride = fb1.stride;
 
             u8* fb1_ptr = memory.GetPhysicalPointer(fb1_addr);
+            const u32 top_size = TopScreenWidth * TopScreenHeight * BytesPerPixel;
             if (fb1_ptr && width > 0 && height > 0 && stride > 0) {
-                const u32 top_size = TopScreenWidth * TopScreenHeight * BytesPerPixel;
                 u8* const bottom_buffer = screen_buffer + top_size;
                 ConvertRotateToRgba8888(fb1_ptr, bottom_buffer, width, height, stride,
                                         BottomScreenWidth, BottomScreenHeight);
             } else {
-                const u32 top_size = TopScreenWidth * TopScreenHeight * BytesPerPixel;
                 ClearRgba8888(screen_buffer + top_size, BottomScreenWidth, BottomScreenHeight);
             }
         }
