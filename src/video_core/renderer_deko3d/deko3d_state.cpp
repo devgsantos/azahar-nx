@@ -939,9 +939,22 @@ bool State::PresentScreenTexturesFrame() {
         LOG_INFO(Render, "Present cached D1 before wait");
         WaitRasterQueue();
         LOG_INFO(Render, "Present cached D2 after wait");
-        dkCmdBufBindRenderTarget(cmdbuf, &framebuffer_views[slot], nullptr);
-        dkCmdBufClearColorFloat(cmdbuf, 0, DkColorMask_RGBA, 0.7f, 0.0f, 0.7f, 1.0f);
-        LOG_INFO(Render, "Present cached D3 diagnostic clear done (blit skipped)");
+        // Blit the hardware render target (240x400, top portion of 240x800 buffer)
+        // into the 400x240 top-screen slot on the Switch framebuffer.
+        // src rect is portrait 240w x 400h; dst rect is landscape 400w x 240h.
+        // dkCmdBufBlitImage will stretch-blit; without rotation support we accept
+        // a 90-degree transposed image for now and handle rotation via flip_viewport.
+        DkImageRect rt_src = {0, 0, 0,
+                              cached_present->key.width,
+                              cached_present->key.height,
+                              1};
+        dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
+        dkCmdBufBlitImage(cmdbuf, &cached_present->view, &rt_src,
+                          &framebuffer_views[slot], &top_copy_dst,
+                          DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
+        LOG_INFO(Render, "Present cached D3 blit done src={}x{} dst={}x{}",
+                 cached_present->key.width, cached_present->key.height,
+                 top_copy_dst.width, top_copy_dst.height);
     } else if (top_screen_gpu_dirty && top_screen_view) {
         DkImageRect top_copy_src = {0, 0, 0, top_width, top_height, 1};
         dkCmdBufBarrier(cmdbuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
