@@ -800,6 +800,12 @@ void State::SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address) 
         bottom_address != 0 ? FindGpuDirtyRenderTarget(bottom_address) : nullptr;
     if (!selected_present_render_target && !selected_bottom_present_render_target &&
         !render_targets.empty()) {
+        static auto s_last_log = std::chrono::steady_clock::time_point{};
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_last_log < std::chrono::seconds(1)) {
+            return;
+        }
+        s_last_log = now;
         LOG_INFO(Render,
                  "SelectPresentRenderTarget: top=0x{:08x} top_found={} bottom=0x{:08x} "
                  "bottom_found={} rt_count={}",
@@ -870,10 +876,6 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
     }
     for (auto& target : render_targets) {
         if (!RangesOverlap(address, bytes, target->key.color_address, RenderTargetBytes(target->key))) {
-            continue;
-        }
-        if (target->owner == SurfaceOwner::Deko3D &&
-            owner != SurfaceOwner::Deko3D) {
             continue;
         }
         target->owner = owner;

@@ -453,15 +453,13 @@ void Rasterizer::ShutdownGpuResources() {
     }
     descriptor_cpu_buffer = nullptr;
     descriptor_gpu_addr = 0;
-    if (depth_mem_block) {
-        dkMemBlockDestroy(depth_mem_block);
-        depth_mem_block = nullptr;
+    for (auto& target : depth_targets) {
+        if (target.mem_block) {
+            dkMemBlockDestroy(target.mem_block);
+        }
     }
-    depth_image = {};
-    depth_view = {};
-    depth_width = 0;
-    depth_height = 0;
-    depth_format = 0;
+    depth_targets.clear();
+    active_depth_target = nullptr;
 
     frame_slices = {};
     current_frame_slice = 0;
@@ -667,31 +665,17 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         return false;
     }
 
-    // Determine whether this batch uses a single 2D texture that we can accelerate.
-    const CachedTexture* cached_texture = nullptr;
-    u32 enabled_texture_index = 0;
-    {
-        const auto textures = regs.texturing.GetTextures();
-        u32 enabled_count = 0;
-        for (u32 i = 0; i < static_cast<u32>(textures.size()); ++i) {
-            if (textures[i].enabled != 0) {
-                if (enabled_count == 0) {
-                    enabled_texture_index = i;
-                }
-                ++enabled_count;
-            }
-        }
-        if (enabled_count == 1) {
-            cached_texture = texture_cache.GetTexture(textures[enabled_texture_index]);
+    const auto textures = regs.texturing.GetTextures();
+    bool has_enabled_texture = false;
+    for (const auto& texture : textures) {
+        if (texture.enabled != 0) {
+            has_enabled_texture = true;
+            break;
         }
     }
-
-    const bool use_texture = cached_texture != nullptr;
-    const DkShader* const vertex_shader =
-        use_texture ? shader_cache.GetTexVertexShader() : shader_cache.GetColorVertexShader();
-    const DkShader* const fragment_shader =
-        use_texture ? shader_cache.GetTexFragmentShader() : shader_cache.GetColorFragmentShader();
-    if (!vertex_shader || !fragment_shader) {
+    if (has_enabled_texture) {
+        RecordTransformedBlocker(TexturesEnabled);
+        RecordFallbackReason(FallbackReason::TexturesEnabled);
         return false;
     }
 
@@ -715,6 +699,16 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
                 s_last_blocker_log = now;
             }
         }
+        return false;
+    }
+
+    const CachedTexture* const cached_texture = nullptr;
+    constexpr bool use_texture = false;
+    const DkShader* const vertex_shader =
+        use_texture ? shader_cache.GetTexVertexShader() : shader_cache.GetColorVertexShader();
+    const DkShader* const fragment_shader =
+        use_texture ? shader_cache.GetTexFragmentShader() : shader_cache.GetColorFragmentShader();
+    if (!vertex_shader || !fragment_shader) {
         return false;
     }
 
@@ -780,19 +774,12 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
     const u32 width = fb.framebuffer.GetWidth();
     const u32 height = fb.framebuffer.GetHeight();
     const u32 format = static_cast<u32>(fb.framebuffer.depth_format.Value());
-    if (depth_mem_block && depth_width == width && depth_height == height &&
-        depth_format == format) {
-        RecordDepthState(true);
-        return &depth_view;
-    }
-    if (depth_mem_block) {
-        FlushQueue();
-        dkQueueWaitIdle(queue);
-        dkMemBlockDestroy(depth_mem_block);
-        depth_mem_block = nullptr;
-        depth_image = {};
-        depth_view = {};
-        depth_needs_clear = false;
+    for (auto& target : depth_targets) {
+        if (target.width == width && target.height == height && target.format == format) {
+            active_depth_target = &target;
+            RecordDepthState(true);
+            return &target.view;
+        }
     }
 
     DkImageFormat dk_format = DkImageFormat_None;
@@ -823,17 +810,22 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
     DkMemBlockMaker mem_block_maker;
     dkMemBlockMakerDefaults(&mem_block_maker, device, size);
     mem_block_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
-    depth_mem_block = dkMemBlockCreate(&mem_block_maker);
-    if (!depth_mem_block) {
+    depth_targets.emplace_back();
+    DepthTarget& target = depth_targets.back();
+    target.mem_block = dkMemBlockCreate(&mem_block_maker);
+    if (!target.mem_block) {
+        depth_targets.pop_back();
+        active_depth_target = nullptr;
         RecordDepthState(false);
         return nullptr;
     }
-    dkImageInitialize(&depth_image, &layout, depth_mem_block, 0);
-    dkImageViewDefaults(&depth_view, &depth_image);
-    depth_width = width;
-    depth_height = height;
-    depth_format = format;
-    depth_needs_clear = true;
+    dkImageInitialize(&target.image, &layout, target.mem_block, 0);
+    dkImageViewDefaults(&target.view, &target.image);
+    target.width = width;
+    target.height = height;
+    target.format = format;
+    target.needs_clear = true;
+    active_depth_target = &target;
     RecordDepthState(true);
     LOG_INFO(Render,
              "Deko3D depth target create: addr=0x{:08x} size={}x{} format={} compare={} "
@@ -841,7 +833,7 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
              fb.framebuffer.GetDepthBufferPhysicalAddress(), width, height, format,
              static_cast<u32>(fb.output_merger.depth_test_func.Value()),
              fb.framebuffer.allow_depth_stencil_write.Value());
-    return &depth_view;
+    return &active_depth_target->view;
 }
 
 bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
@@ -1017,9 +1009,9 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         dkCmdBufClearColorFloat(command_buffer, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 0.0f);
         color_target.needs_clear = false;
     }
-    if (depth_target && depth_needs_clear) {
+    if (depth_target && active_depth_target && active_depth_target->needs_clear) {
         dkCmdBufClearDepthStencil(command_buffer, true, 1.0f, 0xff, 0);
-        depth_needs_clear = false;
+        active_depth_target->needs_clear = false;
     }
     dkCmdBufSetViewports(command_buffer, 0, &viewport, 1);
     dkCmdBufSetScissors(command_buffer, 0, &scissor, 1);
@@ -1077,6 +1069,8 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         LOG_ERROR(Render, "HWdraw GPU completion failed result={}", static_cast<int>(fence_result));
         return false;
     }
+    RecordHardwareDrawCompleted(vertex_count / 3);
+    RecordTransformedBatchCompleted(vertex_count);
     slice.fence_pending = false;
     slice.pending_vertices = 0;
     state.MarkRenderTargetGpuDirty(color_target);
