@@ -213,6 +213,8 @@ private:
     u64 render_target_generation = 0;
     const CachedRenderTarget* selected_present_render_target = nullptr;
     const CachedRenderTarget* selected_bottom_present_render_target = nullptr;
+    const CachedRenderTarget* last_present_render_target = nullptr;
+    const CachedRenderTarget* last_bottom_present_render_target = nullptr;
 
     // Screen textures for CPU framebuffer display (400x240 top, 320x240 bottom)
     DkMemBlock screen_tex_mem_block{};

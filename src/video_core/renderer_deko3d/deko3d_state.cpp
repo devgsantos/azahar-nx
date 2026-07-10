@@ -69,6 +69,12 @@ u64 RenderTargetBytes(const State::RenderTargetKey& key) {
     return static_cast<u64>(key.width) * key.height * bytes_per_pixel;
 }
 
+u64 DisplayTransferBytes(const State::DisplayTransferTarget& alias) {
+    // The display destination format is not carried in the alias record. Use 4 Bpp as a
+    // conservative invalidation span so CPU writes to RGB/RGBA framebuffers drop stale aliases.
+    return static_cast<u64>(alias.output_width) * alias.output_height * 4;
+}
+
 bool RangesOverlap(PAddr lhs, u64 lhs_size, PAddr rhs, u64 rhs_size) {
     if (lhs_size == 0 || rhs_size == 0) {
         return false;
@@ -295,6 +301,8 @@ void State::Shutdown() {
     top_screen_gpu_dirty = false;
     selected_present_render_target = nullptr;
     selected_bottom_present_render_target = nullptr;
+    last_present_render_target = nullptr;
+    last_bottom_present_render_target = nullptr;
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy render target cache enter");
     display_transfer_targets.clear();
@@ -852,7 +860,7 @@ bool State::DrawCachedScreenRenderTarget(const CachedRenderTarget& target, u32 s
     auto& last_present_shader_log = label && std::strcmp(label, "bottom") == 0
                                         ? s_last_present_shader_log_bottom
                                         : s_last_present_shader_log_top;
-    if (now - last_present_shader_log >= std::chrono::seconds(1)) {
+    if (now - last_present_shader_log >= std::chrono::seconds(5)) {
         last_present_shader_log = now;
         LOG_INFO(Render,
                  "Present cached {} shader draw src={}x{} y={} h={} dst={}x{} "
@@ -936,12 +944,13 @@ const State::CachedRenderTarget* State::FindGpuDirtyRenderTarget(PAddr address) 
     for (const auto& alias : display_transfer_targets) {
         const CachedRenderTarget* const target = alias.target;
         if (alias.display_address != address || !target || !target->gpu_dirty ||
-            target->owner != SurfaceOwner::Deko3D || alias.deko_generation == 0) {
+            target->owner != SurfaceOwner::Deko3D || alias.deko_generation == 0 ||
+            target->deko_generation != alias.deko_generation) {
             continue;
         }
         static auto s_last_alias_lookup_log = std::chrono::steady_clock::time_point{};
         const auto now = std::chrono::steady_clock::now();
-        if (now - s_last_alias_lookup_log >= std::chrono::seconds(1)) {
+        if (now - s_last_alias_lookup_log >= std::chrono::seconds(5)) {
             s_last_alias_lookup_log = now;
             LOG_INFO(Render,
                      "FindGpuDirtyRenderTarget: display addr=0x{:08x} using transfer RT "
@@ -969,22 +978,59 @@ void State::SelectPresentRenderTarget(PAddr address) {
 void State::SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address) {
     selected_present_render_target = FindGpuDirtyRenderTarget(top_address);
     const auto is_top_shape = [](const CachedRenderTarget* target) {
-        return target && target->key.width == 240 && target->key.height >= 400;
+        return target && target->key.width == 240 && target->key.height >= 400 &&
+               target->gpu_dirty && target->owner == SurfaceOwner::Deko3D;
     };
-    if (!is_top_shape(selected_present_render_target)) {
+    const auto is_live_bottom_shape = [](const CachedRenderTarget* target) {
+        return target && target->key.width == 240 && target->key.height == 320 &&
+               target->gpu_dirty && target->owner == SurfaceOwner::Deko3D;
+    };
+    if (is_top_shape(selected_present_render_target)) {
+        last_present_render_target = selected_present_render_target;
+    } else {
         selected_present_render_target = nullptr;
+        if (is_top_shape(last_present_render_target)) {
+            selected_present_render_target = last_present_render_target;
+            static auto s_last_top_reuse_log = std::chrono::steady_clock::time_point{};
+            const auto now = std::chrono::steady_clock::now();
+            if (now - s_last_top_reuse_log >= std::chrono::seconds(5)) {
+                s_last_top_reuse_log = now;
+                LOG_INFO(Render,
+                         "SelectPresentRenderTarget: reusing last top RT addr=0x{:08x} gen={} "
+                         "for fb=0x{:08x}",
+                         selected_present_render_target->key.color_address,
+                         selected_present_render_target->deko_generation, top_address);
+            }
+        } else {
+            last_present_render_target = nullptr;
+        }
     }
     selected_bottom_present_render_target =
         bottom_address != 0 ? FindGpuDirtyRenderTarget(bottom_address) : nullptr;
-    if (selected_bottom_present_render_target &&
-        (selected_bottom_present_render_target->key.width != 240 ||
-         selected_bottom_present_render_target->key.height != 320)) {
+    if (is_live_bottom_shape(selected_bottom_present_render_target)) {
+        last_bottom_present_render_target = selected_bottom_present_render_target;
+    } else {
         selected_bottom_present_render_target = nullptr;
+        if (is_live_bottom_shape(last_bottom_present_render_target)) {
+            selected_bottom_present_render_target = last_bottom_present_render_target;
+            static auto s_last_bottom_reuse_log = std::chrono::steady_clock::time_point{};
+            const auto now = std::chrono::steady_clock::now();
+            if (now - s_last_bottom_reuse_log >= std::chrono::seconds(5)) {
+                s_last_bottom_reuse_log = now;
+                LOG_INFO(Render,
+                         "SelectPresentRenderTarget: reusing last bottom RT addr=0x{:08x} "
+                         "gen={} for fb=0x{:08x}",
+                         selected_bottom_present_render_target->key.color_address,
+                         selected_bottom_present_render_target->deko_generation, bottom_address);
+            }
+        } else {
+            last_bottom_present_render_target = nullptr;
+        }
     }
     if (!render_targets.empty()) {
         static auto s_last_log = std::chrono::steady_clock::time_point{};
         const auto now = std::chrono::steady_clock::now();
-        if (now - s_last_log < std::chrono::seconds(1)) {
+        if (now - s_last_log < std::chrono::seconds(5)) {
             return;
         }
         s_last_log = now;
@@ -1072,7 +1118,7 @@ bool State::RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32
     }
     static auto s_last_transfer_log = std::chrono::steady_clock::time_point{};
     const auto now = std::chrono::steady_clock::now();
-    if (now - s_last_transfer_log >= std::chrono::seconds(1)) {
+    if (now - s_last_transfer_log >= std::chrono::seconds(5)) {
         s_last_transfer_log = now;
         LOG_INFO(Render,
                  "Deko3D display transfer alias: dst=0x{:08x} src=0x{:08x} rt={}x{} "
@@ -1088,6 +1134,28 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
     if (address == 0 || bytes == 0) {
         return;
     }
+    display_transfer_targets.erase(
+        std::remove_if(display_transfer_targets.begin(), display_transfer_targets.end(),
+                       [this, address, bytes](const DisplayTransferTarget& alias) {
+                           if (!RangesOverlap(address, bytes, alias.display_address,
+                                              DisplayTransferBytes(alias))) {
+                               return false;
+                           }
+                           if (selected_present_render_target == alias.target) {
+                               selected_present_render_target = nullptr;
+                           }
+                           if (selected_bottom_present_render_target == alias.target) {
+                               selected_bottom_present_render_target = nullptr;
+                           }
+                           if (last_present_render_target == alias.target) {
+                               last_present_render_target = nullptr;
+                           }
+                           if (last_bottom_present_render_target == alias.target) {
+                               last_bottom_present_render_target = nullptr;
+                           }
+                           return true;
+                       }),
+        display_transfer_targets.end());
     for (auto& target : render_targets) {
         if (!RangesOverlap(address, bytes, target->key.color_address, RenderTargetBytes(target->key))) {
             continue;
@@ -1108,6 +1176,12 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
         }
         if (selected_bottom_present_render_target == target.get()) {
             selected_bottom_present_render_target = nullptr;
+        }
+        if (last_present_render_target == target.get()) {
+            last_present_render_target = nullptr;
+        }
+        if (last_bottom_present_render_target == target.get()) {
+            last_bottom_present_render_target = nullptr;
         }
     }
 }
@@ -1240,7 +1314,6 @@ bool State::PresentScreenTexturesFrame() {
     if (cached_present) {
         const u32 top_src_y = 0;
         const u32 top_src_height = std::min(400u, cached_present->key.height - top_src_y);
-        WaitRasterQueue();
         if (!DrawCachedScreenRenderTarget(*cached_present, static_cast<u32>(slot), 0, top_src_y,
                                           top_src_height, top_x, top_y, top_width, top_height,
                                           "top")) {
@@ -1269,7 +1342,6 @@ bool State::PresentScreenTexturesFrame() {
     DkImageRect bottom_copy_dst = {bottom_x, bottom_y, 0, bottom_width, bottom_height, 1};
     if (cached_bottom_present && cached_bottom_present->key.width == 240 &&
         cached_bottom_present->key.height == 320) {
-        WaitRasterQueue();
         if (DrawCachedScreenRenderTarget(*cached_bottom_present, static_cast<u32>(slot), 1, 0,
                                          320, bottom_x, bottom_y, bottom_width, bottom_height,
                                          "bottom")) {
@@ -1307,7 +1379,6 @@ bool State::PresentScreenTexturesFrame() {
         return false;
     }
     FlushQueue();
-    dkQueueWaitIdle(queue);
     if (QueueHasError("after present flush")) {
         return false;
     }

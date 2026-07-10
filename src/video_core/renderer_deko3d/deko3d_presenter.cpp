@@ -239,7 +239,8 @@ bool Presenter::PresentFrame() {
             ++blank_bottom_frames;
         }
 
-        if ((frame_counter % 60) == 0 || (!top_has_pixels && !bottom_has_pixels && frame_counter <= 10)) {
+        if ((frame_counter % 600) == 0 ||
+            (!top_has_pixels && !bottom_has_pixels && frame_counter <= 3)) {
             LOG_INFO(Render,
                      "Deko3D source diagnostics: frames={} blank_top={} blank_bottom={} "
                      "fb0=0x{:08x} {}x{} stride={} bpp={} src_nonzero={} rgba_visible={} "
