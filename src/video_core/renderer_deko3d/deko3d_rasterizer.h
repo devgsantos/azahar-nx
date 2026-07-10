@@ -70,6 +70,8 @@ private:
         u32 vertex_size = 0;
         u32 uniform_offset = 0;
         u32 uniform_size = 0;
+        u32 descriptor_offset = 0;
+        u32 descriptor_size = 0;
         DkFence fence{};
         bool fence_pending = false;
         std::size_t pending_vertices = 0;

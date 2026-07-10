@@ -283,9 +283,12 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
 
     const u32 width = config.width;
     const u32 height = config.height;
-    LOG_INFO(Render,
-             "Texture upload begin addr=0x{:08x} size={}x{} format={}",
-             config.GetPhysicalAddress(), width, height, static_cast<u32>(format));
+    static bool s_logged_first_upload = false;
+    if (!s_logged_first_upload) {
+        s_logged_first_upload = true;
+        LOG_INFO(Render, "Texture upload begin addr=0x{:08x} size={}x{} format={}",
+                 config.GetPhysicalAddress(), width, height, static_cast<u32>(format));
+    }
     const u32 linear_stride = width * 4;
     const u32 required_size = linear_stride * height;
     if (required_size > StagingBufferSize) {
@@ -355,17 +358,9 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
         LOG_WARNING(Render, "Deko3D texture cache: failed to finish upload command list");
         return false;
     }
-    LOG_INFO(Render, "Texture upload drain begin");
     dkQueueFlush(state->GetQueue());
-    dkQueueWaitIdle(state->GetQueue());
-    LOG_INFO(Render, "Texture upload drain leave");
-    LOG_INFO(Render, "Texture upload submit begin");
     dkQueueSubmitCommands(state->GetQueue(), cmd_list);
-    LOG_INFO(Render, "Texture upload submit leave");
-    LOG_INFO(Render, "Texture upload wait begin");
     dkQueueWaitIdle(state->GetQueue());
-    LOG_INFO(Render, "Texture upload wait leave queue_error={}",
-             dkQueueIsInErrorState(state->GetQueue()) ? 1 : 0);
     if (dkQueueIsInErrorState(state->GetQueue())) {
         LOG_ERROR(Render, "Texture upload failed: queue entered error state");
         return false;

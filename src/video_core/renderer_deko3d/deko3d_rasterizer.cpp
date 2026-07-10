@@ -384,6 +384,9 @@ bool Rasterizer::InitializeGpuResources() {
     const u32 vertex_slice_size =
         AlignDown(VertexBufferSize / FrameSliceCount, static_cast<u32>(sizeof(HardwareVertex)));
     const u32 uniform_slice_size = AlignDown(UniformBufferSize / FrameSliceCount, 256u);
+    const u32 descriptor_slice_size =
+        AlignDown(DescriptorBufferSize / FrameSliceCount,
+                  static_cast<u32>(DK_IMAGE_DESCRIPTOR_ALIGNMENT));
     for (u32 index = 0; index < FrameSliceCount; ++index) {
         auto& slice = frame_slices[index];
         slice.command_offset = 0;
@@ -396,6 +399,10 @@ bool Rasterizer::InitializeGpuResources() {
         slice.uniform_size =
             index == FrameSliceCount - 1 ? UniformBufferSize - slice.uniform_offset
                                          : uniform_slice_size;
+        slice.descriptor_offset = index * descriptor_slice_size;
+        slice.descriptor_size =
+            index == FrameSliceCount - 1 ? DescriptorBufferSize - slice.descriptor_offset
+                                         : descriptor_slice_size;
         slice.fence = {};
         slice.fence_pending = false;
 
@@ -803,8 +810,16 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         return false;
     }
     if (color_target->cpu_dirty) {
-        LOG_INFO(Render, "Deko3D HW reject: color RT is CPU-dirty addr=0x{:08x} size={}x{}",
-                 color_key.color_address, color_key.width, color_key.height);
+        static auto s_last_cpu_dirty_reject_log = std::chrono::steady_clock::time_point{};
+        static PAddr s_last_cpu_dirty_reject_address = 0;
+        const auto now = std::chrono::steady_clock::now();
+        if (s_last_cpu_dirty_reject_address != color_key.color_address ||
+            now - s_last_cpu_dirty_reject_log >= std::chrono::seconds(1)) {
+            s_last_cpu_dirty_reject_log = now;
+            s_last_cpu_dirty_reject_address = color_key.color_address;
+            LOG_INFO(Render, "Deko3D HW reject: color RT is CPU-dirty addr=0x{:08x} size={}x{}",
+                     color_key.color_address, color_key.width, color_key.height);
+        }
         RecordTransformedBlocker(WrongRenderTarget);
         RecordFallbackReason(FallbackReason::WrongRenderTarget);
         return false;
@@ -1188,12 +1203,17 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
             return false;
         }
 
-        const std::size_t image_offset = 0;
+        const std::size_t image_offset = slice.descriptor_offset;
         constexpr std::size_t texture_count = 3;
         const std::size_t image_bytes = texture_count * sizeof(DkImageDescriptor);
         const std::size_t sampler_offset =
             Common::AlignUp(image_offset + image_bytes,
-                            static_cast<std::size_t>(DK_IMAGE_DESCRIPTOR_ALIGNMENT));
+                            static_cast<std::size_t>(DK_SAMPLER_DESCRIPTOR_ALIGNMENT));
+        const std::size_t sampler_bytes = texture_count * sizeof(DkSamplerDescriptor);
+        if (sampler_offset + sampler_bytes > slice.descriptor_offset + slice.descriptor_size) {
+            LOG_ERROR(Render, "HWdraw ABORT: descriptor slice overflow");
+            return false;
+        }
         for (std::size_t index = 0; index < texture_count; ++index) {
             const CachedTexture* texture = textures[index] ? textures[index] : fallback_texture;
             DkImageDescriptor image_descriptor{};
@@ -1251,15 +1271,8 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         return false;
     }
     FlushQueue();
-    const DkResult fence_result = dkFenceWait(&slice.fence, -1);
-    if (fence_result != DkResult_Success || QueueHasError("after slice fence wait")) {
-        LOG_ERROR(Render, "HWdraw GPU completion failed result={}", static_cast<int>(fence_result));
-        return false;
-    }
-    RecordHardwareDrawCompleted(vertex_count / 3);
-    RecordTransformedBatchCompleted(vertex_count);
-    slice.fence_pending = false;
-    slice.pending_vertices = 0;
+    slice.fence_pending = true;
+    slice.pending_vertices = vertex_count;
     state.MarkRenderTargetGpuDirty(color_target);
     RecordHardwareRasterFrame();
     RecordHardwareDrawSubmitted(vertex_count / 3);
@@ -1369,7 +1382,7 @@ void Rasterizer::FlushAll() {
 
 void Rasterizer::FlushRegion(PAddr addr, u32 size) {
 #ifdef __SWITCH__
-    state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
+    // A flush exposes GPU-owned data to memory; it does not mean the CPU changed that memory.
     texture_cache.FlushRegion(addr, size);
 #endif
     software_fallback.FlushRegion(addr, size);
