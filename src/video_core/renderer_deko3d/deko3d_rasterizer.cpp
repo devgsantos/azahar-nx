@@ -655,10 +655,9 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
     RecordFallbackReason(FallbackReason::UnsupportedState);
     return false;
 #endif
-    // Device logs show HWdraw submissions completing while both screens remain blank.
-    // Do not let the unvalidated native triangle path consume frame content until
-    // render-target readout proves it can produce visible pixels.
-    constexpr bool HardwareTrianglePathEnabled = false;
+    // The transformed-batch path is guarded below by strict state eligibility checks.
+    // Keep the compile-time kill switch above for emergency software-only builds.
+    constexpr bool HardwareTrianglePathEnabled = true;
     if (!HardwareTrianglePathEnabled) {
         RecordFallbackReason(FallbackReason::UnsupportedState);
         return false;
@@ -866,7 +865,10 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
             const auto& v0 = vertex_batch[base_vertex + 0];
             const auto& v1 = vertex_batch[base_vertex + 1];
             const auto& v2 = vertex_batch[base_vertex + 2];
-            LOG_INFO(Render, "HWdraw first tri v0=({:.3f},{:.3f},{:.3f},{:.3f}) v1=({:.3f},{:.3f},{:.3f},{:.3f}) v2=({:.3f},{:.3f},{:.3f},{:.3f})",
+            LOG_INFO(Render,
+                     "HWdraw first tri v0=({:.3f},{:.3f},{:.3f},{:.3f}) "
+                     "v1=({:.3f},{:.3f},{:.3f},{:.3f}) "
+                     "v2=({:.3f},{:.3f},{:.3f},{:.3f})",
                      v0.position[0], v0.position[1], v0.position[2], v0.position[3],
                      v1.position[0], v1.position[1], v1.position[2], v1.position[3],
                      v2.position[0], v2.position[1], v2.position[2], v2.position[3]);
@@ -919,17 +921,6 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         color_state.logicOp = *mapped_logic_op;
     }
     dkColorWriteStateSetMask(&color_write_state, 0, ColorWriteMask(regs.framebuffer));
-    LOG_INFO(Render,
-             "HWdraw pipeline: blend={} logicOp={} depthTest={} depthWrite={} depthCmp={} "
-             "stencil={} colorMask={:#x} alphablend_en={}",
-             regs.framebuffer.output_merger.alphablend_enable.Value(),
-             static_cast<u32>(color_state.logicOp),
-             depth_stencil_state.depthTestEnable,
-             depth_stencil_state.depthWriteEnable,
-             static_cast<u32>(depth_stencil_state.depthCompareOp),
-             depth_stencil_state.stencilTestEnable,
-             ColorWriteMask(regs.framebuffer),
-             regs.framebuffer.output_merger.alphablend_enable.Value());
     if (regs.framebuffer.output_merger.alphablend_enable != 0) {
         const auto blend = regs.framebuffer.output_merger.alpha_blending;
         const auto src_rgb = MapBlendFactor(blend.factor_source_rgb);
@@ -1008,30 +999,18 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
                 &vertex_state, sizeof(vertex_state));
 
     DkCmdBuf command_buffer = slice.command_buffer;
-    LOG_INFO(Render, "HWdraw A slice={} cmd_off={} cmd_sz={} vtx_off={} uni_off={} cmdbuf={}",
-             current_frame_slice == 0 ? FrameSliceCount - 1 : current_frame_slice - 1,
-             slice.command_offset, slice.command_size,
-             slice.vertex_offset, slice.uniform_offset,
-             command_buffer != nullptr);
     if (!command_buffer) {
         LOG_ERROR(Render, "HWdraw ABORT: null command_buffer for slice");
         return false;
     }
-    LOG_INFO(Render,
-             "Clearing slice cmdbuf={} cmdmem={} fence_pending={}",
-             static_cast<void*>(slice.command_buffer),
-             static_cast<void*>(slice.command_mem_block),
-             slice.fence_pending);
     dkCmdBufClear(command_buffer);
-    LOG_INFO(Render, "HWdraw C");
     const DkGpuAddr ubo_addr = uniform_gpu_addr + slice.uniform_offset;
     const u32 frag_ubo_size = AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT);
     const u32 vert_ubo_size = AlignUp(static_cast<u32>(sizeof(PicaVertexState)), DK_UNIFORM_BUF_ALIGNMENT);
     const u32 ubo_size = frag_ubo_size + vert_ubo_size;
-    LOG_INFO(Render, "HWdraw C1 ubo_addr=0x{:x} ubo_size={} uni_gpu=0x{:x} uni_off={}", ubo_addr, ubo_size, uniform_gpu_addr, slice.uniform_offset);
+    (void)ubo_size;
     dkCmdBufBindUniformBuffer(command_buffer, DkStage_Fragment, 0, ubo_addr, frag_ubo_size);
     dkCmdBufBindUniformBuffer(command_buffer, DkStage_Vertex, 0, ubo_addr + frag_ubo_size, vert_ubo_size);
-    LOG_INFO(Render, "HWdraw D");
     dkImageViewDefaults(&hw_color_view, &color_target.image);
     dkCmdBufBindRenderTarget(command_buffer, &hw_color_view, depth_target);
     if (color_target.needs_clear) {
@@ -1042,13 +1021,9 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         dkCmdBufClearDepthStencil(command_buffer, true, 1.0f, 0xff, 0);
         depth_needs_clear = false;
     }
-    LOG_INFO(Render, "HWdraw E");
     dkCmdBufSetViewports(command_buffer, 0, &viewport, 1);
-    LOG_INFO(Render, "HWdraw E1");
     dkCmdBufSetScissors(command_buffer, 0, &scissor, 1);
-    LOG_INFO(Render, "HWdraw E2");
     dkCmdBufBindShaders(command_buffer, DkStageFlag_GraphicsMask, shaders, 2);
-    LOG_INFO(Render, "HWdraw E3");
     if (texture) {
         const std::size_t image_offset = 0;
         const std::size_t sampler_offset =
@@ -1067,33 +1042,22 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         dkCmdBufBindSamplerDescriptorSet(command_buffer, descriptor_gpu_addr + sampler_offset, 1);
     }
     dkCmdBufBindRasterizerState(command_buffer, &rasterizer_state);
-    LOG_INFO(Render, "HWdraw E4");
     dkCmdBufBindMultisampleState(command_buffer, &multisample_state);
-    LOG_INFO(Render, "HWdraw E5");
     dkCmdBufBindColorState(command_buffer, &color_state);
-    LOG_INFO(Render, "HWdraw E6");
     dkCmdBufBindColorWriteState(command_buffer, &color_write_state);
-    LOG_INFO(Render, "HWdraw E7");
     dkCmdBufBindBlendState(command_buffer, 0, &blend_state);
-    LOG_INFO(Render, "HWdraw E8");
     dkCmdBufSetBlendConst(command_buffer,
                           regs.framebuffer.output_merger.blend_const.r.Value() / 255.0f,
                           regs.framebuffer.output_merger.blend_const.g.Value() / 255.0f,
                           regs.framebuffer.output_merger.blend_const.b.Value() / 255.0f,
                           regs.framebuffer.output_merger.blend_const.a.Value() / 255.0f);
-    LOG_INFO(Render, "HWdraw E9");
     dkCmdBufBindDepthStencilState(command_buffer, &depth_stencil_state);
-    LOG_INFO(Render, "HWdraw E10");
     dkCmdBufBindVtxAttribState(command_buffer, attribs,
                                sizeof(attribs) / sizeof(attribs[0]));
-    LOG_INFO(Render, "HWdraw E11");
     dkCmdBufBindVtxBufferState(command_buffer, vtx_buffer_state,
                                sizeof(vtx_buffer_state) / sizeof(vtx_buffer_state[0]));
-    LOG_INFO(Render, "HWdraw E12");
     dkCmdBufBindVtxBuffer(command_buffer, 0, vertex_gpu_addr + slice.vertex_offset,
                           static_cast<u32>(vertex_bytes));
-    LOG_INFO(Render, "HWdraw F vtx_off={} vtx_bytes={} vtx_count={}", slice.vertex_offset,
-             vertex_bytes, vertex_count);
     dkCmdBufDraw(command_buffer, DkPrimitive_Triangles, static_cast<u32>(vertex_count), 1, 0, 0);
     dkCmdBufSignalFence(command_buffer, &slice.fence, true);
 
@@ -1102,22 +1066,17 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         LOG_INFO(Render, "HWdraw F: cmdlist null");
         return false;
     }
-    LOG_INFO(Render, "HWdraw G");
     dkQueueSubmitCommands(queue, draw_cmd);
     RecordRasterQueueSubmit();
     if (QueueHasError("after draw submit")) {
         return false;
     }
-    LOG_INFO(Render, "HWdraw H");
     FlushQueue();
-    LOG_INFO(Render, "HWdraw waiting slice fence");
     const DkResult fence_result = dkFenceWait(&slice.fence, -1);
-    LOG_INFO(Render, "HWdraw slice fence result={}", static_cast<int>(fence_result));
     if (fence_result != DkResult_Success || QueueHasError("after slice fence wait")) {
         LOG_ERROR(Render, "HWdraw GPU completion failed result={}", static_cast<int>(fence_result));
         return false;
     }
-    LOG_INFO(Render, "HWdraw J");
     slice.fence_pending = false;
     slice.pending_vertices = 0;
     state.MarkRenderTargetGpuDirty(color_target);

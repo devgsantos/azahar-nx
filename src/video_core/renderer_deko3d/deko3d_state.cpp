@@ -798,12 +798,13 @@ void State::SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address) 
     selected_present_render_target = FindGpuDirtyRenderTarget(top_address);
     selected_bottom_present_render_target =
         bottom_address != 0 ? FindGpuDirtyRenderTarget(bottom_address) : nullptr;
-    LOG_INFO(Render,
-             "SelectPresentRenderTarget: top=0x{:08x} top_found={} bottom=0x{:08x} "
-             "bottom_found={} rt_count={}",
-             top_address, selected_present_render_target != nullptr, bottom_address,
-             selected_bottom_present_render_target != nullptr, render_targets.size());
-    if (!selected_present_render_target && !selected_bottom_present_render_target) {
+    if (!selected_present_render_target && !selected_bottom_present_render_target &&
+        !render_targets.empty()) {
+        LOG_INFO(Render,
+                 "SelectPresentRenderTarget: top=0x{:08x} top_found={} bottom=0x{:08x} "
+                 "bottom_found={} rt_count={}",
+                 top_address, selected_present_render_target != nullptr, bottom_address,
+                 selected_bottom_present_render_target != nullptr, render_targets.size());
         for (const auto& t : render_targets) {
             LOG_INFO(Render,
                      "  RT addr=0x{:08x} size={}x{} gpu_dirty={}",
@@ -909,7 +910,6 @@ void State::UploadScreenTextures() {
 }
 
 bool State::PresentScreenTexturesFrame() {
-    LOG_INFO(Render, "Present A");
     if (!initialized || !queue || !swapchain) {
         SetError("Deko3D present requested before initialization");
         SWITCH_TRACE_EVENT("Deko3D", "State::PresentScreenTexturesFrame", "failed_not_initialized");
@@ -918,11 +918,9 @@ bool State::PresentScreenTexturesFrame() {
 
     // Upload screen texture data first
     UploadScreenTextures();
-    LOG_INFO(Render, "Present B");
 
     // Wait for the previous present fence BEFORE acquiring, so we never block
     // acquireImage with both swapchain slots still in-flight.
-    LOG_INFO(Render, "Present B2 fence_pending={}", present_fence_pending);
     if (present_fence_pending) {
         if (QueueHasError("before present flush")) {
             return false;
@@ -957,9 +955,7 @@ bool State::PresentScreenTexturesFrame() {
         present_fence_pending = false;
     }
 
-    LOG_INFO(Render, "Present B1 acquire");
     const int slot = dkQueueAcquireImage(queue, swapchain);
-    LOG_INFO(Render, "Present B1b slot={}", slot);
     if (slot < 0 || slot >= static_cast<int>(FramebufferCount)) {
         SetError("Deko3D failed to acquire swapchain image");
         SWITCH_TRACE_EVENTF("Deko3D", "State::PresentScreenTexturesFrame", "failed_acquire",
@@ -1013,7 +1009,6 @@ bool State::PresentScreenTexturesFrame() {
     const u32 bottom_x = (frame_width - bottom_width) / 2;
     const u32 bottom_y = 320;
 
-    LOG_INFO(Render, "Present C");
     dkCmdBufClear(cmdbuf);
 
     if (!swapchain_background_initialized[slot]) {
@@ -1024,7 +1019,6 @@ bool State::PresentScreenTexturesFrame() {
 
     // Place top and bottom 3DS screens centered on Switch output.  Hardware-rasterized guest
     // render targets stay on the GPU and are blitted directly; CPU upload remains the fallback.
-    LOG_INFO(Render, "Present D cached={}", cached_present != nullptr);
     DkImageRect top_copy_dst = {top_x, top_y, 0, top_width, top_height, 1};
     if (cached_present && cached_present->gpu_dirty) {
         LOG_INFO(Render, "Present cached D1 before wait");
@@ -1082,18 +1076,13 @@ bool State::PresentScreenTexturesFrame() {
     }
 
     dkCmdBufSignalFence(cmdbuf, &present_fence, false);
-    LOG_INFO(Render, "Present E");
     const DkCmdList copy_cmd = dkCmdBufFinishList(cmdbuf);
-    LOG_INFO(Render, "Present E2 cmdlist={}", copy_cmd != 0);
     if (!copy_cmd) {
         SetError("Deko3D failed to record buffer-to-image copy command");
         return false;
     }
 
-    LOG_INFO(Render, "Present F");
-    LOG_INFO(Render, "Present cached submit begin");
     dkQueueSubmitCommands(queue, copy_cmd);
-    LOG_INFO(Render, "Present cached submit leave");
     RecordPresentQueueSubmit();
     if (QueueHasError("after present copy submit")) {
         return false;
@@ -1108,7 +1097,6 @@ bool State::PresentScreenTexturesFrame() {
     if (QueueHasError("after present image")) {
         return false;
     }
-    LOG_INFO(Render, "Present G");
     return true;
 }
 #endif

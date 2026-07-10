@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "common/color.h"
 #include "common/logging/log.h"
 #include "common/switch_trace.h"
 #include "core/core.h"
@@ -41,16 +42,16 @@ bool HasAnyVisiblePixel(const u8* rgba, u32 width, u32 height) {
     return false;
 }
 
-bool HasAnyNonZeroSourceByte(const u8* src, u32 width, u32 height, u32 stride) {
+bool HasAnyNonZeroSourceByte(const u8* src, u32 width, u32 height, u32 stride, u32 bpp) {
     if (!src || width == 0 || height == 0 || stride == 0) {
         return false;
     }
 
     const u32 rows = std::min(height, 64u);
-    const u32 bytes_per_row = std::min(stride, 2048u);
+    const u32 bytes_per_row = std::min({stride, width * bpp, 2048u});
     for (u32 y = 0; y < rows; y += 4) {
         const u8* const row = src + static_cast<std::size_t>(y) * stride;
-        for (u32 x = 0; x < bytes_per_row; x += 4) {
+        for (u32 x = 0; x < bytes_per_row; ++x) {
             if (row[x] != 0) {
                 return true;
             }
@@ -59,64 +60,56 @@ bool HasAnyNonZeroSourceByte(const u8* src, u32 width, u32 height, u32 stride) {
     return false;
 }
 
-u32 EstimateBytesPerPixel(u32 width, u32 stride) {
-    if (width == 0) {
-        return 0;
-    }
-    const u32 bpp = stride / width;
-    if (bpp == 2 || bpp == 3 || bpp == 4) {
-        return bpp;
-    }
-    return 4;
-}
-
-void DecodePixelToRgba(const u8* src, u32 bpp, u8* dst) {
-    switch (bpp) {
-    case 2: {
-        const u16 value = static_cast<u16>(src[0] | (static_cast<u16>(src[1]) << 8));
-        const u8 r5 = static_cast<u8>((value >> 11) & 0x1F);
-        const u8 g6 = static_cast<u8>((value >> 5) & 0x3F);
-        const u8 b5 = static_cast<u8>(value & 0x1F);
-        dst[0] = static_cast<u8>((r5 * 255) / 31);
-        dst[1] = static_cast<u8>((g6 * 255) / 63);
-        dst[2] = static_cast<u8>((b5 * 255) / 31);
-        dst[3] = 255;
+void DecodePixelToRgba(const u8* src, Pica::PixelFormat format, u8* dst) {
+    Common::Vec4<u8> color;
+    switch (format) {
+    case Pica::PixelFormat::RGBA8:
+        color = Common::Color::DecodeRGBA8(src);
+        break;
+    case Pica::PixelFormat::RGB8:
+        color = Common::Color::DecodeRGB8(src);
+        break;
+    case Pica::PixelFormat::RGB565:
+        color = Common::Color::DecodeRGB565(src);
+        break;
+    case Pica::PixelFormat::RGB5A1:
+        color = Common::Color::DecodeRGB5A1(src);
+        break;
+    case Pica::PixelFormat::RGBA4:
+        color = Common::Color::DecodeRGBA4(src);
         break;
     }
-    case 3:
-        dst[0] = src[0];
-        dst[1] = src[1];
-        dst[2] = src[2];
-        dst[3] = 255;
-        break;
-    case 4:
-    default:
-        dst[0] = src[0];
-        dst[1] = src[1];
-        dst[2] = src[2];
-        dst[3] = src[3];
-        break;
-    }
+    std::memcpy(dst, color.AsArray(), sizeof(color));
 }
 
 void ConvertRotateToRgba8888(const u8* src, u8* dst, u32 src_width, u32 src_height, u32 src_stride,
-                             u32 dst_width, u32 dst_height) {
+                             Pica::PixelFormat format, u32 dst_width, u32 dst_height) {
     if (!src || !dst || src_width == 0 || src_height == 0 || src_stride == 0) {
         return;
     }
 
-    const u32 bpp = EstimateBytesPerPixel(src_width, src_stride);
-    const u32 max_x = std::min(src_width, dst_height);
+    const u32 bpp = Pica::BytesPerPixel(format);
+    if (bpp == 0) {
+        return;
+    }
+    const u32 pixel_stride = src_stride / bpp;
+    if (pixel_stride == 0) {
+        return;
+    }
+
+    const u32 max_x = std::min({src_width, pixel_stride, dst_height});
     const u32 max_y = std::min(src_height, dst_width);
 
-    // Rotate counter-clockwise: source portrait buffers become landscape output.
-    for (u32 sy = 0; sy < max_y; ++sy) {
-        for (u32 sx = 0; sx < max_x; ++sx) {
-            const u32 dx = sy;
-            const u32 dy = dst_height - 1 - sx;
-            const u8* const src_px = src + (sy * src_stride) + (sx * bpp);
+    // Match RendererSoftware::LoadFBToScreenInfo: 3DS LCD buffers are sideways and
+    // addressed with a reversed source column.
+    for (u32 y = 0; y < max_y; ++y) {
+        for (u32 x = 0; x < max_x; ++x) {
+            const u8* const src_px =
+                src + static_cast<std::size_t>(y * pixel_stride + pixel_stride - x - 1) * bpp;
+            const u32 dx = y;
+            const u32 dy = x;
             u8* const dst_px = dst + ((dy * dst_width + dx) * 4);
-            DecodePixelToRgba(src_px, bpp, dst_px);
+            DecodePixelToRgba(src_px, format, dst_px);
         }
     }
 }
@@ -143,9 +136,11 @@ bool Presenter::PresentFrame() {
     u32 top_width_dbg = 0;
     u32 top_height_dbg = 0;
     u32 top_stride_dbg = 0;
+    u32 top_bpp_dbg = 0;
     u32 bottom_width_dbg = 0;
     u32 bottom_height_dbg = 0;
     u32 bottom_stride_dbg = 0;
+    u32 bottom_bpp_dbg = 0;
     PresentSource source = PresentSource::Unknown;
     try {
         auto& pica_core = system.GPU().PicaCore();
@@ -197,11 +192,12 @@ bool Presenter::PresentFrame() {
             top_width_dbg = width;
             top_height_dbg = height;
             top_stride_dbg = stride;
+            top_bpp_dbg = Pica::BytesPerPixel(fb0.color_format);
             u8* fb0_ptr = memory.GetPhysicalPointer(fb0_addr);
-            top_source_nonzero = HasAnyNonZeroSourceByte(fb0_ptr, width, height, stride);
+            top_source_nonzero = HasAnyNonZeroSourceByte(fb0_ptr, width, height, stride, top_bpp_dbg);
             if (fb0_ptr && width > 0 && height > 0 && stride > 0) {
                 ConvertRotateToRgba8888(fb0_ptr, screen_buffer, width, height, stride,
-                                        TopScreenWidth, TopScreenHeight);
+                                        fb0.color_format, TopScreenWidth, TopScreenHeight);
             } else {
                 ClearRgba8888(screen_buffer, TopScreenWidth, TopScreenHeight);
             }
@@ -217,13 +213,15 @@ bool Presenter::PresentFrame() {
             bottom_width_dbg = width;
             bottom_height_dbg = height;
             bottom_stride_dbg = stride;
+            bottom_bpp_dbg = Pica::BytesPerPixel(fb1.color_format);
             u8* fb1_ptr = memory.GetPhysicalPointer(fb1_addr);
-            bottom_source_nonzero = HasAnyNonZeroSourceByte(fb1_ptr, width, height, stride);
+            bottom_source_nonzero =
+                HasAnyNonZeroSourceByte(fb1_ptr, width, height, stride, bottom_bpp_dbg);
             const u32 top_size = TopScreenWidth * TopScreenHeight * BytesPerPixel;
             if (fb1_ptr && width > 0 && height > 0 && stride > 0) {
                 u8* const bottom_buffer = screen_buffer + top_size;
                 ConvertRotateToRgba8888(fb1_ptr, bottom_buffer, width, height, stride,
-                                        BottomScreenWidth, BottomScreenHeight);
+                                        fb1.color_format, BottomScreenWidth, BottomScreenHeight);
             } else {
                 ClearRgba8888(screen_buffer + top_size, BottomScreenWidth, BottomScreenHeight);
             }
@@ -247,11 +245,10 @@ bool Presenter::PresentFrame() {
                      "fb0=0x{:08x} {}x{} stride={} bpp={} src_nonzero={} rgba_visible={} "
                      "fb1=0x{:08x} {}x{} stride={} bpp={} src_nonzero={} rgba_visible={}",
                      frame_counter, blank_top_frames, blank_bottom_frames, fb0_addr,
-                     top_width_dbg, top_height_dbg, top_stride_dbg,
-                     EstimateBytesPerPixel(top_width_dbg, top_stride_dbg), top_source_nonzero,
-                     top_has_pixels, fb1_addr, bottom_width_dbg, bottom_height_dbg,
-                     bottom_stride_dbg, EstimateBytesPerPixel(bottom_width_dbg, bottom_stride_dbg),
-                     bottom_source_nonzero, bottom_has_pixels);
+                     top_width_dbg, top_height_dbg, top_stride_dbg, top_bpp_dbg,
+                     top_source_nonzero, top_has_pixels, fb1_addr, bottom_width_dbg,
+                     bottom_height_dbg, bottom_stride_dbg, bottom_bpp_dbg, bottom_source_nonzero,
+                     bottom_has_pixels);
         }
 
     } catch (const std::exception& e) {
