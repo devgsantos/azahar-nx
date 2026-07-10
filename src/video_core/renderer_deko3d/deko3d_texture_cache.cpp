@@ -196,7 +196,7 @@ bool TextureCache::AllocateTexture(CachedTexture& cached, u32 width, u32 height,
     DkImageLayoutMaker layout_maker;
     dkImageLayoutMakerDefaults(&layout_maker, device);
     layout_maker.type = DkImageType_2D;
-    layout_maker.flags = DkImageFlags_Usage2DEngine;
+    layout_maker.flags = DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine;
     layout_maker.format = *mapped_format;
     layout_maker.dimensions[0] = width;
     layout_maker.dimensions[1] = height;
@@ -295,6 +295,10 @@ void TextureCache::UploadTexture(CachedTexture& cached,
         LOG_WARNING(Render, "Deko3D texture cache: failed to finish upload command list");
         return;
     }
+    LOG_INFO(Render, "Texture upload drain begin");
+    dkQueueFlush(state->GetQueue());
+    dkQueueWaitIdle(state->GetQueue());
+    LOG_INFO(Render, "Texture upload drain leave");
     LOG_INFO(Render, "Texture upload submit begin");
     dkQueueSubmitCommands(state->GetQueue(), cmd_list);
     LOG_INFO(Render, "Texture upload submit leave");

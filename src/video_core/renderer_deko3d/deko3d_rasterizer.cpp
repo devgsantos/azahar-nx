@@ -146,6 +146,15 @@ struct alignas(16) PicaFragmentState {
 
 static_assert(sizeof(PicaFragmentState) == 16, "PicaFragmentState must match std140 layout");
 
+struct alignas(16) PicaVertexState {
+    s32 flip_viewport;
+    s32 pad0;
+    s32 pad1;
+    s32 pad2;
+};
+
+static_assert(sizeof(PicaVertexState) == 16, "PicaVertexState must match std140 layout");
+
 static std::optional<DkLogicOp> MapLogicOp(Pica::FramebufferRegs::LogicOp op) {
     using LogicOp = Pica::FramebufferRegs::LogicOp;
     switch (op) {
@@ -664,14 +673,9 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
                 ++enabled_count;
             }
         }
-        if (enabled_count != 0) {
-            LOG_INFO(Render,
-                     "Deko3D diagnostic: textured batch forced to software fallback textures={}",
-                     enabled_count);
-            RecordFallbackReason(FallbackReason::TexturesEnabled);
-            return false;
+        if (enabled_count == 1) {
+            cached_texture = texture_cache.GetTexture(textures[enabled_texture_index]);
         }
-        (void)enabled_texture_index;
     }
 
     const bool use_texture = cached_texture != nullptr;
@@ -957,6 +961,15 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     };
     std::memcpy(static_cast<u8*>(uniform_cpu_buffer) + slice.uniform_offset, &fragment_state,
                 sizeof(fragment_state));
+    const u32 frag_aligned = AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT);
+    PicaVertexState vertex_state{
+        .flip_viewport = regs.framebuffer.framebuffer.IsFlipped() ? 1 : 0,
+        .pad0 = 0,
+        .pad1 = 0,
+        .pad2 = 0,
+    };
+    std::memcpy(static_cast<u8*>(uniform_cpu_buffer) + slice.uniform_offset + frag_aligned,
+                &vertex_state, sizeof(vertex_state));
 
     DkCmdBuf command_buffer = slice.command_buffer;
     LOG_INFO(Render, "HWdraw A slice={} cmd_off={} cmd_sz={} vtx_off={} uni_off={} cmdbuf={}",
@@ -976,9 +989,12 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     dkCmdBufClear(command_buffer);
     LOG_INFO(Render, "HWdraw C");
     const DkGpuAddr ubo_addr = uniform_gpu_addr + slice.uniform_offset;
-    const u32 ubo_size = AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT);
+    const u32 frag_ubo_size = AlignUp(static_cast<u32>(sizeof(PicaFragmentState)), DK_UNIFORM_BUF_ALIGNMENT);
+    const u32 vert_ubo_size = AlignUp(static_cast<u32>(sizeof(PicaVertexState)), DK_UNIFORM_BUF_ALIGNMENT);
+    const u32 ubo_size = frag_ubo_size + vert_ubo_size;
     LOG_INFO(Render, "HWdraw C1 ubo_addr=0x{:x} ubo_size={} uni_gpu=0x{:x} uni_off={}", ubo_addr, ubo_size, uniform_gpu_addr, slice.uniform_offset);
-    dkCmdBufBindUniformBuffer(command_buffer, DkStage_Fragment, 0, ubo_addr, ubo_size);
+    dkCmdBufBindUniformBuffer(command_buffer, DkStage_Fragment, 0, ubo_addr, frag_ubo_size);
+    dkCmdBufBindUniformBuffer(command_buffer, DkStage_Vertex, 0, ubo_addr + frag_ubo_size, vert_ubo_size);
     LOG_INFO(Render, "HWdraw D");
     dkImageViewDefaults(&hw_color_view, &color_target.image);
     dkCmdBufBindRenderTarget(command_buffer, &hw_color_view, depth_target);
