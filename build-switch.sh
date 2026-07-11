@@ -26,6 +26,10 @@ SWITCH_TRACE_ENABLED="${SWITCH_TRACE_ENABLED:-OFF}"
 # began executing with this mode enabled, so stable builds retain the full libnx executable
 # transition. Enable it only for isolated hardware diagnostics.
 JIT_PARTIAL_PUBLISH="${JIT_PARTIAL_PUBLISH:-OFF}"
+# Each full libnx CodeMemory publication flushes the complete 8 MiB JIT allocation. Dynarmic's
+# consolidated mode combines block emission and block-link updates into one safe publication,
+# reducing duplicate full-cache maintenance while preserving the known-good full publish path.
+JIT_CONSOLIDATED_PUBLISH="${JIT_CONSOLIDATED_PUBLISH:-ON}"
 
 cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
@@ -43,6 +47,7 @@ cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DAZAHAR_SWITCH_PERF_DIAGNOSTICS="$SWITCH_PERF_DIAGNOSTICS" \
     -DAZAHAR_SWITCH_TRACE_ENABLED="$SWITCH_TRACE_ENABLED" \
     -DAZAHAR_SWITCH_JIT_PARTIAL_PUBLISH="$JIT_PARTIAL_PUBLISH" \
+    -DAZAHAR_SWITCH_JIT_CONSOLIDATED_PUBLISH="$JIT_CONSOLIDATED_PUBLISH" \
     "$@"
 
 cmake --build "$BUILD_DIR" --target azahar_switch -- -j"$JOBS"
