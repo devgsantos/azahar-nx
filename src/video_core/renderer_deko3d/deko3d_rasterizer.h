@@ -37,10 +37,7 @@ class TextureCache;
 #ifdef __SWITCH__
 namespace AsyncRaster {
 
-// SubmitHardwareChunk already owns a three-entry command/vertex/uniform ring. Main waited for every
-// fence immediately after submission, making that ring ineffective. A negative timeout is the one
-// immediate completion wait in that path; defer it and let WaitForFrameSlice synchronize only when
-// the corresponding ring entry is reused.
+// Defer the immediate post-submit wait and synchronize only when an in-flight ring entry is reused.
 inline thread_local bool defer_next_fence_clear = false;
 
 inline DkResult FenceWait(DkFence* fence, s64 timeout) {
@@ -74,8 +71,6 @@ private:
     bool pending = false;
 };
 
-// Descriptor memory was the only per-draw resource not divided into ring slots. Keep descriptors in
-// lockstep with command submissions so asynchronous draws never observe data from a later draw.
 class DescriptorCpuBuffer {
 public:
     DescriptorCpuBuffer() = default;
@@ -172,7 +167,6 @@ public:
     bool Initialize();
     void Shutdown();
 
-    // Keep the compatibility fallback coherent until native Deko3D draw submission is wired.
     void AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVertex& v1,
                      const Pica::OutputVertex& v2) override;
     void DrawTriangles() override;
@@ -186,11 +180,11 @@ public:
 
 private:
 #ifdef __SWITCH__
-    static constexpr u32 FrameSliceCount = 3;
+    static constexpr u32 FrameSliceCount = 8;
     static constexpr u32 RasterCommandMemorySize = 64 * 1024;
-    static constexpr u32 VertexBufferSize = 1024 * 1024;
-    static constexpr u32 UniformBufferSize = 192 * 1024;
-    static constexpr u32 DescriptorBufferSize = 64 * 1024;
+    static constexpr u32 VertexBufferSize = 3 * 1024 * 1024;
+    static constexpr u32 UniformBufferSize = 512 * 1024;
+    static constexpr u32 DescriptorBufferSize = 128 * 1024;
 
     struct FrameSlice {
         DkCmdBuf command_buffer{};
@@ -314,52 +308,4 @@ private:
 #ifdef __SWITCH__
 #define dkFenceWait(fence, timeout)                                                               \
     ::VideoCore::Deko3D::AsyncRaster::FenceWait((fence), (timeout))
-
-#if !defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS)
-#define RecordHardwareDrawSubmitted(...) ((void)0)
-#define RecordHardwareDrawCompleted(...) ((void)0)
-#define RecordHardwareDrawAttempt(...) ((void)0)
-#define RecordHardwareDrawFailure(...) ((void)0)
-#define RecordSoftwareFallback(...) ((void)0)
-#define RecordRingWait(...) ((void)0)
-#define RecordFencePollSuccess(...) ((void)0)
-#define RecordFenceWait(...) ((void)0)
-#define RecordFenceWaitDurationMs(...) ((void)0)
-#define RecordFenceTimeout(...) ((void)0)
-#define RecordQueueError(...) ((void)0)
-#define RecordQueueFlush(...) ((void)0)
-#define RecordFallbackReason(...) ((void)0)
-#define RecordRasterQueueSubmit(...) ((void)0)
-#define RecordRasterQueueFlush(...) ((void)0)
-#define RecordRasterFencePoll(...) ((void)0)
-#define RecordRasterFencePollSuccess(...) ((void)0)
-#define RecordRasterFenceWait(...) ((void)0)
-#define RecordRasterFenceTimeout(...) ((void)0)
-#define RecordRasterFenceWaitDurationUs(...) ((void)0)
-#define RecordRasterQueueError(...) ((void)0)
-#define RecordTransformedBatchCheck(...) ((void)0)
-#define RecordTransformedBatchEligible(...) ((void)0)
-#define RecordTransformedBatchSubmitted(...) ((void)0)
-#define RecordTransformedBatchCompleted(...) ((void)0)
-#define RecordDirectBatchRejected(...) ((void)0)
-#define RecordFallbackInvalidTransformedBatch(...) ((void)0)
-#define RecordBlocker(...) ((void)0)
-#define RecordTransformedBlocker(...) ((void)0)
-#define RecordDirectBlocker(...) ((void)0)
-#define RecordRenderTargetCacheHit(...) ((void)0)
-#define RecordRenderTargetCacheMiss(...) ((void)0)
-#define RecordRenderTargetCacheCreation(...) ((void)0)
-#define RecordRenderTargetCacheEviction(...) ((void)0)
-#define RecordRenderTargetGpuDirty(...) ((void)0)
-#define RecordRenderTargetCpuDirty(...) ((void)0)
-#define RecordBlendState(...) ((void)0)
-#define RecordDepthState(...) ((void)0)
-#define RecordStateSignature(...) ((void)0)
-#define RecordPartialBatch(...) ((void)0)
-#define RecordDuplicateTrianglePrevention(...) ((void)0)
-#define RecordDroppedTriangleDetection(...) ((void)0)
-#define RecordHardwareRasterFrame(...) ((void)0)
-#define RecordSoftwareRasterFrame(...) ((void)0)
-#define RecordTransferOnlyFrame(...) ((void)0)
-#endif
 #endif
