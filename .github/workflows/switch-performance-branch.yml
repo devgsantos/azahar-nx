@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/gpt-performance-improvements-v1
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -29,6 +32,7 @@ jobs:
           DEKO3D_VERBOSE_TELEMETRY: OFF
           SWITCH_PERF_DIAGNOSTICS: OFF
           SWITCH_TRACE_ENABLED: OFF
+          JIT_PARTIAL_PUBLISH: ON
         run: ./build-switch.sh
 
       - name: Upload Switch binaries
