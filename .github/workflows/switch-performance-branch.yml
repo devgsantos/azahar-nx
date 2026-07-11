@@ -9,6 +9,10 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: switch-performance-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
