@@ -4,6 +4,7 @@
 #include "video_core/renderer_deko3d/deko3d_texture_cache.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <limits>
 
@@ -22,10 +23,10 @@ namespace VideoCore::Deko3D {
 #ifdef __SWITCH__
 namespace {
 
-constexpr u32 StagingBufferSize = 8 * 1024 * 1024; // 8 MiB scratch for uploads
-constexpr u32 UploadCommandSize = 16 * 1024;
+constexpr u32 StagingBufferSize = 8 * 1024 * 1024;
 constexpr u32 TextureTileWidth = 8;
 constexpr u32 TextureTileHeight = 8;
+constexpr s64 UploadFenceTimeoutNs = 1'000'000'000LL;
 
 u32 AlignUp(u32 value, u32 alignment) {
     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
@@ -107,6 +108,8 @@ DkFilter MapFilter(Pica::TexturingRegs::TextureConfig::TextureFilter filter) {
 bool TextureCache::Initialize(State& state_, Memory::MemorySystem& memory_) {
     SWITCH_TRACE_EVENT("Deko3D", "TextureCache::Initialize", "enter");
 #ifdef __SWITCH__
+    static_assert(StagingBufferSize == UploadSlotCount * UploadStagingSliceSize);
+
     state = &state_;
     memory = &memory_;
     device = state_.GetDevice();
@@ -125,29 +128,42 @@ bool TextureCache::Initialize(State& state_, Memory::MemorySystem& memory_) {
     }
     staging_gpu_addr = dkMemBlockGetGpuAddr(staging_mem_block);
     staging_cpu_addr = dkMemBlockGetCpuAddr(staging_mem_block);
-
-    DkMemBlockMaker cmd_maker;
-    dkMemBlockMakerDefaults(&cmd_maker, device, UploadCommandSize);
-    cmd_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
-    upload_command_mem_block = dkMemBlockCreate(&cmd_maker);
-    if (!upload_command_mem_block) {
-        LOG_ERROR(Render, "Deko3D texture cache upload command buffer allocation failed");
+    if (!staging_cpu_addr || staging_gpu_addr == 0) {
+        LOG_ERROR(Render, "Deko3D texture cache staging buffer mapping failed");
+        Shutdown();
         return false;
     }
 
-    DkCmdBufMaker cmd_buf_maker;
-    dkCmdBufMakerDefaults(&cmd_buf_maker, device);
-    upload_command_buffer = dkCmdBufCreate(&cmd_buf_maker);
-    if (!upload_command_buffer) {
-        LOG_ERROR(Render, "Deko3D texture cache upload command buffer creation failed");
-        return false;
+    for (u32 index = 0; index < UploadSlotCount; ++index) {
+        auto& slot = upload_slots[index];
+        slot.staging_offset = index * UploadStagingSliceSize;
+
+        DkMemBlockMaker command_maker;
+        dkMemBlockMakerDefaults(&command_maker, device, UploadCommandSize);
+        command_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+        slot.command_mem_block = dkMemBlockCreate(&command_maker);
+        if (!slot.command_mem_block) {
+            LOG_ERROR(Render, "Deko3D texture upload command memory allocation failed for slot {}",
+                      index);
+            Shutdown();
+            return false;
+        }
+
+        DkCmdBufMaker command_buffer_maker;
+        dkCmdBufMakerDefaults(&command_buffer_maker, device);
+        slot.command_buffer = dkCmdBufCreate(&command_buffer_maker);
+        if (!slot.command_buffer) {
+            LOG_ERROR(Render, "Deko3D texture upload command buffer creation failed for slot {}",
+                      index);
+            Shutdown();
+            return false;
+        }
+        dkCmdBufAddMemory(slot.command_buffer, slot.command_mem_block, 0, UploadCommandSize);
     }
-    dkCmdBufAddMemory(upload_command_buffer, upload_command_mem_block, 0, UploadCommandSize);
 
     LOG_INFO(Render,
-             "Deko3D texture cache initialized with {} bytes of staging memory and {} bytes of "
-             "upload command memory",
-             StagingBufferSize, UploadCommandSize);
+             "Deko3D texture cache initialized with {} upload slots and {} bytes of staging memory",
+             UploadSlotCount, StagingBufferSize);
 #else
     (void)state_;
     (void)memory_;
@@ -163,25 +179,42 @@ TextureCache::~TextureCache() {
 
 void TextureCache::Shutdown() {
 #ifdef __SWITCH__
+    const bool uploads_pending = std::any_of(upload_slots.begin(), upload_slots.end(),
+                                             [](const UploadSlot& slot) {
+                                                 return slot.fence_pending;
+                                             });
+    if (uploads_pending && state) {
+        state->WaitIdle();
+    }
+    for (auto& slot : upload_slots) {
+        slot.fence_pending = false;
+    }
+
     for (auto& [key, cached] : cache) {
         DestroyTexture(*cached);
     }
     cache.clear();
 
-    if (upload_command_buffer) {
-        dkCmdBufDestroy(upload_command_buffer);
-        upload_command_buffer = nullptr;
+    for (auto& slot : upload_slots) {
+        if (slot.command_buffer) {
+            dkCmdBufDestroy(slot.command_buffer);
+            slot.command_buffer = nullptr;
+        }
+        if (slot.command_mem_block) {
+            dkMemBlockDestroy(slot.command_mem_block);
+            slot.command_mem_block = nullptr;
+        }
+        slot = {};
     }
-    if (upload_command_mem_block) {
-        dkMemBlockDestroy(upload_command_mem_block);
-        upload_command_mem_block = nullptr;
-    }
+
     if (staging_mem_block) {
         dkMemBlockDestroy(staging_mem_block);
         staging_mem_block = nullptr;
     }
     staging_gpu_addr = 0;
     staging_cpu_addr = nullptr;
+    current_upload_slot = 0;
+    next_upload_serial = 0;
     device = nullptr;
     state = nullptr;
     memory = nullptr;
@@ -198,7 +231,6 @@ const CachedTexture* TextureCache::GetTexture(
         return nullptr;
     }
 
-    // Only accelerate 2D textures for now.
     if (config.config.type != Pica::TexturingRegs::TextureConfig::Texture2D) {
         return nullptr;
     }
@@ -250,7 +282,6 @@ bool TextureCache::AllocateTexture(CachedTexture& cached, u32 width, u32 height,
     layout_maker.format = *mapped_format;
     layout_maker.dimensions[0] = width;
     layout_maker.dimensions[1] = height;
-    // Work around a hardware quirk with very short textures (see deko3d issue #10).
     if (height <= 8) {
         layout_maker.flags |= DkImageFlags_CustomTileSize;
         layout_maker.tileSize = DkTileSize_OneGob;
@@ -278,24 +309,59 @@ bool TextureCache::AllocateTexture(CachedTexture& cached, u32 width, u32 height,
     return true;
 }
 
+bool TextureCache::WaitForUploadSlot(UploadSlot& slot) {
+    if (!slot.fence_pending) {
+        return true;
+    }
+
+    const DkResult poll_result = dkFenceWait(&slot.fence, 0);
+    if (poll_result != DkResult_Success) {
+        const auto wait_start = std::chrono::steady_clock::now();
+        const DkResult wait_result = dkFenceWait(&slot.fence, UploadFenceTimeoutNs);
+        const auto wait_end = std::chrono::steady_clock::now();
+        if (wait_result != DkResult_Success) {
+            const auto wait_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(wait_end - wait_start).count();
+            LOG_ERROR(Render, "Deko3D texture upload fence wait failed result={} wait_ms={}",
+                      static_cast<int>(wait_result), wait_ms);
+            return false;
+        }
+    }
+
+    slot.fence_pending = false;
+    return true;
+}
+
+bool TextureCache::WaitForTextureUpload(CachedTexture& cached) {
+    if (cached.upload_slot >= UploadSlotCount || cached.upload_serial == 0) {
+        return true;
+    }
+
+    auto& slot = upload_slots[cached.upload_slot];
+    if (slot.serial == cached.upload_serial && slot.fence_pending && !WaitForUploadSlot(slot)) {
+        return false;
+    }
+
+    cached.upload_slot = 0xFFFFFFFFu;
+    cached.upload_serial = 0;
+    return true;
+}
+
 bool TextureCache::UploadTexture(CachedTexture& cached,
                                  const Pica::TexturingRegs::TextureConfig& config,
                                  Pica::TexturingRegs::TextureFormat format) {
-    if (!memory) {
+    if (!memory || !state) {
         return false;
     }
 
     const u32 width = config.width;
     const u32 height = config.height;
-    LOG_INFO(Render, "Texture upload begin addr=0x{:08x} size={}x{} format={}",
-             config.GetPhysicalAddress(), width, height, static_cast<u32>(format));
-    const u32 linear_stride = width * 4;
-    const u32 required_size = linear_stride * height;
-    if (required_size > StagingBufferSize) {
+    const u32 required_size = width * height * 4;
+    if (required_size > UploadStagingSliceSize) {
         LOG_WARNING(Render,
                     "Deko3D texture cache: skipping upload of {}x{} texture ({} bytes needed, "
-                    "{} available)",
-                    width, height, required_size, StagingBufferSize);
+                    "{} available per asynchronous slot)",
+                    width, height, required_size, UploadStagingSliceSize);
         return false;
     }
 
@@ -306,17 +372,22 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
         return false;
     }
 
+    const u32 slot_index = current_upload_slot;
+    current_upload_slot = (current_upload_slot + 1) % UploadSlotCount;
+    auto& upload_slot = upload_slots[slot_index];
+    if (!WaitForUploadSlot(upload_slot)) {
+        return false;
+    }
+
     const auto info = Pica::Texture::TextureInfo::FromPicaRegister(config, format);
-    auto* const staging_pixels = static_cast<u8*>(staging_cpu_addr);
+    auto* const staging_pixels =
+        static_cast<u8*>(staging_cpu_addr) + upload_slot.staging_offset;
     const std::size_t tile_size = Pica::Texture::CalculateTileSize(format);
     const u32 tiles_x = std::max(1u, (width + TextureTileWidth - 1) / TextureTileWidth);
     const u32 tiles_y = std::max(1u, (height + TextureTileHeight - 1) / TextureTileHeight);
     const std::size_t tile_row_stride =
         info.stride > 0 ? static_cast<std::size_t>(info.stride) : tile_size * tiles_x;
 
-    // Decode in the same 8x8 layout used by PICA. Compared with LookupTexture per pixel, this
-    // computes the coarse tile address once for 64 texels and leaves only the format/Morton lookup
-    // in the inner loop. Destination rows remain vertically flipped for Deko3D images.
     for (u32 tile_y = 0; tile_y < tiles_y; ++tile_y) {
         const u8* const tile_row = texture_data + static_cast<std::size_t>(tile_y) * tile_row_stride;
         for (u32 tile_x = 0; tile_x < tiles_x; ++tile_x) {
@@ -345,28 +416,12 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
         }
     }
 
-#if defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS) || defined(AZAHAR_DEKO3D_VERBOSE_TELEMETRY)
-    static bool s_logged_first_texture_samples = false;
-    if (!s_logged_first_texture_samples) {
-        s_logged_first_texture_samples = true;
-        const auto sample_tl = Pica::Texture::LookupTexture(texture_data, 0, height - 1, info);
-        const auto sample_center =
-            Pica::Texture::LookupTexture(texture_data, width / 2, height / 2, info);
-        const auto sample_br = Pica::Texture::LookupTexture(texture_data, width - 1, 0, info);
-        LOG_INFO(Render,
-                 "Deko3D first texture decoded samples format={} tl=({},{},{},{}) "
-                 "center=({},{},{},{}) br=({},{},{},{})",
-                 static_cast<u32>(format), sample_tl.r(), sample_tl.g(), sample_tl.b(),
-                 sample_tl.a(), sample_center.r(), sample_center.g(), sample_center.b(),
-                 sample_center.a(), sample_br.r(), sample_br.g(), sample_br.b(), sample_br.a());
-    }
-#endif
-
-    dkCmdBufClear(upload_command_buffer);
-    dkCmdBufAddMemory(upload_command_buffer, upload_command_mem_block, 0, UploadCommandSize);
+    DkCmdBuf command_buffer = upload_slot.command_buffer;
+    dkCmdBufClear(command_buffer);
+    dkCmdBufAddMemory(command_buffer, upload_slot.command_mem_block, 0, UploadCommandSize);
 
     DkCopyBuf copy_buf{};
-    copy_buf.addr = staging_gpu_addr;
+    copy_buf.addr = staging_gpu_addr + upload_slot.staging_offset;
     copy_buf.rowLength = 0;
     copy_buf.imageHeight = 0;
 
@@ -378,32 +433,42 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
     dst_rect.height = height;
     dst_rect.depth = 1;
 
-    dkCmdBufCopyBufferToImage(upload_command_buffer, &copy_buf, &cached.view, &dst_rect, 0);
+    dkCmdBufCopyBufferToImage(command_buffer, &copy_buf, &cached.view, &dst_rect, 0);
+    dkCmdBufSignalFence(command_buffer, &upload_slot.fence, true);
 
-    const DkCmdList cmd_list = dkCmdBufFinishList(upload_command_buffer);
-    if (!cmd_list) {
+    const DkCmdList command_list = dkCmdBufFinishList(command_buffer);
+    if (!command_list) {
         LOG_WARNING(Render, "Deko3D texture cache: failed to finish upload command list");
         return false;
     }
-    LOG_INFO(Render, "Texture upload drain begin");
+
+    upload_slot.serial = ++next_upload_serial;
+    if (upload_slot.serial == 0) {
+        upload_slot.serial = ++next_upload_serial;
+    }
+    upload_slot.fence_pending = true;
+    cached.upload_slot = slot_index;
+    cached.upload_serial = upload_slot.serial;
+
+    dkQueueSubmitCommands(state->GetQueue(), command_list);
     dkQueueFlush(state->GetQueue());
-    dkQueueWaitIdle(state->GetQueue());
-    LOG_INFO(Render, "Texture upload drain leave");
-    LOG_INFO(Render, "Texture upload submit begin");
-    dkQueueSubmitCommands(state->GetQueue(), cmd_list);
-    LOG_INFO(Render, "Texture upload submit leave");
-    LOG_INFO(Render, "Texture upload wait begin");
-    dkQueueWaitIdle(state->GetQueue());
-    LOG_INFO(Render, "Texture upload wait leave queue_error={}",
-             dkQueueIsInErrorState(state->GetQueue()) ? 1 : 0);
     if (dkQueueIsInErrorState(state->GetQueue())) {
-        LOG_ERROR(Render, "Texture upload failed: queue entered error state");
+        LOG_ERROR(Render, "Deko3D texture upload failed: queue entered error state");
         return false;
     }
     return true;
 }
 
 void TextureCache::DestroyTexture(CachedTexture& cached) {
+    if (!WaitForTextureUpload(cached)) {
+        if (state) {
+            state->WaitIdle();
+        }
+        for (auto& slot : upload_slots) {
+            slot.fence_pending = false;
+        }
+    }
+
     cached.view = {};
     cached.image = {};
     if (cached.mem_block) {
@@ -444,7 +509,6 @@ std::optional<DkImageFormat> TextureCache::MapTextureFormat(
     case Pica::TexturingRegs::TextureFormat::A4:
     case Pica::TexturingRegs::TextureFormat::ETC1:
     case Pica::TexturingRegs::TextureFormat::ETC1A4:
-        // All source formats are decoded to RGBA8 before upload.
         return DkImageFormat_RGBA8_Unorm;
     }
     return std::nullopt;
@@ -483,10 +547,6 @@ void TextureCache::InvalidateRegion(PAddr address, u32 size) {
 }
 
 void TextureCache::FlushRegion(PAddr address, u32 size) {
-    // Cached textures are read-only decoded copies. A plain flush is a host-to-guest writeback
-    // request, but this cache never renders into texture images, so there is nothing to write back
-    // and no reason to discard a valid decode. Real guest writes still call InvalidateRegion or
-    // FlushAndInvalidateRegion and evict overlapping textures.
     (void)address;
     (void)size;
 }
