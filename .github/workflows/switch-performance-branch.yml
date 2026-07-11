@@ -39,12 +39,29 @@ jobs:
           git submodule sync > /tmp/submodules.log 2>&1
           git -c protocol.version=2 submodule update --init --jobs 4 >> /tmp/submodules.log 2>&1
           status=$?
+
+          if [ "$status" -eq 0 ]; then
+            rm -rf externals/dynarmic externals/oaknut
+            git clone --depth 1 --branch main \
+              https://github.com/devgsantos/dynarmic-nx.git externals/dynarmic \
+              >> /tmp/submodules.log 2>&1
+            status=$?
+          fi
+
+          if [ "$status" -eq 0 ]; then
+            git clone --depth 1 --branch main \
+              https://github.com/devgsantos/oaknut-nx.git externals/oaknut \
+              >> /tmp/submodules.log 2>&1
+            status=$?
+          fi
+
           if [ "$status" -eq 0 ]; then
             git -C externals/dynarmic submodule sync >> /tmp/submodules.log 2>&1
             git -C externals/dynarmic -c protocol.version=2 submodule update --init \
               externals/mcl externals/robin-map >> /tmp/submodules.log 2>&1
             status=$?
           fi
+
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit $status
 
