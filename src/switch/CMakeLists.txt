@@ -30,6 +30,29 @@ create_target_directory_groups(azahar_switch)
 target_compile_definitions(azahar_switch PRIVATE AZAHAR_SWITCH)
 target_link_libraries(azahar_switch PRIVATE citra_common citra_core video_core audio_core input_common)
 
+# A display transfer is a point-in-time GPU operation, not a permanent alias to a mutable render
+# target. Store supported RGBA8 no-scale transfers in dedicated cached destination images. This keeps
+# top/bottom presentation independent from later source ownership changes and allows the next hybrid
+# milestone to retain software fallback for the packed top target while testing hardware rendering on
+# independently presentable targets such as the 240x320 lower screen.
+option(AZAHAR_SWITCH_DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS
+       "Use GPU-backed snapshots for supported Deko3D display transfers" ON)
+if(AZAHAR_SWITCH_DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS)
+    target_sources(video_core PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_display_transfer_snapshot.cpp)
+    # Force-include the public class declaration before renaming only the legacy definition in
+    # deko3d_state.cpp. Other translation units continue linking State::RecordDisplayTransfer to the
+    # snapshot implementation above without changing the class declaration or ABI.
+    set_property(SOURCE
+        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_state.cpp
+        TARGET_DIRECTORY video_core
+        APPEND PROPERTY COMPILE_OPTIONS
+        "-include${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_display_transfer_override.h")
+    message(STATUS "Switch Deko3D display-transfer snapshots enabled")
+else()
+    message(STATUS "Switch Deko3D display-transfer snapshots disabled")
+endif()
+
 # The experimental CPU-dirty handoff can move software-rendered guest contents back into Deko3D,
 # but DKCR hardware testing showed that enabling it globally bypasses a correctness barrier: all
 # transformed batches move to hardware while the top display-transfer target disappears, producing
