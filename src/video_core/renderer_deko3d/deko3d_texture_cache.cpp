@@ -162,8 +162,8 @@ bool TextureCache::Initialize(State& state_, Memory::MemorySystem& memory_) {
     }
 
     LOG_INFO(Render,
-             "Deko3D texture cache initialized with {} upload slots and {} bytes of staging memory",
-             UploadSlotCount, StagingBufferSize);
+             "Deko3D texture cache initialized with {} upload slots, {} staging bytes and {} cache bytes",
+             UploadSlotCount, StagingBufferSize, TextureCacheBudgetBytes);
 #else
     (void)state_;
     (void)memory_;
@@ -194,6 +194,8 @@ void TextureCache::Shutdown() {
         DestroyTexture(*cached);
     }
     cache.clear();
+    cache_allocation_bytes = 0;
+    cache_generation = 0;
 
     for (auto& slot : upload_slots) {
         if (slot.command_buffer) {
@@ -238,7 +240,13 @@ const CachedTexture* TextureCache::GetTexture(
     const u64 key = ComputeTextureKey(config);
     auto it = cache.find(key);
     if (it != cache.end()) {
-        return it->second.get();
+        auto& cached = *it->second;
+        cached.last_used_generation = ++cache_generation;
+        if (cache_generation == 0) {
+            cache_generation = 1;
+            cached.last_used_generation = cache_generation;
+        }
+        return &cached;
     }
 
     if (!MapTextureFormat(config.format)) {
@@ -256,14 +264,23 @@ const CachedTexture* TextureCache::GetTexture(
     if (!AllocateTexture(*cached, cached->width, cached->height, config.format)) {
         return nullptr;
     }
-
+    if (!EvictForAllocation(cached->allocation_bytes)) {
+        DestroyTexture(*cached);
+        return nullptr;
+    }
     if (!UploadTexture(*cached, config.config, config.format)) {
         DestroyTexture(*cached);
         return nullptr;
     }
     cached->sampler = CreateSampler(config.config);
+    cached->last_used_generation = ++cache_generation;
+    if (cache_generation == 0) {
+        cache_generation = 1;
+        cached->last_used_generation = cache_generation;
+    }
 
     const CachedTexture* result = cached.get();
+    cache_allocation_bytes += cached->allocation_bytes;
     cache.emplace(key, std::move(cached));
     return result;
 }
@@ -295,9 +312,10 @@ bool TextureCache::AllocateTexture(CachedTexture& cached, u32 width, u32 height,
         return false;
     }
 
+    cached.allocation_bytes = AlignUp(static_cast<u32>(image_size), image_alignment);
     DkMemBlockMaker mem_block_maker;
     dkMemBlockMakerDefaults(&mem_block_maker, device,
-                            static_cast<u32>(AlignUp(image_size, image_alignment)));
+                            static_cast<u32>(cached.allocation_bytes));
     mem_block_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
     cached.mem_block = dkMemBlockCreate(&mem_block_maker);
     if (!cached.mem_block) {
@@ -345,6 +363,31 @@ bool TextureCache::WaitForTextureUpload(CachedTexture& cached) {
     cached.upload_slot = 0xFFFFFFFFu;
     cached.upload_serial = 0;
     return true;
+}
+
+bool TextureCache::EvictForAllocation(u64 required_bytes) {
+    if (required_bytes > TextureCacheBudgetBytes) {
+        return false;
+    }
+
+    while (cache_allocation_bytes + required_bytes > TextureCacheBudgetBytes && !cache.empty()) {
+        auto victim = std::min_element(
+            cache.begin(), cache.end(), [](const auto& lhs, const auto& rhs) {
+                return lhs.second->last_used_generation < rhs.second->last_used_generation;
+            });
+        if (victim == cache.end()) {
+            return false;
+        }
+
+        CachedTexture& texture = *victim->second;
+        const u64 victim_bytes = texture.allocation_bytes;
+        DestroyTexture(texture);
+        cache.erase(victim);
+        cache_allocation_bytes = victim_bytes > cache_allocation_bytes
+                                     ? 0
+                                     : cache_allocation_bytes - victim_bytes;
+    }
+    return cache_allocation_bytes + required_bytes <= TextureCacheBudgetBytes;
 }
 
 bool TextureCache::UploadTexture(CachedTexture& cached,
@@ -541,8 +584,12 @@ void TextureCache::InvalidateRegion(PAddr address, u32 size) {
             ++it;
             continue;
         }
+        const u64 allocation_bytes = texture.allocation_bytes;
         DestroyTexture(texture);
         it = cache.erase(it);
+        cache_allocation_bytes = allocation_bytes > cache_allocation_bytes
+                                     ? 0
+                                     : cache_allocation_bytes - allocation_bytes;
     }
 }
 
