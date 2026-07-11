@@ -25,13 +25,27 @@ jobs:
           fetch-depth: 1
 
       - name: Checkout required submodules
+        id: submodules
+        continue-on-error: true
         run: |
           set +e
           git submodule sync --recursive > /tmp/submodules.log 2>&1
           git -c protocol.version=2 submodule update --init --recursive --jobs 4 >> /tmp/submodules.log 2>&1
           status=$?
-          tail -n 120 /tmp/submodules.log
+          echo "status=$status" >> "$GITHUB_OUTPUT"
           exit $status
+
+      - name: Upload submodule checkout log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: switch-submodule-checkout-log
+          path: /tmp/submodules.log
+          if-no-files-found: warn
+
+      - name: Stop on submodule checkout failure
+        if: steps.submodules.outcome == 'failure'
+        run: exit 1
 
       - name: Configure and build release NRO
         env:
