@@ -12,6 +12,7 @@
 #include "common/logging/log.h"
 #include "common/switch_trace.h"
 #include "core/memory.h"
+#include "switch/switch_debug_log.h"
 #include "video_core/pica/regs_texturing.h"
 #include "video_core/renderer_deko3d/deko3d_state.h"
 #include "video_core/texture/texture_decode.h"
@@ -23,6 +24,8 @@ namespace {
 
 constexpr u32 StagingBufferSize = 8 * 1024 * 1024; // 8 MiB scratch for uploads
 constexpr u32 UploadCommandSize = 16 * 1024;
+constexpr u32 TextureTileWidth = 8;
+constexpr u32 TextureTileHeight = 8;
 
 u32 AlignUp(u32 value, u32 alignment) {
     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
@@ -305,19 +308,45 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
 
     const auto info = Pica::Texture::TextureInfo::FromPicaRegister(config, format);
     auto* const staging_pixels = static_cast<u8*>(staging_cpu_addr);
-    static bool s_logged_first_texture_samples = false;
-    for (u32 y = 0; y < height; ++y) {
-        // PICA stores textures bottom-to-top; GPU images are top-to-bottom.
-        const u32 src_y = height - 1 - y;
-        for (u32 x = 0; x < width; ++x) {
-            const auto color = Pica::Texture::LookupTexture(texture_data, x, src_y, info);
-            const std::size_t dst = (y * width + x) * 4;
-            staging_pixels[dst + 0] = color.r();
-            staging_pixels[dst + 1] = color.g();
-            staging_pixels[dst + 2] = color.b();
-            staging_pixels[dst + 3] = color.a();
+    const std::size_t tile_size = Pica::Texture::CalculateTileSize(format);
+    const u32 tiles_x = std::max(1u, (width + TextureTileWidth - 1) / TextureTileWidth);
+    const u32 tiles_y = std::max(1u, (height + TextureTileHeight - 1) / TextureTileHeight);
+    const std::size_t tile_row_stride =
+        info.stride > 0 ? static_cast<std::size_t>(info.stride) : tile_size * tiles_x;
+
+    // Decode in the same 8x8 layout used by PICA. Compared with LookupTexture per pixel, this
+    // computes the coarse tile address once for 64 texels and leaves only the format/Morton lookup
+    // in the inner loop. Destination rows remain vertically flipped for Deko3D images.
+    for (u32 tile_y = 0; tile_y < tiles_y; ++tile_y) {
+        const u8* const tile_row = texture_data + static_cast<std::size_t>(tile_y) * tile_row_stride;
+        for (u32 tile_x = 0; tile_x < tiles_x; ++tile_x) {
+            const u8* const tile = tile_row + static_cast<std::size_t>(tile_x) * tile_size;
+            for (u32 fine_y = 0; fine_y < TextureTileHeight; ++fine_y) {
+                const u32 source_y = tile_y * TextureTileHeight + fine_y;
+                if (source_y >= height) {
+                    break;
+                }
+                const u32 destination_y = height - 1 - source_y;
+                for (u32 fine_x = 0; fine_x < TextureTileWidth; ++fine_x) {
+                    const u32 x = tile_x * TextureTileWidth + fine_x;
+                    if (x >= width) {
+                        break;
+                    }
+                    const auto color =
+                        Pica::Texture::LookupTexelInTile(tile, fine_x, fine_y, info, false);
+                    const std::size_t dst =
+                        (static_cast<std::size_t>(destination_y) * width + x) * 4;
+                    staging_pixels[dst + 0] = color.r();
+                    staging_pixels[dst + 1] = color.g();
+                    staging_pixels[dst + 2] = color.b();
+                    staging_pixels[dst + 3] = color.a();
+                }
+            }
         }
     }
+
+#if defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS) || defined(AZAHAR_DEKO3D_VERBOSE_TELEMETRY)
+    static bool s_logged_first_texture_samples = false;
     if (!s_logged_first_texture_samples) {
         s_logged_first_texture_samples = true;
         const auto sample_tl = Pica::Texture::LookupTexture(texture_data, 0, height - 1, info);
@@ -331,6 +360,7 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
                  sample_tl.a(), sample_center.r(), sample_center.g(), sample_center.b(),
                  sample_center.a(), sample_br.r(), sample_br.g(), sample_br.b(), sample_br.a());
     }
+#endif
 
     dkCmdBufClear(upload_command_buffer);
     dkCmdBufAddMemory(upload_command_buffer, upload_command_mem_block, 0, UploadCommandSize);
