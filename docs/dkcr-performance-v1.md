@@ -4,7 +4,7 @@ This document validates `feat/gpt-performance-improvements-v1` against the stabl
 
 ## Build profiles
 
-Build the performance branch normally:
+Build the stable performance branch normally:
 
 ```bash
 ./build-switch.sh
@@ -19,13 +19,11 @@ This profile uses:
 - partial JIT publication: off
 - stable full libnx JIT executable publication: on
 - consolidated Dynarmic block publication: on
-- CPU-dirty RGBA8 render-target color/depth resolve: on
+- experimental CPU-dirty render-target resolve: off
 
 Dynarmic emits a new block and may then patch older blocks that reference it. Without consolidation, the Switch path publishes once after emission and again after relinking. On libnx `JitType_CodeMemory`, each full publication flushes and invalidates the complete JIT allocation. Consolidated mode keeps the stable full publication path but combines those writes into one publication per emitted block.
 
-A software PICA fallback writes color and possibly depth into Morton-tiled guest memory. That marks the matching Deko3D render target CPU-dirty. The new handoff restores RGBA8 color and active D16, D24, or D24S8 depth into the cached Deko3D images before an otherwise-supported hardware batch proceeds. Unsupported formats and failed transfers remain on the existing software path.
-
-For a diagnostic comparison build:
+For a diagnostic build with counters enabled:
 
 ```bash
 SWITCH_PERF_DIAGNOSTICS=ON \
@@ -53,13 +51,15 @@ Consolidated publication can be disabled independently:
 JIT_CONSOLIDATED_PUBLISH=OFF ./build-switch.sh
 ```
 
-The CPU-dirty handoff can be disabled independently without reverting the branch:
+The CPU-dirty handoff remains available only for isolated diagnostics:
 
 ```bash
-./build-switch.sh -DAZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE=OFF
+DEKO3D_CPU_DIRTY_RESOLVE=ON ./build-switch.sh
 ```
 
-After changing any of these compile-time modes, perform one clean rebuild:
+Do not enable it for normal DKCR testing. The build script explicitly passes the stable `OFF` value so an existing CMake cache cannot silently keep the regressing mode enabled.
+
+After changing JIT publication modes, perform one clean rebuild:
 
 ```bash
 rm -rf build-switch
@@ -69,7 +69,7 @@ rm -rf build-switch
 The normal configuration should print:
 
 ```text
-Switch Deko3D CPU-dirty render-target resolve enabled
+Switch Deko3D CPU-dirty render-target resolve disabled (stable)
 Switch Dynarmic consolidated publication enabled
 ```
 
@@ -82,7 +82,7 @@ Consolidated full JIT publication materially improved startup and title progress
 - first frame: approximately 14.4 s to 8.4 s
 - later measured title-flow milestones: approximately 42–46% faster
 
-A subsequent diagnostic sample isolated the next bottleneck:
+A subsequent diagnostic sample isolated a CPU-dirty rejection interval:
 
 ```text
 FPS 1.41 SystemFPS 2.82 Speed 4.72%
@@ -91,61 +91,76 @@ HW draws=0 SW fallback=602
 JIT calls=965 blocks=0 partial_pub=0 full_pub=0
 ```
 
-The matching graphics summary reported 602 valid transformed batches, zero eligible batches, zero submitted hardware batches, and 602 software fallbacks in that interval. The repeated rejection was:
+The repeated rejection was:
 
 ```text
 Deko3D HW reject: color RT is CPU-dirty
 ```
 
-Because that interval contained no newly compiled JIT blocks or JIT publications, further JIT changes would not address this specific stall. The software-to-Deko3D ownership handoff is therefore the current test target.
+An experimental color/depth resolve was added to test whether this was only an ownership latch. It successfully moved the scene to hardware, but hardware validation disproved that assumption.
 
-## CPU-dirty handoff behavior
+## CPU-dirty handoff regression
 
-The handoff is deliberately fail-closed:
-
-1. It runs only after the batch has passed the existing shader, texture, state, and render-target checks.
-2. It currently accepts only RGBA8 color targets.
-3. It detiles and vertically restores the software-rendered color image from guest memory.
-4. When depth testing or depth writing is active, it also restores D16, D24, or D24S8 depth data.
-5. It waits for the temporary copy to complete before releasing staging resources.
-6. It clears CPU-dirty ownership only after a successful transfer.
-7. Any unsupported format, missing pointer, allocation failure, queue error, or fence failure retains the original software fallback.
-
-A successful diagnostic run should contain a rate-limited line like:
+With the handoff enabled, the diagnostic scene changed to roughly:
 
 ```text
-Deko3D CPU->GPU render-target resolve color=0x........ depth=0x........ size=240x800 ...
+HW draws=2640..2960
+SW fallback=0
+raster queue errors=0
+present queue errors=0
 ```
 
-The following counters should improve in the previously latched title scene:
+The screen output regressed at the same time:
 
-- `HW draws` becomes nonzero
-- `eligible` and `submitted` become nonzero
-- `SW fallback` falls below the previous 602-per-second sample
-- `fallback_wrong_render_target` or equivalent CPU-dirty rejection pressure declines
-- no raster or present queue errors/timeouts appear
+- the upper screen became black
+- the lower screen became white
+- the title screen no longer appeared
+- presentation repeatedly selected no top render target
+- the bottom presentation continued selecting a cached 240x320 transfer target
 
-The first implementation uses a synchronous transition and temporary staging allocation for correctness. If hardware validation succeeds, the follow-up optimization is a persistent fence-protected resolve ring to remove allocation and wait overhead.
+Representative presentation state:
 
-## Immediate rollback conditions
-
-Disable `AZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE` immediately if any of these appear:
-
-- missing or corrupted title-screen elements
-- incorrect color channels or vertical orientation
-- depth inversion, objects drawing through each other, or stale depth
-- Deko3D queue error or fence timeout
-- black/white-screen regression
-- crash during the first software-to-hardware transition
-
-Rollback build:
-
-```bash
-rm -rf build-switch
-./build-switch.sh -DAZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE=OFF
+```text
+SelectPresentRenderTarget: top=0x18000000 top=0x0 addr=0x00000000
+bottom=0x18300000 bottom=240x320 addr=0x181d4c00
 ```
 
-This leaves consolidated JIT publication and the previously validated renderer changes enabled.
+The resolver itself continued reporting successful 240x800 color/depth uploads, and no queue errors or fence timeouts occurred. Therefore this is a correctness failure in ownership/coverage or display-transfer presentation, not a Deko3D device failure.
+
+The important conclusion is that `cpu_dirty` was acting as a correctness barrier. Clearing it globally caused every transformed batch to bypass the software renderer even though the current hardware path and top-screen transfer/presentation chain are not yet equivalent for this scene.
+
+The implementation remains in the branch for controlled research, but stable builds now keep it disabled.
+
+## Requirements before retrying the handoff
+
+Do not re-enable the global handoff until all of the following are implemented or demonstrated:
+
+1. Distinguish a recoverable stale ownership flag from guest memory that still requires software ownership.
+2. Preserve or recreate the top display-transfer alias across the complete draw/flush/transfer/present sequence.
+3. Verify the 240x800 source-to-240x400 top-screen transform rather than treating it as a plain source alias.
+4. Confirm that the fixed transformed hardware shaders reproduce the affected title-screen batches.
+5. Permit per-target or per-generation fallback instead of changing all later batches to hardware.
+6. Validate color, depth, blending, and both screens before clearing `cpu_dirty` permanently.
+
+A future experiment should start with a single-transition or single-target gate and should automatically return that target to software ownership when its expected display-transfer result is not selected for presentation.
+
+## Stable rollback behavior
+
+Stable builds now force:
+
+```text
+AZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE=OFF
+```
+
+This preserves:
+
+- consolidated full JIT publication
+- asynchronous frame-slice reuse
+- texture upload/cache improvements
+- reduced presentation CPU reads
+- the known-correct software fallback after CPU writes
+
+The experimental mode can still be compiled explicitly for instrumentation, but its output is not considered valid.
 
 ## Submodule safety and branch policy
 
@@ -181,7 +196,7 @@ Do not use unrestricted recursion for this dependency layout:
 git submodule update --init --recursive
 ```
 
-When Dynarmic or Oaknut source changes are required, create a dedicated branch in each affected fork, pin its exact tested commit in Azahar, merge dependency PRs first, verify the pinned commits are reachable from dependency `main`, and merge the Azahar PR last. No dependency source change was required for the CPU-dirty handoff.
+When Dynarmic or Oaknut source changes are required, create a dedicated branch in each affected fork, pin its exact tested commit in Azahar, merge dependency PRs first, verify the pinned commits are reachable from dependency `main`, and merge the Azahar PR last. No dependency source change was required for this rollback.
 
 ## DKCR test conditions
 
@@ -198,19 +213,20 @@ Record at least:
 7. Pause and resume
 8. Level exit or death/reload
 
-For each checkpoint record FPS, emulation speed, audio behavior, frame pacing, visual correctness, stabilization time, queue errors/timeouts, hardware draw count, software fallback count, and CPU-to-GPU resolve count.
+For each checkpoint record FPS, emulation speed, audio behavior, frame pacing, visual correctness, stabilization time, queue errors/timeouts, hardware draw count, software fallback count, and presentation source selection.
 
 Do not compare a shader/texture-cache warm run against a cold baseline run.
 
 ## Acceptance target
 
-The v1 branch is ready for the next direct-draw phase only when all of these are true:
+The v1 branch is ready for further optimization only when all of these are true:
 
+- the title screen is visible on the stable profile
+- both 3DS screens present the expected content
 - no crash or Deko3D queue error across three complete level runs
 - no color, orientation, depth, blending, or cached-render-target regression
-- hardware draw coverage increases repeatably in the previously CPU-dirty scene
 - emulation speed improves repeatably over the same scene and clock profile
 - audio remains synchronized
 - no progressive memory degradation during a 20-minute session
 
-A fully playable DKCR target still requires native indexed/non-indexed submission with PICA vertex-shader translation, replacing the CPU-transformed `AddTriangle()` path. The CPU-dirty handoff removes an ownership latch; it does not eliminate that larger architectural cost.
+A fully playable DKCR target still requires native indexed/non-indexed submission with PICA vertex-shader translation, replacing the CPU-transformed `AddTriangle()` path. The failed global CPU-dirty handoff must not be used as a substitute for that architectural work.
