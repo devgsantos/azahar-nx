@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <deque>
 #include <optional>
 #include <unordered_set>
@@ -32,6 +33,105 @@ namespace VideoCore::Deko3D {
 struct CachedTexture;
 class ShaderCache;
 class TextureCache;
+
+#ifdef __SWITCH__
+namespace AsyncRaster {
+
+// SubmitHardwareChunk already owns a three-entry command/vertex/uniform ring. Main waited for every
+// fence immediately after submission, making that ring ineffective. A negative timeout is the one
+// immediate completion wait in that path; defer it and let WaitForFrameSlice synchronize only when
+// the corresponding ring entry is reused.
+inline thread_local bool defer_next_fence_clear = false;
+
+inline DkResult FenceWait(DkFence* fence, s64 timeout) {
+    if (timeout < 0) {
+        defer_next_fence_clear = true;
+        return DkResult_Success;
+    }
+    return ::dkFenceWait(fence, timeout);
+}
+
+class DeferredFencePending {
+public:
+    DeferredFencePending() = default;
+    DeferredFencePending(bool value) : pending{value} {}
+
+    DeferredFencePending& operator=(bool value) {
+        if (!value && defer_next_fence_clear) {
+            pending = true;
+            defer_next_fence_clear = false;
+        } else {
+            pending = value;
+        }
+        return *this;
+    }
+
+    operator bool() const {
+        return pending;
+    }
+
+private:
+    bool pending = false;
+};
+
+// Descriptor memory was the only per-draw resource not divided into ring slots. Keep descriptors in
+// lockstep with command submissions so asynchronous draws never observe data from a later draw.
+class DescriptorCpuBuffer {
+public:
+    DescriptorCpuBuffer() = default;
+
+    DescriptorCpuBuffer& operator=(void* address) {
+        base = static_cast<u8*>(address);
+        PerfSync::ResetDescriptorSlot();
+        return *this;
+    }
+
+    explicit operator bool() const {
+        return base != nullptr;
+    }
+
+    operator u8*() const {
+        return base ? base + PerfSync::DescriptorOffset() : nullptr;
+    }
+
+private:
+    u8* base = nullptr;
+};
+
+class DescriptorGpuAddress {
+public:
+    DescriptorGpuAddress() = default;
+
+    DescriptorGpuAddress& operator=(DkGpuAddr address) {
+        base = address;
+        PerfSync::ResetDescriptorSlot();
+        return *this;
+    }
+
+    operator DkGpuAddr() const {
+        return base == 0 ? 0 : base + PerfSync::DescriptorOffset();
+    }
+
+    bool operator==(DkGpuAddr address) const {
+        return base == address;
+    }
+
+    bool operator!=(DkGpuAddr address) const {
+        return base != address;
+    }
+
+    friend DkGpuAddr operator+(const DescriptorGpuAddress& address, std::size_t offset) {
+        return address.base == 0 ? 0
+                                 : address.base + PerfSync::DescriptorOffset() +
+                                       static_cast<DkGpuAddr>(offset);
+    }
+
+private:
+    DkGpuAddr base = 0;
+};
+
+} // namespace AsyncRaster
+#endif
 
 class Rasterizer final : public VideoCore::RasterizerAccelerated {
 public:
@@ -71,7 +171,7 @@ private:
         u32 uniform_offset = 0;
         u32 uniform_size = 0;
         DkFence fence{};
-        bool fence_pending = false;
+        AsyncRaster::DeferredFencePending fence_pending{};
         std::size_t pending_vertices = 0;
     };
 
@@ -158,8 +258,8 @@ private:
     void* uniform_cpu_buffer = nullptr;
     DkGpuAddr uniform_gpu_addr = 0;
     DkMemBlock descriptor_mem_block{};
-    void* descriptor_cpu_buffer = nullptr;
-    DkGpuAddr descriptor_gpu_addr = 0;
+    AsyncRaster::DescriptorCpuBuffer descriptor_cpu_buffer{};
+    AsyncRaster::DescriptorGpuAddress descriptor_gpu_addr{};
     std::deque<DepthTarget> depth_targets;
     DepthTarget* active_depth_target = nullptr;
     std::array<FrameSlice, FrameSliceCount> frame_slices{};
@@ -179,3 +279,8 @@ private:
 };
 
 } // namespace VideoCore::Deko3D
+
+#ifdef __SWITCH__
+#define dkFenceWait(fence, timeout)                                                               \
+    ::VideoCore::Deko3D::AsyncRaster::FenceWait((fence), (timeout))
+#endif
