@@ -16,6 +16,13 @@ BUILD_DIR="build-switch"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 
+# Performance builds keep validation and high-volume telemetry disabled by default. They can still
+# be re-enabled explicitly for a diagnostic build without editing this script.
+DEKO3D_VALIDATION="${DEKO3D_VALIDATION:-OFF}"
+DEKO3D_VERBOSE_TELEMETRY="${DEKO3D_VERBOSE_TELEMETRY:-OFF}"
+SWITCH_PERF_DIAGNOSTICS="${SWITCH_PERF_DIAGNOSTICS:-OFF}"
+SWITCH_TRACE_ENABLED="${SWITCH_TRACE_ENABLED:-OFF}"
+
 cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
@@ -27,7 +34,10 @@ cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DENABLE_SCRIPTING=OFF \
     -DENABLE_GDBSTUB=OFF \
     -DENABLE_TESTS=OFF \
-    -DAZAHAR_DEKO3D_VALIDATION=ON \
+    -DAZAHAR_DEKO3D_VALIDATION="$DEKO3D_VALIDATION" \
+    -DAZAHAR_DEKO3D_VERBOSE_TELEMETRY="$DEKO3D_VERBOSE_TELEMETRY" \
+    -DAZAHAR_SWITCH_PERF_DIAGNOSTICS="$SWITCH_PERF_DIAGNOSTICS" \
+    -DAZAHAR_SWITCH_TRACE_ENABLED="$SWITCH_TRACE_ENABLED" \
     "$@"
 
 cmake --build "$BUILD_DIR" --target azahar_switch -- -j"$JOBS"
