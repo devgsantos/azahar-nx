@@ -1,6 +1,6 @@
 # DKCR performance validation — v1
 
-This document validates `feat/gpt-performance-improvements-v1` against the stable full-hardware-rendering `main` baseline. It is intentionally focused on measurable performance and regression safety rather than visual spot checks alone.
+This document validates `feat/gpt-performance-improvements-v1` against the stable full-hardware-rendering `main` baseline. It is focused on measurable performance and regression safety rather than visual spot checks alone.
 
 ## Build profiles
 
@@ -19,56 +19,133 @@ This profile uses:
 - partial JIT publication: off
 - stable full libnx JIT executable publication: on
 - consolidated Dynarmic block publication: on
+- CPU-dirty RGBA8 render-target color/depth resolve: on
 
-Dynarmic emits a new block and may then patch older blocks that reference it. Without consolidation, the Switch path publishes once after emission and again after relinking. On libnx `JitType_CodeMemory`, each full publication flushes and invalidates the complete JIT allocation. The consolidated mode keeps the stable full publication path but combines those writes into one publication per emitted block.
+Dynarmic emits a new block and may then patch older blocks that reference it. Without consolidation, the Switch path publishes once after emission and again after relinking. On libnx `JitType_CodeMemory`, each full publication flushes and invalidates the complete JIT allocation. Consolidated mode keeps the stable full publication path but combines those writes into one publication per emitted block.
+
+A software PICA fallback writes color and possibly depth into Morton-tiled guest memory. That marks the matching Deko3D render target CPU-dirty. The new handoff restores RGBA8 color and active D16, D24, or D24S8 depth into the cached Deko3D images before an otherwise-supported hardware batch proceeds. Unsupported formats and failed transfers remain on the existing software path.
 
 For a diagnostic comparison build:
 
 ```bash
 SWITCH_PERF_DIAGNOSTICS=ON \
 DEKO3D_VERBOSE_TELEMETRY=ON \
+JIT_PARTIAL_PUBLISH=OFF \
+JIT_CONSOLIDATED_PUBLISH=ON \
 ./build-switch.sh
 ```
 
-Partial JIT publication is retained only as an experimental, isolated comparison:
+Partial JIT publication remains an isolated experiment:
 
 ```bash
 JIT_PARTIAL_PUBLISH=ON ./build-switch.sh
 ```
 
-Do not use that experimental profile for normal hardware testing. DKCR exited immediately after additional Dynarmic code blocks were created with `partial_publish_enabled=true`, before the first PICA draw or Deko3D presentation activity. The stable profile therefore keeps `jitTransitionToExecutable()` in the publication path.
+Do not use that experimental profile for normal hardware testing. DKCR exited immediately after additional Dynarmic code blocks were created with `partial_publish_enabled=true`, before the first PICA draw or Deko3D presentation activity. Stable builds must report:
 
-The consolidated publication optimization can be disabled independently for comparison:
+```text
+partial_publish_enabled=false
+```
+
+Consolidated publication can be disabled independently:
 
 ```bash
 JIT_CONSOLIDATED_PUBLISH=OFF ./build-switch.sh
 ```
 
-After changing either publication mode, perform one clean rebuild so the previous compile definition cannot remain in cached Dynarmic objects:
+The CPU-dirty handoff can be disabled independently without reverting the branch:
+
+```bash
+./build-switch.sh -DAZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE=OFF
+```
+
+After changing any of these compile-time modes, perform one clean rebuild:
 
 ```bash
 rm -rf build-switch
 ./build-switch.sh
 ```
 
-The startup log must report:
+The normal configuration should print:
 
 ```text
-partial_publish_enabled=false
+Switch Deko3D CPU-dirty render-target resolve enabled
+Switch Dynarmic consolidated publication enabled
 ```
 
-## Current DKCR hardware result
+## Current DKCR hardware findings
 
-The first stable test with partial publication disabled reached the title flow without a process exit. The first frame was presented at approximately 14.4 seconds. Colors, title-screen elements, and composition were reported as correct.
+The first stable test with partial publication disabled reached the title flow without a process exit. Colors, title-screen elements, and composition were reported as correct. No Deko3D queue error or GPU timeout was visible.
 
-This is an important renderer milestone:
+Consolidated full JIT publication materially improved startup and title progression:
 
-- Deko3D device, queue, shaders, texture cache, rasterizer, and presentation initialized successfully
-- the GPU path produced coherent colors and visible elements
-- no Deko3D queue error or GPU timeout was reported in the captured interval
-- the remaining dominant problem is execution speed rather than basic rendering correctness
+- first frame: approximately 14.4 s to 8.4 s
+- later measured title-flow milestones: approximately 42–46% faster
 
-The same log showed large real-time gaps while the emulated title continued advancing: approximately 24.5 to 87.2 seconds and 89.2 to 178.9 seconds. Those gaps occurred after renderer initialization and first presentation, so the next investigation priority is CPU/JIT publication cost, ARM11 execution, and CPU-transformed PICA geometry rather than color or presentation repair.
+A subsequent diagnostic sample isolated the next bottleneck:
+
+```text
+FPS 1.41 SystemFPS 2.82 Speed 4.72%
+GPU 342.40ms Swap 2.87ms
+HW draws=0 SW fallback=602
+JIT calls=965 blocks=0 partial_pub=0 full_pub=0
+```
+
+The matching graphics summary reported 602 valid transformed batches, zero eligible batches, zero submitted hardware batches, and 602 software fallbacks in that interval. The repeated rejection was:
+
+```text
+Deko3D HW reject: color RT is CPU-dirty
+```
+
+Because that interval contained no newly compiled JIT blocks or JIT publications, further JIT changes would not address this specific stall. The software-to-Deko3D ownership handoff is therefore the current test target.
+
+## CPU-dirty handoff behavior
+
+The handoff is deliberately fail-closed:
+
+1. It runs only after the batch has passed the existing shader, texture, state, and render-target checks.
+2. It currently accepts only RGBA8 color targets.
+3. It detiles and vertically restores the software-rendered color image from guest memory.
+4. When depth testing or depth writing is active, it also restores D16, D24, or D24S8 depth data.
+5. It waits for the temporary copy to complete before releasing staging resources.
+6. It clears CPU-dirty ownership only after a successful transfer.
+7. Any unsupported format, missing pointer, allocation failure, queue error, or fence failure retains the original software fallback.
+
+A successful diagnostic run should contain a rate-limited line like:
+
+```text
+Deko3D CPU->GPU render-target resolve color=0x........ depth=0x........ size=240x800 ...
+```
+
+The following counters should improve in the previously latched title scene:
+
+- `HW draws` becomes nonzero
+- `eligible` and `submitted` become nonzero
+- `SW fallback` falls below the previous 602-per-second sample
+- `fallback_wrong_render_target` or equivalent CPU-dirty rejection pressure declines
+- no raster or present queue errors/timeouts appear
+
+The first implementation uses a synchronous transition and temporary staging allocation for correctness. If hardware validation succeeds, the follow-up optimization is a persistent fence-protected resolve ring to remove allocation and wait overhead.
+
+## Immediate rollback conditions
+
+Disable `AZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE` immediately if any of these appear:
+
+- missing or corrupted title-screen elements
+- incorrect color channels or vertical orientation
+- depth inversion, objects drawing through each other, or stale depth
+- Deko3D queue error or fence timeout
+- black/white-screen regression
+- crash during the first software-to-hardware transition
+
+Rollback build:
+
+```bash
+rm -rf build-switch
+./build-switch.sh -DAZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE=OFF
+```
+
+This leaves consolidated JIT publication and the previously validated renderer changes enabled.
 
 ## Submodule safety and branch policy
 
@@ -79,10 +156,10 @@ For this v1 branch:
 - use the exact Dynarmic and Oaknut commits recorded by the Azahar gitlinks
 - do not replace the gitlinks at build time by cloning dependency `main`
 - do not modify `dynarmic-nx/main` or `oaknut-nx/main` directly
-- initialize only the nested Dynarmic dependencies actually required by the ARM64 build
-- do not recursively follow Dynarmic's nested Oaknut gitlink; Azahar already supplies its compatible top-level Oaknut checkout
+- initialize only the nested Dynarmic dependencies required by the ARM64 build
+- do not recursively follow Dynarmic's nested Oaknut gitlink; Azahar supplies its compatible top-level Oaknut checkout
 
-Safe local synchronization for the current branch:
+Safe local synchronization:
 
 ```bash
 git fetch origin
@@ -98,50 +175,19 @@ git -C externals/dynarmic submodule update --init \
   externals/robin-map
 ```
 
-Do not use an unrestricted recursive update for this dependency layout:
+Do not use unrestricted recursion for this dependency layout:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-### When Dynarmic or Oaknut changes are required
+When Dynarmic or Oaknut source changes are required, create a dedicated branch in each affected fork, pin its exact tested commit in Azahar, merge dependency PRs first, verify the pinned commits are reachable from dependency `main`, and merge the Azahar PR last. No dependency source change was required for the CPU-dirty handoff.
 
-Create a dedicated branch in each dependency that actually needs modification. Prefer a matching integration name, for example:
+## DKCR test conditions
 
-- `devgsantos/dynarmic-nx:feat/gpt-performance-improvements-v1`
-- `devgsantos/oaknut-nx:feat/gpt-performance-improvements-v1`
+Use the same console, firmware, Atmosphere version, game region/update, SD card, power mode, clock profile, and scene for comparisons. Start with stock clocks and a cold application launch.
 
-Then follow this sequence:
-
-1. Branch from the dependency's tested `main` head.
-2. Apply and validate the dependency-only changes on that feature branch.
-3. Update `azahar-nx:feat/gpt-performance-improvements-v1` to pin the exact dependency commit SHA in its gitlink.
-4. Build Azahar from those exact pinned commits; never resolve a floating branch head inside CI.
-5. Keep dependency branches available and avoid force-pushing them while Azahar validation is active.
-6. Merge validated dependency pull requests first.
-7. Confirm the pinned commits are now reachable from each dependency's `main`.
-8. Merge the Azahar pull request last.
-
-This merge order ensures that `azahar-nx/main` never points to a dependency commit that is available only on a temporary branch. If no dependency source change is required, retain the existing Azahar gitlinks and do not create unnecessary dependency branches.
-
-## Test conditions
-
-Use the same console, firmware, Atmosphere version, game region/update, SD card, power mode, and clock profile for both `main` and this branch.
-
-Recommended first pass:
-
-- official docked or handheld stock clock profile
-- no unsafe overclock
-- airplane mode when network behavior is irrelevant
-- cold application launch before each run
-- identical save state or level entry point
-- at least three runs per scene
-
-Do not compare a shader/texture-cache warm run against a cold baseline run.
-
-## DKCR scenes
-
-Record at least these checkpoints:
+Record at least:
 
 1. Boot and title transition
 2. File-select screen
@@ -152,62 +198,19 @@ Record at least these checkpoints:
 7. Pause and resume
 8. Level exit or death/reload
 
-For each checkpoint, record:
+For each checkpoint record FPS, emulation speed, audio behavior, frame pacing, visual correctness, stabilization time, queue errors/timeouts, hardware draw count, software fallback count, and CPU-to-GPU resolve count.
 
-- displayed FPS
-- emulation speed percentage
-- audio quality: stable, crackling, delayed, or muted
-- frame pacing: smooth, periodic hitch, continuous stutter, or freeze
-- visual correctness: top screen, bottom screen, textures, depth, blending, shadows
-- time until the scene becomes stable after loading
-- crash, GPU timeout, black screen, or white-screen regression
+Do not compare a shader/texture-cache warm run against a cold baseline run.
 
-## Interpretation
+## Acceptance target
 
-### FPS rises and speed rises
-
-The removed queue stalls or reduced CPU work were a material bottleneck. Continue with direct draw submission and state caching.
-
-### FPS rises but speed remains low
-
-Rendering is presenting more often, but ARM11 emulation, PICA vertex processing, DSP, or game-thread timing remains dominant. Profile Dynarmic host time and transformed geometry coverage next.
-
-### Speed rises but FPS remains low
-
-The core is advancing faster, but presentation or GPU throughput remains dominant. Inspect fence reuse waits, swap time, fragment load, and render-target resolution.
-
-### Large hitches remain during new scenes
-
-Texture decode/upload or JIT compilation is still visible. Compare cold and warm runs and inspect whether hitches disappear after assets and code blocks are cached.
-
-### Performance improves, then degrades over time
-
-Inspect texture-cache eviction frequency, render-target growth, memory pressure, and repeated invalidation ranges.
-
-### An early process exit returns
-
-First verify that every JIT allocation reports `partial_publish_enabled=false`. If it reports `true`, the wrong or stale build is running.
-
-If it still exits before the first PICA draw with partial publication disabled, use a diagnostic build to restore Dynarmic breadcrumbs and capture the Switch exception dump before changing renderer synchronization.
-
-### A GPU timeout or renderer crash returns
-
-Test these rollback points independently:
-
-1. diagnostic build with Deko3D validation enabled
-2. reduce the asynchronous draw ring to the previous three entries
-3. disable asynchronous texture upload while retaining tile-based decode
-
-Do not merge until the exact regression source is isolated.
-
-## Acceptance target for the next phase
-
-The v1 branch is ready for the direct-draw phase when all of the following are true:
+The v1 branch is ready for the next direct-draw phase only when all of these are true:
 
 - no crash or Deko3D queue error across three complete level runs
-- no white-screen or cached-render-target regression
+- no color, orientation, depth, blending, or cached-render-target regression
+- hardware draw coverage increases repeatably in the previously CPU-dirty scene
+- emulation speed improves repeatably over the same scene and clock profile
 - audio remains synchronized
-- repeatable improvement over `main` in the same scene and clock profile
 - no progressive memory degradation during a 20-minute session
 
-A fully playable DKCR target still requires profiling-driven work after v1. The largest known architectural gap is native indexed/non-indexed submission with PICA vertex-shader translation, replacing the CPU-transformed `AddTriangle()` path.
+A fully playable DKCR target still requires native indexed/non-indexed submission with PICA vertex-shader translation, replacing the CPU-transformed `AddTriangle()` path. The CPU-dirty handoff removes an ownership latch; it does not eliminate that larger architectural cost.
