@@ -6,6 +6,7 @@ add_executable(azahar_switch
     switch_debug_log.cpp
     switch_debug_log.h
     switch_dynarmic_jit_bridge.cpp
+    switch_dynarmic_fast_hooks.cpp
     switch_exception_handler.cpp
     switch_jit.cpp
     switch_jit.h
@@ -28,6 +29,17 @@ create_target_directory_groups(azahar_switch)
 
 target_compile_definitions(azahar_switch PRIVATE AZAHAR_SWITCH)
 target_link_libraries(azahar_switch PRIVATE citra_common citra_core video_core audio_core input_common)
+
+# Keep the full crash breadcrumbs for explicit diagnostic builds. In normal performance builds,
+# rename only the expensive bridge implementations so the lightweight hooks provide the public
+# symbols without changing Dynarmic or the exception-handler ABI.
+if(NOT AZAHAR_SWITCH_PERF_DIAGNOSTICS)
+    set_property(SOURCE switch_dynarmic_jit_bridge.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        azahar_switch_dynarmic_jit_set_breadcrumb_phase=azahar_switch_dynarmic_jit_set_breadcrumb_phase_diagnostic
+        azahar_switch_dynarmic_jit_update_breadcrumb=azahar_switch_dynarmic_jit_update_breadcrumb_diagnostic
+        azahar_switch_dynarmic_jit_log_host_timing=azahar_switch_dynarmic_jit_log_host_timing_diagnostic
+        azahar_switch_dynarmic_jit_log_a32_svc=azahar_switch_dynarmic_jit_log_a32_svc_diagnostic)
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     target_link_libraries(azahar_switch PRIVATE nx)
