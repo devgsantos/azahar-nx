@@ -138,6 +138,29 @@ private:
     DkGpuAddr base = 0;
 };
 
+template <typename T>
+class DiagnosticsSet {
+public:
+#if defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS)
+    auto insert(const T& value) {
+        return values.insert(value);
+    }
+#else
+    struct InsertResult {
+        bool second = false;
+    };
+
+    InsertResult insert(const T&) const {
+        return {};
+    }
+#endif
+
+private:
+#if defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS)
+    std::unordered_set<T> values;
+#endif
+};
+
 } // namespace AsyncRaster
 #endif
 
@@ -272,8 +295,8 @@ private:
     DepthTarget* active_depth_target = nullptr;
     std::array<FrameSlice, FrameSliceCount> frame_slices{};
     u32 current_frame_slice = 0;
-    mutable std::unordered_set<std::size_t> observed_state_signatures;
-    std::unordered_set<std::size_t> blend_signatures;
+    mutable AsyncRaster::DiagnosticsSet<std::size_t> observed_state_signatures;
+    AsyncRaster::DiagnosticsSet<std::size_t> blend_signatures;
     DkRasterizerState hw_rasterizer_state{};
     DkMultisampleState hw_multisample_state{};
     DkColorState hw_color_state{};
@@ -291,4 +314,52 @@ private:
 #ifdef __SWITCH__
 #define dkFenceWait(fence, timeout)                                                               \
     ::VideoCore::Deko3D::AsyncRaster::FenceWait((fence), (timeout))
+
+#if !defined(AZAHAR_SWITCH_PERF_DIAGNOSTICS)
+#define RecordHardwareDrawSubmitted(...) ((void)0)
+#define RecordHardwareDrawCompleted(...) ((void)0)
+#define RecordHardwareDrawAttempt(...) ((void)0)
+#define RecordHardwareDrawFailure(...) ((void)0)
+#define RecordSoftwareFallback(...) ((void)0)
+#define RecordRingWait(...) ((void)0)
+#define RecordFencePollSuccess(...) ((void)0)
+#define RecordFenceWait(...) ((void)0)
+#define RecordFenceWaitDurationMs(...) ((void)0)
+#define RecordFenceTimeout(...) ((void)0)
+#define RecordQueueError(...) ((void)0)
+#define RecordQueueFlush(...) ((void)0)
+#define RecordFallbackReason(...) ((void)0)
+#define RecordRasterQueueSubmit(...) ((void)0)
+#define RecordRasterQueueFlush(...) ((void)0)
+#define RecordRasterFencePoll(...) ((void)0)
+#define RecordRasterFencePollSuccess(...) ((void)0)
+#define RecordRasterFenceWait(...) ((void)0)
+#define RecordRasterFenceTimeout(...) ((void)0)
+#define RecordRasterFenceWaitDurationUs(...) ((void)0)
+#define RecordRasterQueueError(...) ((void)0)
+#define RecordTransformedBatchCheck(...) ((void)0)
+#define RecordTransformedBatchEligible(...) ((void)0)
+#define RecordTransformedBatchSubmitted(...) ((void)0)
+#define RecordTransformedBatchCompleted(...) ((void)0)
+#define RecordDirectBatchRejected(...) ((void)0)
+#define RecordFallbackInvalidTransformedBatch(...) ((void)0)
+#define RecordBlocker(...) ((void)0)
+#define RecordTransformedBlocker(...) ((void)0)
+#define RecordDirectBlocker(...) ((void)0)
+#define RecordRenderTargetCacheHit(...) ((void)0)
+#define RecordRenderTargetCacheMiss(...) ((void)0)
+#define RecordRenderTargetCacheCreation(...) ((void)0)
+#define RecordRenderTargetCacheEviction(...) ((void)0)
+#define RecordRenderTargetGpuDirty(...) ((void)0)
+#define RecordRenderTargetCpuDirty(...) ((void)0)
+#define RecordBlendState(...) ((void)0)
+#define RecordDepthState(...) ((void)0)
+#define RecordStateSignature(...) ((void)0)
+#define RecordPartialBatch(...) ((void)0)
+#define RecordDuplicateTrianglePrevention(...) ((void)0)
+#define RecordDroppedTriangleDetection(...) ((void)0)
+#define RecordHardwareRasterFrame(...) ((void)0)
+#define RecordSoftwareRasterFrame(...) ((void)0)
+#define RecordTransferOnlyFrame(...) ((void)0)
+#endif
 #endif
