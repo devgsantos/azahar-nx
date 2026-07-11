@@ -36,9 +36,15 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          git submodule sync --recursive > /tmp/submodules.log 2>&1
-          git -c protocol.version=2 submodule update --init --recursive --jobs 4 >> /tmp/submodules.log 2>&1
+          git submodule sync > /tmp/submodules.log 2>&1
+          git -c protocol.version=2 submodule update --init --jobs 4 >> /tmp/submodules.log 2>&1
           status=$?
+          if [ "$status" -eq 0 ]; then
+            git -C externals/dynarmic submodule sync >> /tmp/submodules.log 2>&1
+            git -C externals/dynarmic -c protocol.version=2 submodule update --init \
+              externals/mcl externals/robin-map >> /tmp/submodules.log 2>&1
+            status=$?
+          fi
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit $status
 
