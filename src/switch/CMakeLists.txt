@@ -38,7 +38,12 @@ option(AZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE
 if(AZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE)
     target_sources(video_core PRIVATE
         ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_cpu_dirty_resolve.cpp)
-    target_compile_definitions(video_core PRIVATE AZAHAR_DEKO3D_CPU_DIRTY_HANDOFF=1)
+    # The handoff token rewrite is intentionally visible only while compiling the rasterizer source.
+    # Other video_core files include the same headers and must retain the ordinary bool field.
+    set_property(SOURCE
+        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_rasterizer.cpp
+        TARGET_DIRECTORY video_core
+        APPEND PROPERTY COMPILE_DEFINITIONS AZAHAR_DEKO3D_CPU_DIRTY_HANDOFF=1)
     message(STATUS "Switch Deko3D CPU-dirty render-target resolve enabled")
 endif()
 
