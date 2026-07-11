@@ -61,10 +61,23 @@ public:
 
 private:
 #ifdef __SWITCH__
+    static constexpr u32 UploadSlotCount = 2;
+    static constexpr u32 UploadStagingSliceSize = 4 * 1024 * 1024;
+    static constexpr u32 UploadCommandSize = 16 * 1024;
+
+    struct UploadSlot {
+        DkMemBlock command_mem_block{};
+        DkCmdBuf command_buffer{};
+        DkFence fence{};
+        u32 staging_offset = 0;
+        bool fence_pending = false;
+    };
+
     bool AllocateTexture(CachedTexture& cached, u32 width, u32 height,
-                          Pica::TexturingRegs::TextureFormat format);
+                         Pica::TexturingRegs::TextureFormat format);
     bool UploadTexture(CachedTexture& cached, const Pica::TexturingRegs::TextureConfig& config,
                        Pica::TexturingRegs::TextureFormat format);
+    bool WaitForUploadSlot(UploadSlot& slot);
     void DestroyTexture(CachedTexture& cached);
     DkSampler CreateSampler(const Pica::TexturingRegs::TextureConfig& config) const;
     std::optional<DkImageFormat> MapTextureFormat(Pica::TexturingRegs::TextureFormat format) const;
@@ -76,8 +89,8 @@ private:
     DkMemBlock staging_mem_block{};
     DkGpuAddr staging_gpu_addr = 0;
     void* staging_cpu_addr = nullptr;
-    DkMemBlock upload_command_mem_block{};
-    DkCmdBuf upload_command_buffer{};
+    std::array<UploadSlot, UploadSlotCount> upload_slots{};
+    u32 current_upload_slot = 0;
     std::unordered_map<u64, std::unique_ptr<CachedTexture>> cache;
 #endif
     bool initialized = false;
