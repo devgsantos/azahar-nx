@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -80,9 +81,11 @@ public:
     }
 
     void WaitRasterQueue() {
+        // Raster and presentation use the same graphics queue. A flush makes submitted work visible,
+        // while queue ordering guarantees that the following present commands execute afterwards.
+        // Waiting for the whole queue here serialized every screen blit with every hardware draw.
         if (queue) {
             dkQueueFlush(queue);
-            dkQueueWaitIdle(queue);
         }
     }
 
@@ -230,4 +233,88 @@ private:
     std::string last_error;
 };
 
+#ifdef __SWITCH__
+namespace PerfSync {
+
+// The renderer intentionally uses one graphics queue. These small wrappers keep ordering intact
+// while removing redundant whole-queue drains from hot paths. They are scoped by source filename so
+// shutdown, error recovery, and unrelated Deko3D users retain the original blocking semantics.
+inline thread_local bool present_fence_recorded = false;
+inline thread_local bool present_submission_pending = false;
+inline thread_local bool texture_completion_wait = false;
+inline thread_local u32 descriptor_slot = 0;
+
+constexpr u32 DescriptorSlotCount = 3;
+constexpr u32 DescriptorSlotSize = 16 * 1024;
+
+inline bool SourceIs(const char* file, const char* name) {
+    return file != nullptr && std::strstr(file, name) != nullptr;
+}
+
+inline u32 DescriptorOffset() {
+    return descriptor_slot * DescriptorSlotSize;
+}
+
+inline void ResetDescriptorSlot() {
+    descriptor_slot = 0;
+}
+
+inline void AdvanceDescriptorSlot() {
+    descriptor_slot = (descriptor_slot + 1) % DescriptorSlotCount;
+}
+
+inline void CmdBufSignalFence(DkCmdBuf command_buffer, DkFence* fence, bool flush,
+                              const char* file) {
+    ::dkCmdBufSignalFence(command_buffer, fence, flush);
+    if (SourceIs(file, "deko3d_state.cpp")) {
+        present_fence_recorded = true;
+    }
+}
+
+inline void QueueSubmitCommands(DkQueue submit_queue, DkCmdList command_list,
+                                const char* file) {
+    ::dkQueueSubmitCommands(submit_queue, command_list);
+    if (SourceIs(file, "deko3d_rasterizer.cpp")) {
+        AdvanceDescriptorSlot();
+    }
+    if (SourceIs(file, "deko3d_state.cpp") && present_fence_recorded) {
+        present_fence_recorded = false;
+        present_submission_pending = true;
+    }
+}
+
+inline void QueueWaitIdle(DkQueue wait_queue, const char* file, int line) {
+    if (SourceIs(file, "deko3d_state.cpp")) {
+        // The hot present wait is near the end of State::PresentScreenTexturesFrame. Its fence is
+        // consumed before the next acquire, so this extra queue-wide wait only destroys overlap.
+        if (present_submission_pending && line >= 1280) {
+            present_submission_pending = false;
+            return;
+        }
+        // Any shutdown/fallback wait must remain real and also clears stale hot-path state.
+        present_submission_pending = false;
+    } else if (SourceIs(file, "deko3d_texture_cache.cpp")) {
+        // Texture uploads use one staging allocation. Keep the post-submit completion wait, but
+        // remove the redundant pre-submit drain; the previous upload already completed before reuse.
+        if (!texture_completion_wait) {
+            texture_completion_wait = true;
+            return;
+        }
+        texture_completion_wait = false;
+    }
+    ::dkQueueWaitIdle(wait_queue);
+}
+
+} // namespace PerfSync
+#endif
+
 } // namespace VideoCore::Deko3D
+
+#ifdef __SWITCH__
+#define dkCmdBufSignalFence(command_buffer, fence, flush)                                         \
+    ::VideoCore::Deko3D::PerfSync::CmdBufSignalFence((command_buffer), (fence), (flush), __FILE__)
+#define dkQueueSubmitCommands(submit_queue, command_list)                                         \
+    ::VideoCore::Deko3D::PerfSync::QueueSubmitCommands((submit_queue), (command_list), __FILE__)
+#define dkQueueWaitIdle(wait_queue)                                                                \
+    ::VideoCore::Deko3D::PerfSync::QueueWaitIdle((wait_queue), __FILE__, __LINE__)
+#endif
