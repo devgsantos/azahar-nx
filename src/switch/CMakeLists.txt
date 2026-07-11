@@ -30,6 +30,15 @@ create_target_directory_groups(azahar_switch)
 target_compile_definitions(azahar_switch PRIVATE AZAHAR_SWITCH)
 target_link_libraries(azahar_switch PRIVATE citra_common citra_core video_core audio_core input_common)
 
+# Dynarmic normally publishes a newly emitted block, relinks older referencing blocks, and publishes
+# again. On libnx CodeMemory each publication flushes and invalidates the complete 8 MiB allocation.
+# The fork already supports combining those writes into one publication without using the unstable
+# partial-range path. Keep the option controlled by the Azahar integration branch.
+if(AZAHAR_SWITCH_JIT_CONSOLIDATED_PUBLISH AND TARGET dynarmic)
+    target_compile_definitions(dynarmic PRIVATE AZAHAR_SWITCH_DYNARMIC_CONSOLIDATED_PUBLISH)
+    message(STATUS "Switch Dynarmic consolidated publication enabled")
+endif()
+
 # Keep the full crash breadcrumbs for explicit diagnostic builds. In normal performance builds,
 # rename only the expensive bridge implementations so the lightweight hooks provide the public
 # symbols without changing Dynarmic or the exception-handler ABI.
