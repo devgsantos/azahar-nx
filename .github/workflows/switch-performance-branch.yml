@@ -26,8 +26,12 @@ jobs:
 
       - name: Checkout required submodules
         run: |
-          git submodule sync --recursive
-          git -c protocol.version=2 submodule update --init --recursive --depth 1 --jobs 4
+          set +e
+          git submodule sync --recursive > /tmp/submodules.log 2>&1
+          git -c protocol.version=2 submodule update --init --recursive --jobs 4 >> /tmp/submodules.log 2>&1
+          status=$?
+          tail -n 120 /tmp/submodules.log
+          exit $status
 
       - name: Configure and build release NRO
         env:
