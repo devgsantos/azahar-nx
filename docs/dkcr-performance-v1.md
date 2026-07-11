@@ -32,6 +32,60 @@ For an immediate partial-JIT rollback build:
 JIT_PARTIAL_PUBLISH=OFF ./build-switch.sh
 ```
 
+## Submodule safety and branch policy
+
+The `azahar-nx/main`, `dynarmic-nx/main`, and `oaknut-nx/main` branches are treated as one tested, compatible baseline. Performance development must not make Azahar builds follow the moving `main` head of either dependency.
+
+For this v1 branch:
+
+- use the exact Dynarmic and Oaknut commits recorded by the Azahar gitlinks
+- do not replace the gitlinks at build time by cloning dependency `main`
+- do not modify `dynarmic-nx/main` or `oaknut-nx/main` directly
+- initialize only the nested Dynarmic dependencies actually required by the ARM64 build
+- do not recursively follow Dynarmic's nested Oaknut gitlink; Azahar already supplies its compatible top-level Oaknut checkout
+
+Safe local synchronization for the current branch:
+
+```bash
+git fetch origin
+git switch feat/gpt-performance-improvements-v1
+git pull --ff-only origin feat/gpt-performance-improvements-v1
+
+git submodule sync
+git submodule update --init --jobs 4
+
+git -C externals/dynarmic submodule sync
+git -C externals/dynarmic submodule update --init \
+  externals/mcl \
+  externals/robin-map
+```
+
+Do not use an unrestricted recursive update for this dependency layout:
+
+```bash
+git submodule update --init --recursive
+```
+
+### When Dynarmic or Oaknut changes are required
+
+Create a dedicated branch in each dependency that actually needs modification. Prefer a matching integration name, for example:
+
+- `devgsantos/dynarmic-nx:feat/gpt-performance-improvements-v1`
+- `devgsantos/oaknut-nx:feat/gpt-performance-improvements-v1`
+
+Then follow this sequence:
+
+1. Branch from the dependency's tested `main` head.
+2. Apply and validate the dependency-only changes on that feature branch.
+3. Update `azahar-nx:feat/gpt-performance-improvements-v1` to pin the exact dependency commit SHA in its gitlink.
+4. Build Azahar from those exact pinned commits; never resolve a floating branch head inside CI.
+5. Keep dependency branches available and avoid force-pushing them while Azahar validation is active.
+6. Merge validated dependency pull requests first.
+7. Confirm the pinned commits are now reachable from each dependency's `main`.
+8. Merge the Azahar pull request last.
+
+This merge order ensures that `azahar-nx/main` never points to a dependency commit that is available only on a temporary branch. If no dependency source change is required, retain the existing Azahar gitlinks and do not create unnecessary dependency branches.
+
 ## Test conditions
 
 Use the same console, firmware, Atmosphere version, game region/update, SD card, power mode, and clock profile for both `main` and this branch.
