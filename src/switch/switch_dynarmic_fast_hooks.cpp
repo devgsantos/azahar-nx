@@ -51,4 +51,12 @@ extern "C" void azahar_switch_dynarmic_jit_log_a32_svc(
     (void)guest_pc;
 }
 
+extern "C" void azahar_switch_dynarmic_jit_record_run_noop(
+    std::uint64_t host_ns, std::uint64_t requested_ticks,
+    std::uint64_t executed_ticks) noexcept {
+    (void)host_ns;
+    (void)requested_ticks;
+    (void)executed_ticks;
+}
+
 #endif
