@@ -39,6 +39,11 @@ if(NOT AZAHAR_SWITCH_PERF_DIAGNOSTICS)
         azahar_switch_dynarmic_jit_update_breadcrumb=azahar_switch_dynarmic_jit_update_breadcrumb_diagnostic
         azahar_switch_dynarmic_jit_log_host_timing=azahar_switch_dynarmic_jit_log_host_timing_diagnostic
         azahar_switch_dynarmic_jit_log_a32_svc=azahar_switch_dynarmic_jit_log_a32_svc_diagnostic)
+
+    # ARM_Dynarmic::Run used to update atomic counters on every host dispatch even when the values
+    # were never consumed. Redirect only citra_core's call site to the lightweight implementation.
+    target_compile_definitions(citra_core PRIVATE
+        azahar_switch_dynarmic_jit_record_run=azahar_switch_dynarmic_jit_record_run_noop)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
