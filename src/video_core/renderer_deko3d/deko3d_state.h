@@ -233,6 +233,7 @@ namespace PerfSync {
 inline thread_local bool present_fence_recorded = false;
 inline thread_local bool present_submission_pending = false;
 inline thread_local u32 descriptor_slot = 0;
+inline thread_local DkQueue texture_queue{};
 
 constexpr u32 DescriptorSlotCount = 8;
 constexpr u32 DescriptorSlotSize = 16 * 1024;
@@ -267,6 +268,9 @@ inline void QueueSubmitCommands(DkQueue submit_queue, DkCmdList command_list,
     if (SourceIs(file, "deko3d_rasterizer.cpp")) {
         AdvanceDescriptorSlot();
     }
+    if (SourceIs(file, "deko3d_texture_cache.cpp")) {
+        texture_queue = submit_queue;
+    }
     if (SourceIs(file, "deko3d_state.cpp") && present_fence_recorded) {
         present_fence_recorded = false;
         present_submission_pending = true;
@@ -282,6 +286,17 @@ inline void QueueWaitIdle(DkQueue wait_queue, const char* file, int line) {
         present_submission_pending = false;
     }
     ::dkQueueWaitIdle(wait_queue);
+}
+
+inline void MemBlockDestroy(DkMemBlock mem_block, const char* file) {
+    // Texture cache entries can be evicted or invalidated while draw command lists still reference
+    // their image views. Drain only at destruction boundaries; steady-state cache hits/uploads remain
+    // asynchronous and ordered on the shared graphics queue.
+    if (SourceIs(file, "deko3d_texture_cache.cpp") && texture_queue) {
+        ::dkQueueFlush(texture_queue);
+        ::dkQueueWaitIdle(texture_queue);
+    }
+    ::dkMemBlockDestroy(mem_block);
 }
 
 } // namespace PerfSync
@@ -375,4 +390,6 @@ inline void QueueWaitIdle(DkQueue wait_queue, const char* file, int line) {
     ::VideoCore::Deko3D::PerfSync::QueueSubmitCommands((submit_queue), (command_list), __FILE__)
 #define dkQueueWaitIdle(wait_queue)                                                                \
     ::VideoCore::Deko3D::PerfSync::QueueWaitIdle((wait_queue), __FILE__, __LINE__)
+#define dkMemBlockDestroy(mem_block)                                                               \
+    ::VideoCore::Deko3D::PerfSync::MemBlockDestroy((mem_block), __FILE__)
 #endif
