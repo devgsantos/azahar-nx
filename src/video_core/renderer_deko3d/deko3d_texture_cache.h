@@ -34,6 +34,8 @@ struct CachedTexture {
     DkImageView view{};
     DkMemBlock mem_block{};
     DkSampler sampler{};
+    u64 allocation_bytes = 0;
+    u64 last_used_generation = 0;
     u32 upload_slot = 0xFFFFFFFFu;
     u64 upload_serial = 0;
 };
@@ -66,6 +68,7 @@ private:
     static constexpr u32 UploadSlotCount = 2;
     static constexpr u32 UploadStagingSliceSize = 4 * 1024 * 1024;
     static constexpr u32 UploadCommandSize = 16 * 1024;
+    static constexpr u64 TextureCacheBudgetBytes = 96ULL * 1024 * 1024;
 
     struct UploadSlot {
         DkMemBlock command_mem_block{};
@@ -82,6 +85,7 @@ private:
                        Pica::TexturingRegs::TextureFormat format);
     bool WaitForUploadSlot(UploadSlot& slot);
     bool WaitForTextureUpload(CachedTexture& cached);
+    bool EvictForAllocation(u64 required_bytes);
     void DestroyTexture(CachedTexture& cached);
     DkSampler CreateSampler(const Pica::TexturingRegs::TextureConfig& config) const;
     std::optional<DkImageFormat> MapTextureFormat(Pica::TexturingRegs::TextureFormat format) const;
@@ -96,6 +100,8 @@ private:
     std::array<UploadSlot, UploadSlotCount> upload_slots{};
     u32 current_upload_slot = 0;
     u64 next_upload_serial = 0;
+    u64 cache_generation = 0;
+    u64 cache_allocation_bytes = 0;
     std::unordered_map<u64, std::unique_ptr<CachedTexture>> cache;
 #endif
     bool initialized = false;
