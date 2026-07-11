@@ -120,6 +120,14 @@ public:
         return base != address;
     }
 
+    bool operator==(int address) const {
+        return base == static_cast<DkGpuAddr>(address);
+    }
+
+    bool operator!=(int address) const {
+        return base != static_cast<DkGpuAddr>(address);
+    }
+
     friend DkGpuAddr operator+(const DescriptorGpuAddress& address, std::size_t offset) {
         return address.base == 0 ? 0
                                  : address.base + PerfSync::DescriptorOffset() +
