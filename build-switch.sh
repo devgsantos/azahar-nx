@@ -22,6 +22,10 @@ DEKO3D_VALIDATION="${DEKO3D_VALIDATION:-OFF}"
 DEKO3D_VERBOSE_TELEMETRY="${DEKO3D_VERBOSE_TELEMETRY:-OFF}"
 SWITCH_PERF_DIAGNOSTICS="${SWITCH_PERF_DIAGNOSTICS:-OFF}"
 SWITCH_TRACE_ENABLED="${SWITCH_TRACE_ENABLED:-OFF}"
+# Stable dual-alias CodeMemory can publish only the generated range instead of transitioning and
+# invalidating the full JIT allocation for every block. Set JIT_PARTIAL_PUBLISH=OFF for an immediate
+# hardware-test fallback if a title exposes a cache-coherency regression.
+JIT_PARTIAL_PUBLISH="${JIT_PARTIAL_PUBLISH:-ON}"
 
 cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
@@ -38,6 +42,7 @@ cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DAZAHAR_DEKO3D_VERBOSE_TELEMETRY="$DEKO3D_VERBOSE_TELEMETRY" \
     -DAZAHAR_SWITCH_PERF_DIAGNOSTICS="$SWITCH_PERF_DIAGNOSTICS" \
     -DAZAHAR_SWITCH_TRACE_ENABLED="$SWITCH_TRACE_ENABLED" \
+    -DAZAHAR_SWITCH_JIT_PARTIAL_PUBLISH="$JIT_PARTIAL_PUBLISH" \
     "$@"
 
 cmake --build "$BUILD_DIR" --target azahar_switch -- -j"$JOBS"
