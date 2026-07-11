@@ -255,6 +255,7 @@ private:
     HardwareEligibility EvaluateTransformedBatchEligibility() const;
     HardwareEligibility EvaluateDirectBatchEligibility(bool is_indexed) const;
     bool TryDrawHardwareBatch(std::size_t& submitted_vertices);
+    bool ResolveCpuDirtyRenderTarget(State::CachedRenderTarget& color_target);
     bool SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarget& color_target,
                              const DkImageView* depth_target, std::size_t base_vertex,
                              std::size_t vertex_count,
