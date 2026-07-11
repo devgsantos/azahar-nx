@@ -80,9 +80,6 @@ public:
     }
 
     void WaitRasterQueue() {
-        // Raster and presentation share one graphics queue. Submission order is sufficient to make
-        // render-target writes visible to the following present draw; a whole-queue idle wait here
-        // serialized every hardware frame.
         if (queue) {
             dkQueueFlush(queue);
         }
@@ -237,7 +234,7 @@ inline thread_local bool present_fence_recorded = false;
 inline thread_local bool present_submission_pending = false;
 inline thread_local u32 descriptor_slot = 0;
 
-constexpr u32 DescriptorSlotCount = 3;
+constexpr u32 DescriptorSlotCount = 8;
 constexpr u32 DescriptorSlotSize = 16 * 1024;
 
 inline bool SourceIs(const char* file, const char* name) {
