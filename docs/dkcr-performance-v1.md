@@ -17,7 +17,10 @@ This profile uses:
 - Switch trace writes: off
 - performance diagnostics: off
 - partial JIT publication: off
-- stable full libnx JIT executable transition: on
+- stable full libnx JIT executable publication: on
+- consolidated Dynarmic block publication: on
+
+Dynarmic emits a new block and may then patch older blocks that reference it. Without consolidation, the Switch path publishes once after emission and again after relinking. On libnx `JitType_CodeMemory`, each full publication flushes and invalidates the complete JIT allocation. The consolidated mode keeps the stable full publication path but combines those writes into one publication per emitted block.
 
 For a diagnostic comparison build:
 
@@ -35,7 +38,13 @@ JIT_PARTIAL_PUBLISH=ON ./build-switch.sh
 
 Do not use that experimental profile for normal hardware testing. DKCR exited immediately after additional Dynarmic code blocks were created with `partial_publish_enabled=true`, before the first PICA draw or Deko3D presentation activity. The stable profile therefore keeps `jitTransitionToExecutable()` in the publication path.
 
-After pulling the rollback commit, perform one clean rebuild so the previous compile definition cannot remain in cached objects:
+The consolidated publication optimization can be disabled independently for comparison:
+
+```bash
+JIT_CONSOLIDATED_PUBLISH=OFF ./build-switch.sh
+```
+
+After changing either publication mode, perform one clean rebuild so the previous compile definition cannot remain in cached Dynarmic objects:
 
 ```bash
 rm -rf build-switch
@@ -47,6 +56,19 @@ The startup log must report:
 ```text
 partial_publish_enabled=false
 ```
+
+## Current DKCR hardware result
+
+The first stable test with partial publication disabled reached the title flow without a process exit. The first frame was presented at approximately 14.4 seconds. Colors, title-screen elements, and composition were reported as correct.
+
+This is an important renderer milestone:
+
+- Deko3D device, queue, shaders, texture cache, rasterizer, and presentation initialized successfully
+- the GPU path produced coherent colors and visible elements
+- no Deko3D queue error or GPU timeout was reported in the captured interval
+- the remaining dominant problem is execution speed rather than basic rendering correctness
+
+The same log showed large real-time gaps while the emulated title continued advancing: approximately 24.5 to 87.2 seconds and 89.2 to 178.9 seconds. Those gaps occurred after renderer initialization and first presentation, so the next investigation priority is CPU/JIT publication cost, ARM11 execution, and CPU-transformed PICA geometry rather than color or presentation repair.
 
 ## Submodule safety and branch policy
 
