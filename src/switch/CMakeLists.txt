@@ -30,6 +30,18 @@ create_target_directory_groups(azahar_switch)
 target_compile_definitions(azahar_switch PRIVATE AZAHAR_SWITCH)
 target_link_libraries(azahar_switch PRIVATE citra_common citra_core video_core audio_core input_common)
 
+# A software fallback marks its guest-memory render target CPU-dirty. Without a resolve, every later
+# otherwise-supported batch is rejected forever. Restore RGBA8 guest contents into the cached Deko3D
+# image at the software-to-hardware handoff. Keep a build-time kill switch for hardware rollback.
+option(AZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE
+       "Resolve CPU-dirty RGBA8 render targets before Deko3D hardware draws" ON)
+if(AZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE)
+    target_sources(video_core PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_cpu_dirty_resolve.cpp)
+    target_compile_definitions(video_core PRIVATE AZAHAR_DEKO3D_CPU_DIRTY_HANDOFF=1)
+    message(STATUS "Switch Deko3D CPU-dirty render-target resolve enabled")
+endif()
+
 # Dynarmic normally publishes a newly emitted block, relinks older referencing blocks, and publishes
 # again. On libnx CodeMemory each publication flushes and invalidates the complete 8 MiB allocation.
 # The fork already supports combining those writes into one publication without using the unstable
