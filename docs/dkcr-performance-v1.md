@@ -16,7 +16,8 @@ This profile uses:
 - verbose graphics telemetry: off
 - Switch trace writes: off
 - performance diagnostics: off
-- partial JIT publication: on
+- partial JIT publication: off
+- stable full libnx JIT executable transition: on
 
 For a diagnostic comparison build:
 
@@ -26,10 +27,25 @@ DEKO3D_VERBOSE_TELEMETRY=ON \
 ./build-switch.sh
 ```
 
-For an immediate partial-JIT rollback build:
+Partial JIT publication is retained only as an experimental, isolated comparison:
 
 ```bash
-JIT_PARTIAL_PUBLISH=OFF ./build-switch.sh
+JIT_PARTIAL_PUBLISH=ON ./build-switch.sh
+```
+
+Do not use that experimental profile for normal hardware testing. DKCR exited immediately after additional Dynarmic code blocks were created with `partial_publish_enabled=true`, before the first PICA draw or Deko3D presentation activity. The stable profile therefore keeps `jitTransitionToExecutable()` in the publication path.
+
+After pulling the rollback commit, perform one clean rebuild so the previous compile definition cannot remain in cached objects:
+
+```bash
+rm -rf build-switch
+./build-switch.sh
+```
+
+The startup log must report:
+
+```text
+partial_publish_enabled=false
 ```
 
 ## Submodule safety and branch policy
@@ -146,14 +162,19 @@ Texture decode/upload or JIT compilation is still visible. Compare cold and warm
 
 Inspect texture-cache eviction frequency, render-target growth, memory pressure, and repeated invalidation ranges.
 
-### A GPU timeout or crash returns
+### An early process exit returns
+
+First verify that every JIT allocation reports `partial_publish_enabled=false`. If it reports `true`, the wrong or stale build is running.
+
+If it still exits before the first PICA draw with partial publication disabled, use a diagnostic build to restore Dynarmic breadcrumbs and capture the Switch exception dump before changing renderer synchronization.
+
+### A GPU timeout or renderer crash returns
 
 Test these rollback points independently:
 
-1. `JIT_PARTIAL_PUBLISH=OFF`
-2. diagnostic build with Deko3D validation enabled
-3. reduce the asynchronous draw ring to the previous three entries
-4. disable asynchronous texture upload while retaining tile-based decode
+1. diagnostic build with Deko3D validation enabled
+2. reduce the asynchronous draw ring to the previous three entries
+3. disable asynchronous texture upload while retaining tile-based decode
 
 Do not merge until the exact regression source is isolated.
 
