@@ -22,6 +22,10 @@ DEKO3D_VALIDATION="${DEKO3D_VALIDATION:-OFF}"
 DEKO3D_VERBOSE_TELEMETRY="${DEKO3D_VERBOSE_TELEMETRY:-OFF}"
 SWITCH_PERF_DIAGNOSTICS="${SWITCH_PERF_DIAGNOSTICS:-OFF}"
 SWITCH_TRACE_ENABLED="${SWITCH_TRACE_ENABLED:-OFF}"
+# Supported GPU display transfers are materialized into destination snapshots instead of aliases to
+# mutable source render targets. This is safe to compile in the stable profile and becomes observable
+# when a source target is already GPU-owned.
+DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS="${DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS:-ON}"
 # The CPU-dirty handoff is experimental. DKCR testing showed black/white screens when every
 # transformed batch was forced onto hardware, so stable builds explicitly override cached CMake
 # state and keep the known-correct software fallback enabled.
@@ -50,6 +54,7 @@ cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DAZAHAR_DEKO3D_VERBOSE_TELEMETRY="$DEKO3D_VERBOSE_TELEMETRY" \
     -DAZAHAR_SWITCH_PERF_DIAGNOSTICS="$SWITCH_PERF_DIAGNOSTICS" \
     -DAZAHAR_SWITCH_TRACE_ENABLED="$SWITCH_TRACE_ENABLED" \
+    -DAZAHAR_SWITCH_DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS="$DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS" \
     -DAZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE="$DEKO3D_CPU_DIRTY_RESOLVE" \
     -DAZAHAR_SWITCH_JIT_PARTIAL_PUBLISH="$JIT_PARTIAL_PUBLISH" \
     -DAZAHAR_SWITCH_JIT_CONSOLIDATED_PUBLISH="$JIT_CONSOLIDATED_PUBLISH" \
