@@ -14,6 +14,10 @@
 #include <deko3d.h>
 #endif
 
+namespace Memory {
+class MemorySystem;
+}
+
 namespace VideoCore::Deko3D {
 
 class State {
@@ -125,28 +129,52 @@ public:
         bool gpu_dirty = false;
         bool cpu_dirty = false;
         bool needs_clear = true;
+        bool software_locked = false;
     };
 
-    struct DisplayTransferTarget {
+    struct DisplayTransferSurface {
         PAddr display_address = 0;
-        const CachedRenderTarget* target = nullptr;
-        u64 deko_generation = 0;
-        u32 input_width = 0;
-        u32 input_height = 0;
-        u32 output_width = 0;
-        u32 output_height = 0;
-        u32 flags = 0;
+        DkMemBlock mem_block{};
+        DkImage image{};
+        DkImageView view{};
+        DkMemBlock command_mem_block{};
+        DkCmdBuf command_buffer{};
+        DkFence fence{};
+        u32 width = 0;
+        u32 height = 0;
+        u32 format = 0;
+        u32 output_bytes_per_pixel = 0;
+        u64 completed_generation = 0;
+        bool fence_pending = false;
+        bool valid = false;
+    };
+
+    struct PresentImage {
+        const DkImageView* view = nullptr;
+        u32 width = 0;
+        u32 height = 0;
+        bool direct_render_target = false;
+
+        [[nodiscard]] bool IsValid() const {
+            return view != nullptr && width != 0 && height != 0;
+        }
     };
 
     CachedRenderTarget* GetOrCreateRenderTarget(const RenderTargetKey& key);
+    [[nodiscard]] CachedRenderTarget* FindRenderTarget(const RenderTargetKey& key);
+    [[nodiscard]] CachedRenderTarget* FindRenderTargetByAddressRange(PAddr address, u32 bytes);
     [[nodiscard]] const CachedRenderTarget* FindGpuDirtyRenderTarget(PAddr address) const;
-    [[nodiscard]] const CachedRenderTarget* GetSelectedPresentRenderTarget() const;
-    [[nodiscard]] const CachedRenderTarget* GetSelectedBottomPresentRenderTarget() const;
+    [[nodiscard]] PresentImage GetSelectedPresentImage() const;
+    [[nodiscard]] PresentImage GetSelectedBottomPresentImage() const;
     void SelectPresentRenderTarget(PAddr address);
     void SelectPresentRenderTargets(PAddr top_address, PAddr bottom_address);
     void MarkRenderTargetGpuDirty(CachedRenderTarget& target);
+    bool PrepareRenderTargetForSoftware(CachedRenderTarget& target, Memory::MemorySystem& memory);
+    bool PrepareRenderTargetForHardware(CachedRenderTarget& target, Memory::MemorySystem& memory);
+    void UnlockSoftwareRenderTarget(PAddr address);
     bool RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32 input_width,
-                               u32 input_height, u32 output_width, u32 output_height, u32 flags);
+                               u32 input_height, u32 output_width, u32 output_height, u32 flags,
+                               u32 output_bytes_per_pixel);
     void MarkRenderTargetSoftwareDirty(PAddr address, u32 bytes);
     void MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes);
     void InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner);
@@ -172,10 +200,16 @@ private:
     bool RecordStaticCommands();
     bool CreateScreenTextures();
     bool CreatePresentResources();
-    bool DrawCachedScreenRenderTarget(const CachedRenderTarget& target, u32 slot,
-                                      u32 scratch_index, u32 src_y, u32 src_height, u32 dst_x,
-                                      u32 dst_y, u32 dst_width, u32 dst_height,
-                                      const char* label);
+    bool CreateSyncResources();
+    bool DrawPresentImage(const DkImageView& view, u32 source_width, u32 source_height, u32 slot,
+                          u32 scratch_index, u32 src_y, u32 src_height, u32 dst_x, u32 dst_y,
+                          u32 dst_width, u32 dst_height, const char* label);
+    DisplayTransferSurface* GetOrCreateDisplayTransferSurface(PAddr address, u32 width, u32 height,
+                                                              u32 format,
+                                                              u32 output_bytes_per_pixel);
+    void DestroyDisplayTransferSurface(DisplayTransferSurface& surface);
+    bool WaitForSurfaceFence(DisplayTransferSurface& surface);
+    bool WaitForSyncFence();
     bool QueueHasError(const char* context);
     void FlushQueue();
 
@@ -209,12 +243,18 @@ private:
     bool present_fence_pending = false;
     bool top_screen_gpu_dirty = false;
     std::vector<std::unique_ptr<CachedRenderTarget>> render_targets;
-    std::vector<DisplayTransferTarget> display_transfer_targets;
+    std::vector<std::unique_ptr<DisplayTransferSurface>> display_transfer_surfaces;
     u64 render_target_generation = 0;
-    const CachedRenderTarget* selected_present_render_target = nullptr;
-    const CachedRenderTarget* selected_bottom_present_render_target = nullptr;
-    const CachedRenderTarget* last_present_render_target = nullptr;
-    const CachedRenderTarget* last_bottom_present_render_target = nullptr;
+    PresentImage selected_present_image{};
+    PresentImage selected_bottom_present_image{};
+    DkMemBlock sync_mem_block{};
+    void* sync_cpu_buffer = nullptr;
+    DkGpuAddr sync_gpu_addr = 0;
+    u32 sync_buffer_size = 0;
+    DkMemBlock sync_command_mem_block{};
+    DkCmdBuf sync_command_buffer{};
+    DkFence sync_fence{};
+    bool sync_fence_pending = false;
 
     // Screen textures for CPU framebuffer display (400x240 top, 320x240 bottom)
     DkMemBlock screen_tex_mem_block{};

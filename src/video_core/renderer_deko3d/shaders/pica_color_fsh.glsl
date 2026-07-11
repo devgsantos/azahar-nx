@@ -7,7 +7,11 @@ layout (std140, binding = 0) uniform PicaFragmentState {
     int alpha_test_enabled;
     int alpha_test_func;
     float alpha_test_ref;
-    float alpha_test_pad;
+    int texture_enable_mask;
+    float depth_scale;
+    float depth_offset;
+    int depthmap_w_buffer;
+    int pad0;
 } pica;
 
 bool AlphaTestPassed(float a) {
@@ -25,10 +29,20 @@ bool AlphaTestPassed(float a) {
     return false;
 }
 
+float PicaDepth() {
+    float z_over_w = -gl_FragCoord.z;
+    float depth = z_over_w * pica.depth_scale + pica.depth_offset;
+    if (pica.depthmap_w_buffer != 0) {
+        depth /= gl_FragCoord.w;
+    }
+    return depth;
+}
+
 void main()
 {
     outColor = inColor;
     if (!AlphaTestPassed(outColor.a)) {
         discard;
     }
+    gl_FragDepth = PicaDepth();
 }

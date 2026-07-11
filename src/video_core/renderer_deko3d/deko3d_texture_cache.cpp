@@ -256,13 +256,15 @@ bool TextureCache::AllocateTexture(CachedTexture& cached, u32 width, u32 height,
     dkImageLayoutInitialize(&layout, &layout_maker);
     const u64 image_size = dkImageLayoutGetSize(&layout);
     const u32 image_alignment = dkImageLayoutGetAlignment(&layout);
-    if (image_size == 0 || image_alignment == 0 || image_size > std::numeric_limits<u32>::max()) {
+    if (image_size == 0 || image_alignment == 0 ||
+        image_size > std::numeric_limits<u32>::max()) {
         return false;
     }
+    const u32 image_bytes = AlignUp(static_cast<u32>(image_size), image_alignment);
+    const u32 allocation_bytes = AlignUp(image_bytes, DK_MEMBLOCK_ALIGNMENT);
 
     DkMemBlockMaker mem_block_maker;
-    dkMemBlockMakerDefaults(&mem_block_maker, device,
-                            static_cast<u32>(AlignUp(image_size, image_alignment)));
+    dkMemBlockMakerDefaults(&mem_block_maker, device, allocation_bytes);
     mem_block_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
     cached.mem_block = dkMemBlockCreate(&mem_block_maker);
     if (!cached.mem_block) {

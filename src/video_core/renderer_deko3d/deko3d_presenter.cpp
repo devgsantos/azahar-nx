@@ -155,11 +155,13 @@ bool Presenter::PresentFrame() {
         top_changed = !have_last_addrs || last_top_addr != fb0_addr;
         bottom_changed = !have_last_addrs || last_bottom_addr != fb1_addr;
         state.SelectPresentRenderTargets(fb0_addr, fb1_addr);
-        const auto* const cached_target = state.GetSelectedPresentRenderTarget();
-        const auto* const cached_bottom_target = state.GetSelectedBottomPresentRenderTarget();
-        frame_changed = top_changed || bottom_changed || cached_target != nullptr ||
-                        cached_bottom_target != nullptr || state.IsTopScreenGpuDirty();
-        if (cached_target) {
+        const auto cached_target = state.GetSelectedPresentImage();
+        const auto cached_bottom_target = state.GetSelectedBottomPresentImage();
+        const bool top_use_gpu_blit = cached_target.IsValid();
+        const bool bottom_use_gpu_blit = cached_bottom_target.IsValid();
+        frame_changed = top_changed || bottom_changed || top_use_gpu_blit ||
+                        bottom_use_gpu_blit || state.IsTopScreenGpuDirty();
+        if (top_use_gpu_blit) {
             source = PresentSource::CachedRenderTargetBlit;
         } else {
             source = state.IsTopScreenGpuDirty()
@@ -170,8 +172,6 @@ bool Presenter::PresentFrame() {
 
         // Skip CPU readback when the GPU already has dirty cached render targets,
         // because PresentScreenTexturesFrame will blit them directly.
-        const bool top_use_gpu_blit = cached_target != nullptr;
-        const bool bottom_use_gpu_blit = cached_bottom_target != nullptr;
 
         auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
         if (!screen_buffer ||

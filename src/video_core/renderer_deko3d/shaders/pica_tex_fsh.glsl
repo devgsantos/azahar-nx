@@ -20,10 +20,14 @@ layout (std140, binding = 0) uniform PicaFragmentState {
     int alpha_test_func;
     float alpha_test_ref;
     int texture_enable_mask;
+    float depth_scale;
+    float depth_offset;
+    int depthmap_w_buffer;
     int combiner_update_rgb_mask;
     int combiner_update_alpha_mask;
     int pad2;
     int pad3;
+    int pad4;
     vec4 combiner_buffer_color;
     TevStage tev_stages[6];
 } pica;
@@ -153,6 +157,15 @@ float CombineAlpha(int op, float a1, float a2, float a3)
     return 0.0;
 }
 
+float PicaDepth() {
+    float z_over_w = -gl_FragCoord.z;
+    float depth = z_over_w * pica.depth_scale + pica.depth_offset;
+    if (pica.depthmap_w_buffer != 0) {
+        depth /= gl_FragCoord.w;
+    }
+    return depth;
+}
+
 void main()
 {
     vec4 primary_color = ByteRound(inColor);
@@ -235,4 +248,5 @@ void main()
     if (!AlphaTestPassed(outColor.a)) {
         discard;
     }
+    gl_FragDepth = PicaDepth();
 }

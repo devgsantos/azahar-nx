@@ -13,6 +13,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/color.h"
 #include "common/logging/log.h"
 #include "switch/switch_debug_log.h"
 #include "video_core/pica/pica_core.h"
@@ -163,17 +164,21 @@ struct alignas(16) PicaFragmentState {
     s32 alpha_test_func;
     float alpha_test_ref;
     s32 texture_enable_mask;
+    float depth_scale;
+    float depth_offset;
+    s32 depthmap_w_buffer;
     s32 combiner_update_rgb_mask;
     s32 combiner_update_alpha_mask;
     s32 pad0;
     s32 pad1;
+    s32 pad2;
     float combiner_buffer_color[4];
     TevStage tev_stages[6];
 };
 
 static_assert(sizeof(PicaFragmentState::TevStage) == 80,
               "PicaFragmentState::TevStage must match std140 layout");
-static_assert(sizeof(PicaFragmentState) == 528, "PicaFragmentState must match std140 layout");
+static_assert(sizeof(PicaFragmentState) == 544, "PicaFragmentState must match std140 layout");
 
 struct alignas(16) PicaVertexState {
     s32 flip_viewport;
@@ -810,19 +815,25 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         return false;
     }
     if (color_target->cpu_dirty) {
-        static auto s_last_cpu_dirty_reject_log = std::chrono::steady_clock::time_point{};
-        static PAddr s_last_cpu_dirty_reject_address = 0;
-        const auto now = std::chrono::steady_clock::now();
-        if (s_last_cpu_dirty_reject_address != color_key.color_address ||
-            now - s_last_cpu_dirty_reject_log >= std::chrono::seconds(1)) {
-            s_last_cpu_dirty_reject_log = now;
-            s_last_cpu_dirty_reject_address = color_key.color_address;
-            LOG_INFO(Render, "Deko3D HW reject: color RT is CPU-dirty addr=0x{:08x} size={}x{}",
-                     color_key.color_address, color_key.width, color_key.height);
+        if (color_target->software_locked ||
+            !state.PrepareRenderTargetForHardware(*color_target, memory)) {
+            static auto s_last_cpu_dirty_reject_log = std::chrono::steady_clock::time_point{};
+            static PAddr s_last_cpu_dirty_reject_address = 0;
+            const auto now = std::chrono::steady_clock::now();
+            if (s_last_cpu_dirty_reject_address != color_key.color_address ||
+                now - s_last_cpu_dirty_reject_log >= std::chrono::seconds(1)) {
+                s_last_cpu_dirty_reject_log = now;
+                s_last_cpu_dirty_reject_address = color_key.color_address;
+                LOG_INFO(Render,
+                         "Deko3D HW reject: color RT is CPU-dirty addr=0x{:08x} size={}x{} "
+                         "locked={}",
+                         color_key.color_address, color_key.width, color_key.height,
+                         color_target->software_locked);
+            }
+            RecordTransformedBlocker(WrongRenderTarget);
+            RecordFallbackReason(FallbackReason::WrongRenderTarget);
+            return false;
         }
-        RecordTransformedBlocker(WrongRenderTarget);
-        RecordFallbackReason(FallbackReason::WrongRenderTarget);
-        return false;
     }
     const DkImageView* const depth_target = GetOrCreateDepthTarget();
     if ((regs.framebuffer.output_merger.depth_write_enable != 0 ||
@@ -910,8 +921,10 @@ const DkImageView* Rasterizer::GetOrCreateDepthTarget() {
     layout_maker.dimensions[1] = height;
     DkImageLayout layout;
     dkImageLayoutInitialize(&layout, &layout_maker);
-    const u32 size = AlignUp(static_cast<u32>(dkImageLayoutGetSize(&layout)),
-                             dkImageLayoutGetAlignment(&layout));
+    const u32 size = AlignUp(
+        AlignUp(static_cast<u32>(dkImageLayoutGetSize(&layout)),
+                dkImageLayoutGetAlignment(&layout)),
+        DK_MEMBLOCK_ALIGNMENT);
     DkMemBlockMaker mem_block_maker;
     dkMemBlockMakerDefaults(&mem_block_maker, device, size);
     mem_block_maker.flags = DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image;
@@ -1116,12 +1129,20 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         .alpha_test_func = MapAlphaTestFunc(alpha_test.func.Value()),
         .alpha_test_ref = alpha_test.ref.Value() / 255.0f,
         .texture_enable_mask = static_cast<s32>(texture_mask),
+        .depth_scale = Pica::f24::FromRaw(regs.rasterizer.viewport_depth_range).ToFloat32(),
+        .depth_offset =
+            Pica::f24::FromRaw(regs.rasterizer.viewport_depth_near_plane).ToFloat32(),
+        .depthmap_w_buffer =
+            regs.rasterizer.depthmap_enable == Pica::RasterizerRegs::DepthBuffering::WBuffering
+                ? 1
+                : 0,
         .combiner_update_rgb_mask =
             static_cast<s32>(regs.texturing.tev_combiner_buffer_input.update_mask_rgb.Value()),
         .combiner_update_alpha_mask =
             static_cast<s32>(regs.texturing.tev_combiner_buffer_input.update_mask_a.Value()),
         .pad0 = 0,
         .pad1 = 0,
+        .pad2 = 0,
         .combiner_buffer_color =
             {regs.texturing.tev_combiner_buffer_color.r.Value() / 255.0f,
              regs.texturing.tev_combiner_buffer_color.g.Value() / 255.0f,
@@ -1358,6 +1379,22 @@ void Rasterizer::DrawTriangles() {
 
 void Rasterizer::DrawSoftwareFallback(std::size_t first_vertex) {
     LogSoftwareBridgeOnce();
+#ifdef __SWITCH__
+    const auto& fb = regs.framebuffer.framebuffer;
+    State::RenderTargetKey color_key{
+        .color_address = fb.GetColorBufferPhysicalAddress(),
+        .width = fb.GetWidth(),
+        .height = fb.GetHeight(),
+        .format = static_cast<u32>(fb.color_format.Value()),
+    };
+    if (State::CachedRenderTarget* target = state.FindRenderTarget(color_key)) {
+        if (!state.PrepareRenderTargetForSoftware(*target, memory)) {
+            LOG_WARNING(Render,
+                        "Deko3D software fallback could not read back GPU RT addr=0x{:08x}",
+                        color_key.color_address);
+        }
+    }
+#endif
     first_vertex -= first_vertex % 3;
     for (std::size_t index = first_vertex; index + 2 < fallback_vertex_batch.size(); index += 3) {
         software_fallback.AddTriangle(fallback_vertex_batch[index], fallback_vertex_batch[index + 1],
@@ -1366,7 +1403,6 @@ void Rasterizer::DrawSoftwareFallback(std::size_t first_vertex) {
     RecordSoftwareFallback((fallback_vertex_batch.size() - first_vertex) / 3);
     RecordSoftwareRasterFrame();
 #ifdef __SWITCH__
-    const auto& fb = regs.framebuffer.framebuffer;
     state.MarkRenderTargetSoftwareDirty(
         fb.GetColorBufferPhysicalAddress(),
         fb.GetWidth() * fb.GetHeight() * Pica::FramebufferRegs::BytesPerColorPixel(fb.color_format));
@@ -1410,13 +1446,93 @@ void Rasterizer::ClearAll(bool flush) {
     software_fallback.ClearAll(flush);
 }
 
+bool Rasterizer::AccelerateFill(const Pica::MemoryFillConfig& config) {
+#ifdef __SWITCH__
+    if (!initialized || !queue) {
+        return false;
+    }
+
+    const PAddr start_address = config.GetStartAddress();
+    const PAddr end_address = config.GetEndAddress();
+    if (start_address == 0 || end_address <= start_address) {
+        return false;
+    }
+    const u64 fill_bytes = static_cast<u64>(end_address) - start_address;
+    if (fill_bytes > std::numeric_limits<u32>::max()) {
+        return false;
+    }
+
+    State::CachedRenderTarget* target =
+        state.FindRenderTargetByAddressRange(start_address, static_cast<u32>(fill_bytes));
+    if (!target) {
+        return false;
+    }
+
+    const auto format = static_cast<Pica::FramebufferRegs::ColorFormat>(target->key.format);
+    if (!config.fill_32bit || format != Pica::FramebufferRegs::ColorFormat::RGBA8) {
+        return false;
+    }
+
+    FrameSlice& slice = CurrentFrameSlice();
+    if (!WaitForFrameSlice(slice) || !slice.command_buffer) {
+        return false;
+    }
+
+    u8 fill_value[4];
+    std::memcpy(fill_value, &config.value_32bit, sizeof(fill_value));
+    const auto color = Common::Color::DecodeRGBA8(fill_value);
+
+    DkCmdBuf command_buffer = slice.command_buffer;
+    DkImageView view{};
+    dkImageViewDefaults(&view, &target->image);
+    dkCmdBufClear(command_buffer);
+    dkCmdBufBindRenderTarget(command_buffer, &view, nullptr);
+    dkCmdBufClearColorFloat(command_buffer, 0, DkColorMask_RGBA, color.r() / 255.0f,
+                            color.g() / 255.0f, color.b() / 255.0f, color.a() / 255.0f);
+    dkCmdBufSignalFence(command_buffer, &slice.fence, true);
+
+    const DkCmdList fill_cmd = dkCmdBufFinishList(command_buffer);
+    if (!fill_cmd) {
+        return false;
+    }
+    dkQueueSubmitCommands(queue, fill_cmd);
+    RecordRasterQueueSubmit();
+    if (QueueHasError("after memory fill clear submit")) {
+        return false;
+    }
+    FlushQueue();
+
+    slice.fence_pending = true;
+    slice.pending_vertices = 0;
+    target->needs_clear = false;
+    state.MarkRenderTargetGpuDirty(*target);
+    RecordHardwareRasterFrame();
+
+    static auto s_last_fill_log = std::chrono::steady_clock::time_point{};
+    static PAddr s_last_fill_address = 0;
+    const auto now = std::chrono::steady_clock::now();
+    if (s_last_fill_address != start_address || now - s_last_fill_log >= std::chrono::seconds(1)) {
+        s_last_fill_log = now;
+        s_last_fill_address = start_address;
+        LOG_INFO(Render,
+                 "Deko3D memory fill accelerated: addr=0x{:08x} bytes={} value=0x{:08x} "
+                 "target={}x{}",
+                 start_address, static_cast<unsigned long long>(fill_bytes), config.value_32bit,
+                 target->key.width, target->key.height);
+    }
+    return true;
+#endif
+    return false;
+}
+
 bool Rasterizer::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
 #ifdef __SWITCH__
+    state.UnlockSoftwareRenderTarget(config.GetPhysicalInputAddress());
     return state.RecordDisplayTransfer(config.GetPhysicalInputAddress(),
                                        config.GetPhysicalOutputAddress(),
                                        config.input_width.Value(), config.input_height.Value(),
                                        config.output_width.Value(), config.output_height.Value(),
-                                       config.flags);
+                                       config.flags, Pica::BytesPerPixel(config.output_format));
 #endif
     return false;
 }
