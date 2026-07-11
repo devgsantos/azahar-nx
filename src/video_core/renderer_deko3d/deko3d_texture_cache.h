@@ -34,6 +34,8 @@ struct CachedTexture {
     DkImageView view{};
     DkMemBlock mem_block{};
     DkSampler sampler{};
+    u32 upload_slot = 0xFFFFFFFFu;
+    u64 upload_serial = 0;
 };
 #endif
 
@@ -70,6 +72,7 @@ private:
         DkCmdBuf command_buffer{};
         DkFence fence{};
         u32 staging_offset = 0;
+        u64 serial = 0;
         bool fence_pending = false;
     };
 
@@ -78,6 +81,7 @@ private:
     bool UploadTexture(CachedTexture& cached, const Pica::TexturingRegs::TextureConfig& config,
                        Pica::TexturingRegs::TextureFormat format);
     bool WaitForUploadSlot(UploadSlot& slot);
+    bool WaitForTextureUpload(CachedTexture& cached);
     void DestroyTexture(CachedTexture& cached);
     DkSampler CreateSampler(const Pica::TexturingRegs::TextureConfig& config) const;
     std::optional<DkImageFormat> MapTextureFormat(Pica::TexturingRegs::TextureFormat format) const;
@@ -91,6 +95,7 @@ private:
     void* staging_cpu_addr = nullptr;
     std::array<UploadSlot, UploadSlotCount> upload_slots{};
     u32 current_upload_slot = 0;
+    u64 next_upload_serial = 0;
     std::unordered_map<u64, std::unique_ptr<CachedTexture>> cache;
 #endif
     bool initialized = false;
