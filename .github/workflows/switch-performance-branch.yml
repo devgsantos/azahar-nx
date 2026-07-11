@@ -1,0 +1,42 @@
+name: Switch performance branch build
+
+on:
+  push:
+    branches:
+      - feat/gpt-performance-improvements-v1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-switch:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure and build release NRO
+        env:
+          DEVKITPRO: /opt/devkitpro
+          BUILD_TYPE: Release
+          JOBS: 2
+          DEKO3D_VALIDATION: OFF
+          DEKO3D_VERBOSE_TELEMETRY: OFF
+          SWITCH_PERF_DIAGNOSTICS: OFF
+          SWITCH_TRACE_ENABLED: OFF
+        run: ./build-switch.sh
+
+      - name: Upload Switch binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-switch-performance-v1
+          path: |
+            build-switch/bin/Release/azahar.nro
+            build-switch/bin/Release/azahar_switch.elf
+          if-no-files-found: error
