@@ -24,6 +24,9 @@ jobs:
           submodules: false
           fetch-depth: 1
 
+      - name: Trust container workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Checkout required submodules
         id: submodules
         continue-on-error: true
