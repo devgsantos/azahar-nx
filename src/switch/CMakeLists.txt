@@ -19,7 +19,6 @@ add_executable(azahar_switch
     switch_posix_compat.cpp
     switch_rom_browser.cpp
     switch_rom_browser.h
-    switch_texture_cache_fast.cpp
     switch_window.cpp
     switch_window.h
 
@@ -45,14 +44,6 @@ if(NOT AZAHAR_SWITCH_PERF_DIAGNOSTICS)
     # were never consumed. Redirect only citra_core's call site to the lightweight implementation.
     target_compile_definitions(citra_core PRIVATE
         azahar_switch_dynarmic_jit_record_run=azahar_switch_dynarmic_jit_record_run_noop)
-
-    # TextureCache::FlushRegion cannot write anything back because these cached images are read-only.
-    # Rename the over-conservative implementation in video_core and provide the no-op implementation
-    # from switch_texture_cache_fast.cpp. Real invalidations remain untouched.
-    set_source_files_properties(
-        ${PROJECT_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_texture_cache.cpp
-        TARGET_DIRECTORY video_core
-        PROPERTIES COMPILE_DEFINITIONS FlushRegion=FlushRegionLegacy)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
