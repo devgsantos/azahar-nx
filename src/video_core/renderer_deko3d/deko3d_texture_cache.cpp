@@ -212,7 +212,8 @@ const CachedTexture* TextureCache::GetTexture(
 
     auto cached = std::make_unique<CachedTexture>();
     cached->physical_address = config.config.GetPhysicalAddress();
-    cached->source_bytes = TextureSourceBytes(config.config.width, config.config.height, config.format);
+    cached->source_bytes =
+        TextureSourceBytes(config.config.width, config.config.height, config.format);
     cached->width = config.config.width;
     cached->height = config.config.height;
     cached->format = config.format;
@@ -283,8 +284,7 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
 
     const u32 width = config.width;
     const u32 height = config.height;
-    LOG_INFO(Render,
-             "Texture upload begin addr=0x{:08x} size={}x{} format={}",
+    LOG_INFO(Render, "Texture upload begin addr=0x{:08x} size={}x{} format={}",
              config.GetPhysicalAddress(), width, height, static_cast<u32>(format));
     const u32 linear_stride = width * 4;
     const u32 required_size = linear_stride * height;
@@ -453,8 +453,12 @@ void TextureCache::InvalidateRegion(PAddr address, u32 size) {
 }
 
 void TextureCache::FlushRegion(PAddr address, u32 size) {
-    // Texture cache does not write back to guest memory; invalidation is enough.
-    InvalidateRegion(address, size);
+    // Cached textures are read-only decoded copies. A plain flush is a host-to-guest writeback
+    // request, but this cache never renders into texture images, so there is nothing to write back
+    // and no reason to discard a valid decode. Real guest writes still call InvalidateRegion or
+    // FlushAndInvalidateRegion and evict overlapping textures.
+    (void)address;
+    (void)size;
 }
 
 void TextureCache::FlushAndInvalidateRegion(PAddr address, u32 size) {
