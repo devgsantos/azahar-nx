@@ -54,6 +54,21 @@ bool Rasterizer::ResolveCpuDirtyRenderTarget(State::CachedRenderTarget& target) 
         return false;
     }
 
+    // DKCR uses a 240x800 packed source that is later transformed into a 240x400 top-screen output.
+    // Restoring the packed source and then treating the display transfer as a plain render-target
+    // alias made the presenter lose the top target and produced black/white screens. Until the
+    // packed-eye/display-transfer transform is implemented explicitly, preserve software ownership.
+    if (width == 240 && height > 400) {
+        static bool logged_packed_top_rejection = false;
+        if (!logged_packed_top_rejection) {
+            logged_packed_top_rejection = true;
+            LOG_WARNING(Render,
+                        "Deko3D CPU-dirty resolve rejected packed top-screen target size={}x{}",
+                        width, height);
+        }
+        return false;
+    }
+
     const u64 color_bytes_64 = static_cast<u64>(width) * height * 4;
     if (color_bytes_64 == 0 || color_bytes_64 > std::numeric_limits<u32>::max()) {
         return false;
