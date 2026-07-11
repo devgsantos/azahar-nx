@@ -75,7 +75,7 @@ jobs:
           DEKO3D_VERBOSE_TELEMETRY: OFF
           SWITCH_PERF_DIAGNOSTICS: OFF
           SWITCH_TRACE_ENABLED: OFF
-          JIT_PARTIAL_PUBLISH: ON
+          JIT_PARTIAL_PUBLISH: OFF
         run: ./build-switch.sh
 
       - name: Upload Switch binaries
