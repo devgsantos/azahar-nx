@@ -22,6 +22,10 @@ DEKO3D_VALIDATION="${DEKO3D_VALIDATION:-OFF}"
 DEKO3D_VERBOSE_TELEMETRY="${DEKO3D_VERBOSE_TELEMETRY:-OFF}"
 SWITCH_PERF_DIAGNOSTICS="${SWITCH_PERF_DIAGNOSTICS:-OFF}"
 SWITCH_TRACE_ENABLED="${SWITCH_TRACE_ENABLED:-OFF}"
+# The CPU-dirty handoff is experimental. DKCR testing showed black/white screens when every
+# transformed batch was forced onto hardware, so stable builds explicitly override cached CMake
+# state and keep the known-correct software fallback enabled.
+DEKO3D_CPU_DIRTY_RESOLVE="${DEKO3D_CPU_DIRTY_RESOLVE:-OFF}"
 # Partial CodeMemory publication is experimental. DKCR exited as newly published Dynarmic blocks
 # began executing with this mode enabled, so stable builds retain the full libnx executable
 # transition. Enable it only for isolated hardware diagnostics.
@@ -46,6 +50,7 @@ cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DAZAHAR_DEKO3D_VERBOSE_TELEMETRY="$DEKO3D_VERBOSE_TELEMETRY" \
     -DAZAHAR_SWITCH_PERF_DIAGNOSTICS="$SWITCH_PERF_DIAGNOSTICS" \
     -DAZAHAR_SWITCH_TRACE_ENABLED="$SWITCH_TRACE_ENABLED" \
+    -DAZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE="$DEKO3D_CPU_DIRTY_RESOLVE" \
     -DAZAHAR_SWITCH_JIT_PARTIAL_PUBLISH="$JIT_PARTIAL_PUBLISH" \
     -DAZAHAR_SWITCH_JIT_CONSOLIDATED_PUBLISH="$JIT_CONSOLIDATED_PUBLISH" \
     "$@"
