@@ -107,4 +107,23 @@ private:
     bool initialized = false;
 };
 
+#ifdef __SWITCH__
+/// Restore a software/CPU-authored RGBA8 render target into its cached Deko3D image.
+/// The opaque target pointer is a State::CachedRenderTarget; keeping it opaque here allows this
+/// header to retain the lightweight State forward declaration used by the texture cache.
+bool ResolveCpuDirtyRenderTarget(void* target, Memory::MemorySystem& memory, State& state);
+#endif
+
 } // namespace VideoCore::Deko3D
+
+// This header is included by deko3d_rasterizer.cpp after State::CachedRenderTarget is complete.
+// Rewrite only that file's CPU-dirty guard into a guarded resolve attempt. If the resolve succeeds,
+// the expression becomes false and the existing hardware path continues; if it fails, the original
+// software fallback remains unchanged. No other source currently consumes the exact cpu_dirty token
+// after including this header.
+#if defined(__SWITCH__) && defined(AZAHAR_DEKO3D_CPU_DIRTY_HANDOFF)
+#define cpu_dirty                                                                               \
+    cpu_dirty &&                                                                                \
+        !::VideoCore::Deko3D::ResolveCpuDirtyRenderTarget(static_cast<void*>(color_target),      \
+                                                          memory, state)
+#endif
