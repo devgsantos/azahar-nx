@@ -76,6 +76,7 @@ jobs:
           SWITCH_PERF_DIAGNOSTICS: OFF
           SWITCH_TRACE_ENABLED: OFF
           JIT_PARTIAL_PUBLISH: OFF
+          JIT_CONSOLIDATED_PUBLISH: ON
         run: ./build-switch.sh
 
       - name: Upload Switch binaries
