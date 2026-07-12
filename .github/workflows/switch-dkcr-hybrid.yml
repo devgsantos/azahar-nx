@@ -1,0 +1,104 @@
+name: Switch DKCR hybrid diagnostic build
+
+on:
+  push:
+    branches:
+      - feat/gpt-performance-improvements-v1
+  workflow_dispatch:
+
+concurrency:
+  group: switch-dkcr-hybrid-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-hybrid:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Trust container workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Checkout pinned submodules
+        id: submodules
+        continue-on-error: true
+        run: |
+          set +e
+          git submodule sync > /tmp/submodules-hybrid.log 2>&1
+          git -c protocol.version=2 submodule update --init --jobs 4 \
+            >> /tmp/submodules-hybrid.log 2>&1
+          status=$?
+
+          if [ "$status" -eq 0 ]; then
+            git -C externals/dynarmic submodule sync >> /tmp/submodules-hybrid.log 2>&1
+            git -C externals/dynarmic -c protocol.version=2 submodule update --init \
+              externals/mcl externals/robin-map >> /tmp/submodules-hybrid.log 2>&1
+            status=$?
+          fi
+
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: Upload hybrid submodule log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: switch-dkcr-hybrid-submodule-log
+          path: /tmp/submodules-hybrid.log
+          if-no-files-found: warn
+
+      - name: Stop on submodule checkout failure
+        if: steps.submodules.outcome == 'failure'
+        run: exit 1
+
+      - name: Configure and build hybrid diagnostic NRO
+        id: build
+        continue-on-error: true
+        shell: bash
+        env:
+          DEVKITPRO: /opt/devkitpro
+          BUILD_TYPE: Release
+          JOBS: 2
+          DEKO3D_VALIDATION: OFF
+          DEKO3D_VERBOSE_TELEMETRY: ON
+          SWITCH_PERF_DIAGNOSTICS: ON
+          SWITCH_TRACE_ENABLED: OFF
+          DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS: ON
+          DEKO3D_CPU_DIRTY_RESOLVE: ON
+          JIT_PARTIAL_PUBLISH: OFF
+          JIT_CONSOLIDATED_PUBLISH: ON
+        run: |
+          set -o pipefail
+          rm -rf build-switch
+          ./build-switch.sh 2>&1 | tee /tmp/switch-dkcr-hybrid-build.log
+
+      - name: Upload hybrid build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: switch-dkcr-hybrid-build-log
+          path: /tmp/switch-dkcr-hybrid-build.log
+          if-no-files-found: warn
+
+      - name: Stop on hybrid build failure
+        if: steps.build.outcome == 'failure'
+        run: exit 1
+
+      - name: Upload hybrid binaries
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: azahar-switch-dkcr-hybrid
+          path: |
+            build-switch/bin/Release/azahar.nro
+            build-switch/bin/Release/azahar_switch.elf
+          if-no-files-found: error
