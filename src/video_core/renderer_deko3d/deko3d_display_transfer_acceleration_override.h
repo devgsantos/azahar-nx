@@ -3,10 +3,8 @@
 
 #pragma once
 
-// Force-included only while compiling deko3d_rasterizer.cpp for the hybrid profile. Rename the
-// legacy implementation so deko3d_display_transfer_acceleration.cpp can provide the public method.
-// The renamed declaration is intentionally not an override in this one translation unit.
-#define override
-#define AccelerateDisplayTransfer AccelerateDisplayTransferLegacy
+// Force-included only while compiling deko3d_rasterizer.cpp for the hybrid profile. Include the
+// ordinary class declaration first so its virtual layout remains unchanged, then rename only the
+// legacy out-of-class definition that appears later in that translation unit.
 #include "video_core/renderer_deko3d/deko3d_rasterizer.h"
-#undef override
+#define AccelerateDisplayTransfer AccelerateDisplayTransferLegacy
