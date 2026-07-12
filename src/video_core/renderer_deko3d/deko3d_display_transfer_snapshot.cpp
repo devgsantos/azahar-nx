@@ -83,20 +83,67 @@ bool State::RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32
         return false;
     }
 
-    CachedRenderTarget* source = nullptr;
+    CachedRenderTarget* exact_candidate = nullptr;
     for (auto& candidate : render_targets) {
         if (!candidate || candidate->key.color_address != input_address ||
             candidate->key.width != input_width || candidate->key.height != input_height ||
-            candidate->key.format != static_cast<u32>(ColorFormat::RGBA8) ||
-            !candidate->gpu_dirty ||
-            (candidate->owner != SurfaceOwner::Deko3D &&
-             candidate->owner != SurfaceOwner::DisplayTransfer)) {
+            candidate->key.format != static_cast<u32>(ColorFormat::RGBA8)) {
             continue;
         }
-        source = candidate.get();
+        exact_candidate = candidate.get();
         break;
     }
-    if (!source) {
+
+    CachedRenderTarget* source = exact_candidate;
+    if (!source || !source->gpu_dirty ||
+        (source->owner != SurfaceOwner::Deko3D &&
+         source->owner != SurfaceOwner::DisplayTransfer)) {
+        // DKCR issues the exact 240x320 lower-screen display transfer while the source is still
+        // CPU-owned. The software transfer must still run, but retain the exact 1:1 relationship so
+        // presentation can use the source after ResolveCpuDirtyRenderTarget promotes it to Deko3D.
+        // Crops, scaling and format conversions are deliberately excluded from this deferred path.
+        if (!exact_candidate || output_width != input_width || output_height != input_height) {
+            return false;
+        }
+
+        auto existing =
+            std::find_if(display_transfer_targets.begin(), display_transfer_targets.end(),
+                         [output_address](const auto& entry) {
+                             return entry.display_address == output_address;
+                         });
+        const u64 deferred_generation = std::max<u64>(1, exact_candidate->deko_generation);
+        if (existing != display_transfer_targets.end()) {
+            existing->target = exact_candidate;
+            existing->deko_generation = deferred_generation;
+            existing->input_width = input_width;
+            existing->input_height = input_height;
+            existing->output_width = output_width;
+            existing->output_height = output_height;
+            existing->flags = flags;
+        } else {
+            display_transfer_targets.emplace_back(DisplayTransferTarget{
+                .display_address = output_address,
+                .target = exact_candidate,
+                .deko_generation = deferred_generation,
+                .input_width = input_width,
+                .input_height = input_height,
+                .output_width = output_width,
+                .output_height = output_height,
+                .flags = flags,
+            });
+        }
+
+        static auto last_deferred_log = std::chrono::steady_clock::time_point{};
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_deferred_log >= std::chrono::seconds(1)) {
+            last_deferred_log = now;
+            LOG_INFO(Render,
+                     "Deko3D deferred exact display mapping dst=0x{:08x} src=0x{:08x} "
+                     "size={}x{} owner={} cpu_dirty={} gpu_dirty={}",
+                     output_address, input_address, input_width, input_height,
+                     static_cast<u32>(exact_candidate->owner), exact_candidate->cpu_dirty,
+                     exact_candidate->gpu_dirty);
+        }
         return false;
     }
 
