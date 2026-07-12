@@ -76,17 +76,68 @@ endif()
 
 # Hybrid-only retry for DKCR's exact 240x320 lower transfer. If the generic display-transfer call
 # finds the source CPU-owned, resolve it at transfer time and immediately create a real destination
-# snapshot. Stable builds do not compile this override because the resolver remains disabled there.
+# snapshot. A plain FlushRegion means that guest memory wants GPU writes made visible; it is not a
+# CPU write and must not discard the completed GPU snapshot. Generate a hybrid-only copy of the
+# rasterizer source with that one ownership correction, while explicit invalidate operations retain
+# their original behavior.
 if(AZAHAR_SWITCH_DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS AND
    AZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE)
+    set(AZAHAR_DEKO3D_RASTERIZER_SOURCE
+        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_rasterizer.cpp)
+    set(AZAHAR_DEKO3D_RASTERIZER_PATCHED
+        ${CMAKE_CURRENT_BINARY_DIR}/deko3d_rasterizer_hybrid_flush.cpp)
+
+    file(READ ${AZAHAR_DEKO3D_RASTERIZER_SOURCE} AZAHAR_DEKO3D_RASTERIZER_TEXT)
+    set(AZAHAR_DEKO3D_FLUSH_OLD [=[void Rasterizer::FlushRegion(PAddr addr, u32 size) {
+#ifdef __SWITCH__
+    state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
+    texture_cache.FlushRegion(addr, size);
+#endif
+    software_fallback.FlushRegion(addr, size);
+}]=])
+    set(AZAHAR_DEKO3D_FLUSH_NEW [=[void Rasterizer::FlushRegion(PAddr addr, u32 size) {
+#ifdef __SWITCH__
+    // Flush requests make existing GPU writes visible to a CPU reader; they do not indicate that
+    // the CPU overwrote the range. Preserve GPU-backed display-transfer snapshots until an explicit
+    // InvalidateRegion or FlushAndInvalidateRegion reports a real ownership change.
+    texture_cache.FlushRegion(addr, size);
+    static auto last_preserved_flush_log = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_preserved_flush_log >= std::chrono::seconds(1)) {
+        last_preserved_flush_log = now;
+        LOG_INFO(Render,
+                 "Deko3D FlushRegion preserved GPU render-target ownership addr=0x{:08x} bytes={}",
+                 addr, size);
+    }
+#endif
+    software_fallback.FlushRegion(addr, size);
+}]=])
+
+    string(FIND "${AZAHAR_DEKO3D_RASTERIZER_TEXT}" "${AZAHAR_DEKO3D_FLUSH_OLD}"
+           AZAHAR_DEKO3D_FLUSH_OFFSET)
+    if(AZAHAR_DEKO3D_FLUSH_OFFSET EQUAL -1)
+        message(FATAL_ERROR "Unable to apply hybrid Deko3D FlushRegion ownership patch")
+    endif()
+    string(REPLACE "${AZAHAR_DEKO3D_FLUSH_OLD}" "${AZAHAR_DEKO3D_FLUSH_NEW}"
+           AZAHAR_DEKO3D_RASTERIZER_TEXT "${AZAHAR_DEKO3D_RASTERIZER_TEXT}")
+    file(WRITE ${AZAHAR_DEKO3D_RASTERIZER_PATCHED} "${AZAHAR_DEKO3D_RASTERIZER_TEXT}")
+
+    # The target already owns the original source. Mark it header-only only in this directory's
+    # hybrid configuration and compile the generated corrected copy with the same source-specific
+    # handoff and acceleration overrides.
+    set_property(SOURCE ${AZAHAR_DEKO3D_RASTERIZER_SOURCE}
+        TARGET_DIRECTORY video_core PROPERTY HEADER_FILE_ONLY TRUE)
     target_sources(video_core PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_display_transfer_acceleration.cpp)
-    set_property(SOURCE
-        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_rasterizer.cpp
+        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_display_transfer_acceleration.cpp
+        ${AZAHAR_DEKO3D_RASTERIZER_PATCHED})
+    set_property(SOURCE ${AZAHAR_DEKO3D_RASTERIZER_PATCHED}
+        TARGET_DIRECTORY video_core
+        APPEND PROPERTY COMPILE_DEFINITIONS AZAHAR_DEKO3D_CPU_DIRTY_HANDOFF=1)
+    set_property(SOURCE ${AZAHAR_DEKO3D_RASTERIZER_PATCHED}
         TARGET_DIRECTORY video_core
         APPEND PROPERTY COMPILE_OPTIONS
         "-include${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_display_transfer_acceleration_override.h")
-    message(WARNING "Hybrid Switch Deko3D lower transfer-time resolve+snapshot enabled")
+    message(WARNING "Hybrid Switch Deko3D lower resolve+snapshot and FlushRegion ownership fix enabled")
 endif()
 
 # Dynarmic normally publishes a newly emitted block, relinks older referencing blocks, and publishes
