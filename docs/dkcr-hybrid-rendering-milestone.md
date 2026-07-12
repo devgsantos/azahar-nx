@@ -11,6 +11,10 @@ Move from the current correct software-dominant title path to a selective hybrid
 
 The acceptance condition is not zero fallbacks. It is correct output with both hardware draws and software fallbacks in the same scene.
 
+## Restored baseline checkpoint
+
+With CPU-dirty resolve disabled, DKCR's title screen returned completely on both upper and lower displays. The run presented its first frame, initialized DSP, reached CRR/save/CRO startup milestones, and showed no Deko3D queue error or fence timeout in the captured section. This is the visual baseline the hybrid profile must preserve.
+
 ## Why snapshots are required
 
 The first global CPU-dirty experiment stored display transfers as aliases to their source render targets. DKCR later changed the source ownership before the next present, which erased the top alias. The resulting run produced thousands of hardware draws but a black upper screen and white lower screen.
