@@ -179,6 +179,9 @@ public:
     bool AccelerateDrawBatch(bool is_indexed) override;
 
 private:
+    // Declared unconditionally so the hybrid build can rename only the legacy definition without
+    // changing the virtual class declaration or vtable in any translation unit.
+    bool AccelerateDisplayTransferLegacy(const Pica::DisplayTransferConfig& config);
 #ifdef __SWITCH__
     static constexpr u32 FrameSliceCount = 8;
     static constexpr u32 RasterCommandMemorySize = 64 * 1024;
