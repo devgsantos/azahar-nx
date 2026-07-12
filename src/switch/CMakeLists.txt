@@ -38,8 +38,85 @@ target_link_libraries(azahar_switch PRIVATE citra_common citra_core video_core a
 option(AZAHAR_SWITCH_DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS
        "Use GPU-backed snapshots for supported Deko3D display transfers" ON)
 if(AZAHAR_SWITCH_DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS)
-    target_sources(video_core PRIVATE
+    # DKCR's lower transfer writes RGB8 guest memory (flags=0x00001000), while the cached Deko3D
+    # image must remain RGBA8 because the render-target cache has no native RGB8 image mapping.
+    # Track the cached target with the RGB8 guest format after allocating RGBA8 GPU storage. This
+    # keeps overlap/invalidation math at 240*320*3 bytes so the lower framebuffer ends exactly at
+    # 0x18370800 instead of falsely overlapping the upper depth buffer beginning there.
+    set(AZAHAR_DEKO3D_DISPLAY_TRANSFER_SOURCE
         ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_display_transfer_snapshot.cpp)
+    set(AZAHAR_DEKO3D_DISPLAY_TRANSFER_PATCHED
+        ${CMAKE_CURRENT_BINARY_DIR}/deko3d_display_transfer_snapshot_guest_format.cpp)
+    file(READ ${AZAHAR_DEKO3D_DISPLAY_TRANSFER_SOURCE} AZAHAR_DEKO3D_DISPLAY_TRANSFER_TEXT)
+    set(AZAHAR_DEKO3D_DISPLAY_TRANSFER_OLD [=[    const RenderTargetKey destination_key{
+        .color_address = output_address,
+        .width = output_width,
+        .height = output_height,
+        .format = static_cast<u32>(ColorFormat::RGBA8),
+    };
+    const u64 destination_bytes = SurfaceBytes(destination_key);
+    if (destination_bytes == 0 ||
+        RangesOverlapSnapshot(input_address, SurfaceBytes(source->key), output_address,
+                              destination_bytes)) {
+        return false;
+    }
+
+    CachedRenderTarget* destination = GetOrCreateRenderTarget(destination_key);
+    if (!destination || destination == source) {
+        return false;
+    }]=])
+    set(AZAHAR_DEKO3D_DISPLAY_TRANSFER_NEW [=[    const ColorFormat destination_guest_format =
+        output_format == PixelFormat::RGB8 ? ColorFormat::RGB8 : ColorFormat::RGBA8;
+    const RenderTargetKey destination_key{
+        .color_address = output_address,
+        .width = output_width,
+        .height = output_height,
+        .format = static_cast<u32>(destination_guest_format),
+    };
+    const u64 destination_bytes = SurfaceBytes(destination_key);
+    if (destination_bytes == 0 ||
+        RangesOverlapSnapshot(input_address, SurfaceBytes(source->key), output_address,
+                              destination_bytes)) {
+        return false;
+    }
+
+    CachedRenderTarget* destination = nullptr;
+    for (auto& candidate : render_targets) {
+        if (candidate && candidate->key == destination_key) {
+            destination = candidate.get();
+            RecordRenderTargetCacheHit();
+            break;
+        }
+    }
+    if (!destination) {
+        RenderTargetKey storage_key = destination_key;
+        storage_key.format = static_cast<u32>(ColorFormat::RGBA8);
+        destination = GetOrCreateRenderTarget(storage_key);
+        if (destination && destination_guest_format == ColorFormat::RGB8) {
+            // The Deko image remains RGBA8; only guest overlap accounting uses the real RGB8 format.
+            destination->key.format = static_cast<u32>(ColorFormat::RGB8);
+            LOG_INFO(Render,
+                     "Deko3D RGB8 display snapshot uses RGBA8 storage addr=0x{:08x} "
+                     "guest_bytes={} storage_bytes={}",
+                     output_address, static_cast<unsigned long long>(destination_bytes),
+                     static_cast<unsigned long long>(destination->allocation_bytes));
+        }
+    }
+    if (!destination || destination == source) {
+        return false;
+    }]=])
+    string(FIND "${AZAHAR_DEKO3D_DISPLAY_TRANSFER_TEXT}"
+           "${AZAHAR_DEKO3D_DISPLAY_TRANSFER_OLD}" AZAHAR_DEKO3D_DISPLAY_TRANSFER_OFFSET)
+    if(AZAHAR_DEKO3D_DISPLAY_TRANSFER_OFFSET EQUAL -1)
+        message(FATAL_ERROR "Unable to apply Deko3D RGB8 display-snapshot footprint patch")
+    endif()
+    string(REPLACE "${AZAHAR_DEKO3D_DISPLAY_TRANSFER_OLD}"
+           "${AZAHAR_DEKO3D_DISPLAY_TRANSFER_NEW}" AZAHAR_DEKO3D_DISPLAY_TRANSFER_TEXT
+           "${AZAHAR_DEKO3D_DISPLAY_TRANSFER_TEXT}")
+    file(WRITE ${AZAHAR_DEKO3D_DISPLAY_TRANSFER_PATCHED}
+         "${AZAHAR_DEKO3D_DISPLAY_TRANSFER_TEXT}")
+    target_sources(video_core PRIVATE ${AZAHAR_DEKO3D_DISPLAY_TRANSFER_PATCHED})
+
     # Force-include the public class declaration before renaming only the legacy definition in
     # deko3d_state.cpp. Other translation units continue linking State::RecordDisplayTransfer to the
     # snapshot implementation above without changing the class declaration or ABI.
@@ -48,7 +125,7 @@ if(AZAHAR_SWITCH_DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS)
         TARGET_DIRECTORY video_core
         APPEND PROPERTY COMPILE_OPTIONS
         "-include${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_display_transfer_override.h")
-    message(STATUS "Switch Deko3D display-transfer snapshots enabled")
+    message(STATUS "Switch Deko3D display-transfer snapshots enabled with RGB8 guest footprint tracking")
 else()
     message(STATUS "Switch Deko3D display-transfer snapshots disabled")
 endif()
