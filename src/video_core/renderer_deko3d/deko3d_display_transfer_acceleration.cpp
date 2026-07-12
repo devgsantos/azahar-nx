@@ -7,6 +7,7 @@
 #include "video_core/pica/regs_external.h"
 #include "video_core/pica/regs_framebuffer.h"
 #include "video_core/renderer_deko3d/deko3d_rasterizer.h"
+#include "video_core/renderer_software/sw_blitter.h"
 
 namespace VideoCore::Deko3D {
 
@@ -44,18 +45,12 @@ bool Rasterizer::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& co
     const u32 output_height = config.output_height.Value();
     const u32 flags = config.flags;
 
-    // Fast path for a source that is already authoritative on the GPU.
-    if (state.RecordDisplayTransfer(input_address, output_address, input_width, input_height,
-                                    output_width, output_height, flags)) {
-        return true;
-    }
-
-    // DKCR's lower-screen transfer reaches this method after the shared source has been invalidated
-    // back to guest memory. Resolve that exact 240x320 source again at transfer time, then perform a
-    // real point-in-time GPU snapshot. The packed/cropped upper-screen transfer is intentionally
-    // excluded and continues through the software blitter.
+    // Keep the generic GPU-only path for transfer classes whose guest-memory coherence has already
+    // been established. The exact DKCR lower transfer needs a stricter sequence because presentation
+    // may switch between the cached snapshot and a CPU framebuffer upload.
     if (!IsExactLowerRgba8Transfer(config)) {
-        return false;
+        return state.RecordDisplayTransfer(input_address, output_address, input_width, input_height,
+                                           output_width, output_height, flags);
     }
 
     const State::RenderTargetKey source_key{
@@ -65,25 +60,44 @@ bool Rasterizer::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& co
         .format = static_cast<u32>(Pica::FramebufferRegs::ColorFormat::RGBA8),
     };
     State::CachedRenderTarget* source = state.GetOrCreateRenderTarget(source_key);
-    if (!source || !source->cpu_dirty || !ResolveCpuDirtyRenderTarget(*source)) {
+    if (!source) {
         return false;
     }
 
-    const bool snapshot_created =
-        state.RecordDisplayTransfer(input_address, output_address, input_width, input_height,
-                                    output_width, output_height, flags);
-    if (snapshot_created) {
-        static auto last_retry_log = std::chrono::steady_clock::time_point{};
+    if (source->cpu_dirty) {
+        // The source is authoritative in guest memory, so perform the ordinary software display
+        // transfer first. This populates the real lower framebuffer and preserves a correct CPU
+        // fallback even if the GPU snapshot is later invalidated by a legitimate guest write.
+        SwRenderer::SwBlitter guest_mirror{memory, this};
+        guest_mirror.DisplayTransfer(config);
+
+        // The software transfer marks the source CPU-owned. Upload that same authoritative source
+        // back to Deko3D and create the point-in-time destination snapshot used by direct present.
+        const bool source_resolved = source->cpu_dirty && ResolveCpuDirtyRenderTarget(*source);
+        const bool snapshot_created =
+            source_resolved &&
+            state.RecordDisplayTransfer(input_address, output_address, input_width, input_height,
+                                        output_width, output_height, flags);
+
+        static auto last_mirror_log = std::chrono::steady_clock::time_point{};
         const auto now = std::chrono::steady_clock::now();
-        if (now - last_retry_log >= std::chrono::seconds(1)) {
-            last_retry_log = now;
+        if (now - last_mirror_log >= std::chrono::seconds(1)) {
+            last_mirror_log = now;
             LOG_INFO(Render,
-                     "Deko3D transfer-time lower resolve+snapshot dst=0x{:08x} src=0x{:08x} "
-                     "size={}x{}",
-                     output_address, input_address, input_width, input_height);
+                     "Deko3D lower transfer guest mirror complete dst=0x{:08x} src=0x{:08x} "
+                     "size={}x{} resolved={} snapshot={}",
+                     output_address, input_address, input_width, input_height, source_resolved,
+                     snapshot_created);
         }
+
+        // The transfer is complete in guest memory even when snapshot creation fails. Returning true
+        // prevents the outer GPU dispatcher from repeating the software transfer.
+        return true;
     }
-    return snapshot_created;
+
+    // A source already authoritative on the GPU can still use the ordinary snapshot fast path.
+    return state.RecordDisplayTransfer(input_address, output_address, input_width, input_height,
+                                       output_width, output_height, flags);
 #else
     return false;
 #endif
