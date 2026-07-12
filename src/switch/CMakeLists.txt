@@ -74,6 +74,21 @@ else()
     message(STATUS "Switch Deko3D CPU-dirty render-target resolve disabled (stable)")
 endif()
 
+# Hybrid-only retry for DKCR's exact 240x320 lower transfer. If the generic display-transfer call
+# finds the source CPU-owned, resolve it at transfer time and immediately create a real destination
+# snapshot. Stable builds do not compile this override because the resolver remains disabled there.
+if(AZAHAR_SWITCH_DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS AND
+   AZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE)
+    target_sources(video_core PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_display_transfer_acceleration.cpp)
+    set_property(SOURCE
+        ${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_rasterizer.cpp
+        TARGET_DIRECTORY video_core
+        APPEND PROPERTY COMPILE_OPTIONS
+        "-include${CMAKE_SOURCE_DIR}/src/video_core/renderer_deko3d/deko3d_display_transfer_acceleration_override.h")
+    message(WARNING "Hybrid Switch Deko3D lower transfer-time resolve+snapshot enabled")
+endif()
+
 # Dynarmic normally publishes a newly emitted block, relinks older referencing blocks, and publishes
 # again. On libnx CodeMemory each publication flushes and invalidates the complete 8 MiB allocation.
 # The fork already supports combining those writes into one publication without using the unstable
