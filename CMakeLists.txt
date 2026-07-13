@@ -45,6 +45,7 @@ option(AZAHAR_SWITCH_PERF_DIAGNOSTICS "Enable detailed Switch performance loggin
 option(AZAHAR_SWITCH_TRACE_ENABLED "Enable low-level Switch early-trace SD writes" OFF)
 option(AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS "Enable safe Dynarmic JIT optimizations on Switch (may crash on rare blocks)" ON)
 option(AZAHAR_SWITCH_JIT_PARTIAL_PUBLISH "Use partial JIT code publish instead of full region transitions" OFF)
+option(AZAHAR_SWITCH_DYNARMIC_CONSOLIDATED_PUBLISH "Consolidate Dynarmic JIT block publish into single ProtectCodeMemory call" OFF)
 option(AZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER "Force software rasterizer fallback on Switch (safer baseline)" OFF)
 option(AZAHAR_SWITCH_PICA_SHADER_JIT "Enable AArch64 PICA shader JIT on Switch" ON)
 
@@ -55,6 +56,10 @@ set(AZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER OFF CACHE BOOL
     "Force software rasterizer fallback on Switch (safer baseline)" FORCE)
 set(AZAHAR_SWITCH_PICA_SHADER_JIT ON CACHE BOOL
     "Enable AArch64 PICA shader JIT on Switch" FORCE)
+set(AZAHAR_SWITCH_JIT_PARTIAL_PUBLISH OFF CACHE BOOL
+    "Use partial JIT code publish instead of full region transitions" FORCE)
+set(AZAHAR_SWITCH_DYNARMIC_CONSOLIDATED_PUBLISH OFF CACHE BOOL
+    "Consolidate Dynarmic JIT block publish into single ProtectCodeMemory call" FORCE)
 
 # Some submodules like to pick their own default build type if not specified.
 # Make sure we default to Release build type always, unless the generator has custom types.
@@ -212,6 +217,10 @@ if(ENABLE_SWITCH_FRONTEND)
     if(AZAHAR_SWITCH_JIT_PARTIAL_PUBLISH)
         add_definitions(-DAZAHAR_SWITCH_JIT_PARTIAL_PUBLISH)
         message(STATUS "Switch JIT partial publish enabled")
+    endif()
+    if(AZAHAR_SWITCH_DYNARMIC_CONSOLIDATED_PUBLISH)
+        add_definitions(-DAZAHAR_SWITCH_DYNARMIC_CONSOLIDATED_PUBLISH)
+        message(STATUS "Switch Dynarmic consolidated block publish enabled")
     endif()
     if(AZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER)
         add_definitions(-DAZAHAR_SWITCH_DEKO3D_FORCE_SW_RASTERIZER)

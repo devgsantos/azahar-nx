@@ -151,6 +151,13 @@ public:
     void MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes);
     void InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, SurfaceOwner owner);
 
+    // Upload guest framebuffer memory into the GPU CachedRenderTarget image.
+    // Returns true if the upload succeeded and the RT is now usable by the HW path.
+    // memory_system must remain valid for the duration of the call.
+    bool UploadRenderTargetFromGuest(CachedRenderTarget& target,
+                                     const void* guest_pixels,
+                                     u32 guest_stride_bytes);
+
     void MarkTopScreenGpuDirty() {
         top_screen_gpu_dirty = true;
     }

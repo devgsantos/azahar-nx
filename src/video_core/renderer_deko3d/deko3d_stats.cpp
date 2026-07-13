@@ -147,7 +147,10 @@ namespace {
     X(deko_depth_state_supported)                                                                  \
     X(deko_depth_state_unsupported)                                                                \
     X(deko_state_signature_count)                                                                  \
-    X(deko_state_signature_id)
+    X(deko_state_signature_id)                                                                     \
+    X(render_target_cpu_dirty_by_cpu_memory)                                                        \
+    X(render_target_cpu_dirty_by_software)                                                         \
+    X(render_target_cpu_dirty_by_display_transfer)
 
 #define ATOMIC_COUNTER(name) std::atomic<std::uint64_t> name{0};
 
@@ -594,6 +597,18 @@ void RecordRenderTargetGpuDirty() {
 
 void RecordRenderTargetCpuDirty() {
     render_target_cpu_dirty.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordRenderTargetCpuDirtyByCpuMemory() {
+    render_target_cpu_dirty_by_cpu_memory.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordRenderTargetCpuDirtyBySoftware() {
+    render_target_cpu_dirty_by_software.fetch_add(1, std::memory_order_relaxed);
+}
+
+void RecordRenderTargetCpuDirtyByDisplayTransfer() {
+    render_target_cpu_dirty_by_display_transfer.fetch_add(1, std::memory_order_relaxed);
 }
 
 void RecordBlendState(bool supported, bool cache_hit) {

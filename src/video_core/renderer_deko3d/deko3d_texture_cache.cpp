@@ -164,6 +164,7 @@ void TextureCache::Shutdown() {
         DestroyTexture(*cached);
     }
     cache.clear();
+    rejected_keys.clear();
 
     if (upload_command_buffer) {
         dkCmdBufDestroy(upload_command_buffer);
@@ -201,12 +202,18 @@ const CachedTexture* TextureCache::GetTexture(
     }
 
     const u64 key = ComputeTextureKey(config);
+
+    if (rejected_keys.count(key)) {
+        return nullptr;
+    }
+
     auto it = cache.find(key);
     if (it != cache.end()) {
         return it->second.get();
     }
 
     if (!MapTextureFormat(config.format)) {
+        rejected_keys.insert(key);
         return nullptr;
     }
 
@@ -218,11 +225,13 @@ const CachedTexture* TextureCache::GetTexture(
     cached->format = config.format;
 
     if (!AllocateTexture(*cached, cached->width, cached->height, config.format)) {
+        rejected_keys.insert(key);
         return nullptr;
     }
 
     if (!UploadTexture(*cached, config.config, config.format)) {
         DestroyTexture(*cached);
+        rejected_keys.insert(key);
         return nullptr;
     }
     cached->sampler = CreateSampler(config.config);
@@ -283,7 +292,7 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
 
     const u32 width = config.width;
     const u32 height = config.height;
-    LOG_INFO(Render,
+    LOG_DEBUG(Render,
              "Texture upload begin addr=0x{:08x} size={}x{} format={}",
              config.GetPhysicalAddress(), width, height, static_cast<u32>(format));
     const u32 linear_stride = width * 4;
@@ -355,17 +364,9 @@ bool TextureCache::UploadTexture(CachedTexture& cached,
         LOG_WARNING(Render, "Deko3D texture cache: failed to finish upload command list");
         return false;
     }
-    LOG_INFO(Render, "Texture upload drain begin");
     dkQueueFlush(state->GetQueue());
-    dkQueueWaitIdle(state->GetQueue());
-    LOG_INFO(Render, "Texture upload drain leave");
-    LOG_INFO(Render, "Texture upload submit begin");
     dkQueueSubmitCommands(state->GetQueue(), cmd_list);
-    LOG_INFO(Render, "Texture upload submit leave");
-    LOG_INFO(Render, "Texture upload wait begin");
     dkQueueWaitIdle(state->GetQueue());
-    LOG_INFO(Render, "Texture upload wait leave queue_error={}",
-             dkQueueIsInErrorState(state->GetQueue()) ? 1 : 0);
     if (dkQueueIsInErrorState(state->GetQueue())) {
         LOG_ERROR(Render, "Texture upload failed: queue entered error state");
         return false;
@@ -447,8 +448,19 @@ void TextureCache::InvalidateRegion(PAddr address, u32 size) {
             ++it;
             continue;
         }
+        rejected_keys.erase(it->first);
         DestroyTexture(texture);
         it = cache.erase(it);
+    }
+    // Also clear rejected keys whose guest address overlaps — the content may have changed
+    // and the next upload could succeed.
+    for (auto it = rejected_keys.begin(); it != rejected_keys.end();) {
+        const PAddr key_addr = static_cast<PAddr>(*it & 0xFFFFFFFF);
+        if (RangesOverlap(address, size, key_addr, 4)) {
+            it = rejected_keys.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 

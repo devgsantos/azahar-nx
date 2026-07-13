@@ -15,8 +15,10 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "switch/switch_debug_log.h"
+#include "core/memory.h"
 #include "video_core/pica/pica_core.h"
 #include "video_core/pica/regs_external.h"
+#include "video_core/pica/regs_framebuffer.h"
 #include "video_core/renderer_deko3d/deko3d_shader.h"
 #include "video_core/renderer_deko3d/deko3d_stats.h"
 #include "video_core/renderer_deko3d/deko3d_texture_cache.h"
@@ -652,17 +654,25 @@ Rasterizer::HardwareEligibility Rasterizer::EvaluateDirectBatchEligibility(bool 
     using TriangleTopology = Pica::PipelineRegs::TriangleTopology;
     using UseGS = Pica::PipelineRegs::UseGS;
 
-    u32 blockers = DirectUnimplemented;
+    u32 blockers = 0;
     if (regs.pipeline.triangle_topology != TriangleTopology::List) {
         blockers |= DirectTopology;
     }
     if (regs.pipeline.use_gs != UseGS::No) {
         blockers |= DirectGeometryShader;
     }
-    (void)is_indexed;
-    return {false, blockers & DirectTopology ? FallbackReason::Topology
-                                             : FallbackReason::UnsupportedState,
-            blockers};
+    if (is_indexed) {
+        // Indexed draws require native vertex fetch from guest memory — not yet implemented.
+        blockers |= DirectIndexFormat;
+    }
+    if (blockers != 0) {
+        FallbackReason reason = FallbackReason::UnsupportedState;
+        if (blockers & DirectTopology) {
+            reason = FallbackReason::Topology;
+        }
+        return {false, reason, blockers};
+    }
+    return {true, FallbackReason::UnsupportedState, 0};
 }
 
 bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
@@ -727,7 +737,7 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         texture_mask |= 1U << index;
         if (!cached_textures[index]) {
             const auto& texture = textures[index];
-            LOG_INFO(Render,
+            LOG_DEBUG(Render,
                      "Deko3D HW reject: texture cache miss/fail unit={} addr=0x{:08x} size={}x{} "
                      "format={} type={} mask=0x{:x}",
                      index, texture.config.GetPhysicalAddress(), texture.config.width.Value(),
@@ -794,7 +804,7 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
     };
     State::CachedRenderTarget* color_target = state.GetOrCreateRenderTarget(color_key);
     if (!color_target) {
-        LOG_INFO(Render, "Deko3D HW reject: color RT create failed addr=0x{:08x} size={}x{} "
+        LOG_DEBUG(Render, "Deko3D HW reject: color RT create failed addr=0x{:08x} size={}x{} "
                          "format={} texture_mask=0x{:x} textures={}",
                  color_key.color_address, color_key.width, color_key.height, color_key.format,
                  texture_mask, enabled_texture_count);
@@ -803,17 +813,25 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         return false;
     }
     if (color_target->cpu_dirty) {
-        LOG_INFO(Render, "Deko3D HW reject: color RT is CPU-dirty addr=0x{:08x} size={}x{}",
-                 color_key.color_address, color_key.width, color_key.height);
-        RecordTransformedBlocker(WrongRenderTarget);
-        RecordFallbackReason(FallbackReason::WrongRenderTarget);
-        return false;
+        if (color_target->owner == State::SurfaceOwner::SoftwareRasterizer) {
+            // The SW rasterizer wrote to this RT. We can overwrite it from HW
+            // without a readback because we are about to draw to it now. Clear
+            // the stale flag and continue — this breaks the SW→SW cascade.
+            color_target->cpu_dirty = false;
+            color_target->needs_clear = true;
+        } else {
+            LOG_DEBUG(Render, "Deko3D HW reject: color RT cpu-dirty addr=0x{:08x} size={}x{}",
+                      color_key.color_address, color_key.width, color_key.height);
+            RecordTransformedBlocker(WrongRenderTarget);
+            RecordFallbackReason(FallbackReason::WrongRenderTarget);
+            return false;
+        }
     }
     const DkImageView* const depth_target = GetOrCreateDepthTarget();
     if ((regs.framebuffer.output_merger.depth_write_enable != 0 ||
          regs.framebuffer.output_merger.depth_test_enable != 0) &&
         !depth_target) {
-        LOG_INFO(Render, "Deko3D HW reject: depth RT create failed size={}x{} fmt={} mask=0x{:x}",
+        LOG_DEBUG(Render, "Deko3D HW reject: depth RT create failed size={}x{} fmt={} mask=0x{:x}",
                  fb.GetWidth(), fb.GetHeight(), static_cast<u32>(fb.depth_format.Value()),
                  texture_mask);
         RecordDepthState(false);
@@ -935,7 +953,7 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
 
     const std::size_t vertex_bytes = vertex_count * sizeof(HardwareVertex);
     if (vertex_bytes > slice.vertex_size) {
-        LOG_INFO(Render, "Deko3D SubmitHardwareChunk: vertex bytes exceed slice size");
+        LOG_DEBUG(Render, "Deko3D SubmitHardwareChunk: vertex bytes exceed slice size");
         return false;
     }
 
@@ -1251,16 +1269,13 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         return false;
     }
     FlushQueue();
-    const DkResult fence_result = dkFenceWait(&slice.fence, -1);
-    if (fence_result != DkResult_Success || QueueHasError("after slice fence wait")) {
-        LOG_ERROR(Render, "HWdraw GPU completion failed result={}", static_cast<int>(fence_result));
-        return false;
-    }
-    RecordHardwareDrawCompleted(vertex_count / 3);
-    RecordTransformedBatchCompleted(vertex_count);
-    slice.fence_pending = false;
-    slice.pending_vertices = 0;
+    slice.fence_pending = true;
+    slice.pending_vertices = vertex_count;
     state.MarkRenderTargetGpuDirty(color_target);
+    // B2: evict any texture-cache entry that aliases this RT address so a
+    // subsequent sample of this surface re-uploads from GPU-resolved memory.
+    texture_cache.InvalidateRegion(color_target.key.color_address,
+                                   color_target.key.width * color_target.key.height * 4);
     RecordHardwareRasterFrame();
     RecordHardwareDrawSubmitted(vertex_count / 3);
     RecordTransformedBatchSubmitted(vertex_count);
@@ -1413,14 +1428,7 @@ bool Rasterizer::AccelerateDrawBatch(bool is_indexed) {
         return false;
     }
 
-    // Direct indexed/non-indexed acceleration is intentionally disabled for the first Deko3D
-    // rasterizer milestone. The PICA frontend will emit triangles through AddTriangle(), keeping
-    // the compatibility fallback correct while the native HardwareVertex path is added.
-    const auto eligibility = EvaluateDirectBatchEligibility(is_indexed);
-    RecordDirectBlocker(eligibility.blockers);
-    RecordFallbackReason(eligibility.reason);
     RecordDirectBatchRejected();
-    (void)is_indexed;
     return false;
 }
 

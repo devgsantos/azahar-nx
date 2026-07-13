@@ -601,14 +601,14 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     config.global_monitor = &exclusive_monitor.monitor;
 #ifdef __SWITCH__
     // AZAHAR_SWITCH_DUAL_ALIAS_JIT_V3
-    // Keep the normal Switch path conservative. The safe optimization set still
-    // crashes during early block emission on Horizon and must be opt-in until
-    // the failing flag is isolated on-device.
+    // Safe optimizations are now enabled by default. Define
+    // AZAHAR_SWITCH_DYNARMIC_NO_OPTIMIZATIONS at compile time to force
+    // no_optimizations for crash-bisection builds.
     config.code_cache_size = SwitchDynarmicCodeCacheSize;
-#if defined(AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS)
-    config.optimizations = SwitchDynarmicOptimizations;
-#else
+#if defined(AZAHAR_SWITCH_DYNARMIC_NO_OPTIMIZATIONS)
     config.optimizations = Dynarmic::no_optimizations;
+#else
+    config.optimizations = SwitchDynarmicOptimizations;
 #endif
     config.fastmem_pointer = std::nullopt;
     config.recompile_on_fastmem_failure = false;
@@ -618,12 +618,11 @@ std::unique_ptr<Dynarmic::A32::Jit> ARM_Dynarmic::MakeJit() {
     static bool logged_switch_jit_config = false;
     if (!logged_switch_jit_config) {
         logged_switch_jit_config = true;
-#if defined(AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS)
-        LOG_INFO(Core_ARM11, "Switch ARM JIT: safe optimizations active, RSB disabled");
-#else
+#if defined(AZAHAR_SWITCH_DYNARMIC_NO_OPTIMIZATIONS)
         LOG_INFO(Core_ARM11,
-                 "Switch ARM JIT: conservative no-optimization mode active; safe optimizations "
-                 "available behind AZAHAR_SWITCH_DYNARMIC_SAFE_OPTIMIZATIONS");
+                 "Switch ARM JIT: no-optimization mode forced (AZAHAR_SWITCH_DYNARMIC_NO_OPTIMIZATIONS)");
+#else
+        LOG_INFO(Core_ARM11, "Switch ARM JIT: safe optimizations active (all_safe & ~RSB)");
 #endif
     }
 #endif

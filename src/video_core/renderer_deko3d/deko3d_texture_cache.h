@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "common/common_types.h"
 #include "video_core/pica/regs_texturing.h"
@@ -79,6 +80,7 @@ private:
     DkMemBlock upload_command_mem_block{};
     DkCmdBuf upload_command_buffer{};
     std::unordered_map<u64, std::unique_ptr<CachedTexture>> cache;
+    std::unordered_set<u64> rejected_keys;
 #endif
     bool initialized = false;
 };

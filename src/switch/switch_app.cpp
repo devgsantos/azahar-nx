@@ -370,6 +370,8 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     "deko_texture_upload_bytes=%llu deko_render_target_cache_hits=%llu "
                     "deko_render_target_cache_misses=%llu deko_render_target_readbacks=%llu "
                     "deko_render_target_readback_bytes=%llu "
+                    "deko_render_target_cpu_dirty_total=%llu deko_render_target_cpu_dirty_cpu=%llu "
+                    "deko_render_target_cpu_dirty_sw=%llu deko_render_target_cpu_dirty_disp=%llu "
                     "deko_unsupported_texture_format=%llu deko_unsupported_tev=%llu "
                     "deko_unsupported_blend=%llu deko_unsupported_depth=%llu "
                     "deko_ring_waits=%llu "
@@ -416,6 +418,10 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     static_cast<unsigned long long>(deko_stats.render_target_cache_misses),
                     static_cast<unsigned long long>(deko_stats.render_target_readbacks),
                     static_cast<unsigned long long>(deko_stats.render_target_readback_bytes),
+                    static_cast<unsigned long long>(deko_stats.render_target_cpu_dirty),
+                    static_cast<unsigned long long>(deko_stats.render_target_cpu_dirty_by_cpu_memory),
+                    static_cast<unsigned long long>(deko_stats.render_target_cpu_dirty_by_software),
+                    static_cast<unsigned long long>(deko_stats.render_target_cpu_dirty_by_display_transfer),
                     static_cast<unsigned long long>(deko_stats.unsupported_texture_format),
                     static_cast<unsigned long long>(deko_stats.unsupported_tev),
                     static_cast<unsigned long long>(deko_stats.unsupported_blend),

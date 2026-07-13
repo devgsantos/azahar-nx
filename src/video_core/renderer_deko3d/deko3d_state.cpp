@@ -1097,6 +1097,19 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
         target->cpu_dirty = true;
         target->guest_memory_generation = ++render_target_generation;
         RecordRenderTargetCpuDirty();
+        switch (owner) {
+        case SurfaceOwner::CpuMemory:
+            RecordRenderTargetCpuDirtyByCpuMemory();
+            break;
+        case SurfaceOwner::SoftwareRasterizer:
+            RecordRenderTargetCpuDirtyBySoftware();
+            break;
+        case SurfaceOwner::DisplayTransfer:
+            RecordRenderTargetCpuDirtyByDisplayTransfer();
+            break;
+        default:
+            break;
+        }
         display_transfer_targets.erase(
             std::remove_if(display_transfer_targets.begin(), display_transfer_targets.end(),
                            [raw_target = target.get()](const DisplayTransferTarget& alias) {
@@ -1118,6 +1131,170 @@ void State::MarkRenderTargetSoftwareDirty(PAddr address, u32 bytes) {
 
 void State::MarkRenderTargetDisplayTransferWrite(PAddr address, u32 bytes) {
     InvalidateRenderTargetsOverlapping(address, bytes, SurfaceOwner::DisplayTransfer);
+}
+
+bool State::UploadRenderTargetFromGuest(CachedRenderTarget& target,
+                                        const void* guest_pixels,
+                                        u32 guest_stride_bytes) {
+#ifdef __SWITCH__
+    if (!initialized || !device || !queue) {
+        return false;
+    }
+    if (!guest_pixels || target.key.width == 0 || target.key.height == 0) {
+        return false;
+    }
+
+    const u32 width = target.key.width;
+    const u32 height = target.key.height;
+    const u32 rgba8_stride = width * 4;
+    const u32 rgba8_bytes = rgba8_stride * height;
+
+    // Use the screen_data_buffer as a staging area; it is already CPU-accessible and
+    // GPU-mapped. Bail out if the RT is larger than the buffer.
+    if (!screen_data_buffer || rgba8_bytes > screen_data_buffer_size) {
+        LOG_DEBUG(Render,
+                  "UploadRenderTargetFromGuest: RT too large for staging buffer "
+                  "{}x{} needs={} have={}",
+                  width, height, rgba8_bytes, screen_data_buffer_size);
+        return false;
+    }
+
+    // Decode guest pixels (any PICA format) into RGBA8 in the staging buffer.
+    using ColorFormat = Pica::FramebufferRegs::ColorFormat;
+    const ColorFormat fmt = static_cast<ColorFormat>(target.key.format);
+    const u32 bpp = Pica::FramebufferRegs::BytesPerColorPixel(fmt);
+    if (bpp == 0) {
+        return false;
+    }
+    const u32 stride_pixels = guest_stride_bytes > 0 ? (guest_stride_bytes / bpp) : width;
+    const u8* src = static_cast<const u8*>(guest_pixels);
+    u8* dst = static_cast<u8*>(screen_data_buffer);
+
+    for (u32 y = 0; y < height; ++y) {
+        for (u32 x = 0; x < width; ++x) {
+            const u8* px = src + (y * stride_pixels + x) * bpp;
+            u8* out = dst + (y * width + x) * 4;
+            switch (fmt) {
+            case ColorFormat::RGBA8:
+                out[0] = px[3]; out[1] = px[2]; out[2] = px[1]; out[3] = px[0];
+                break;
+            case ColorFormat::RGB8:
+                out[0] = px[2]; out[1] = px[1]; out[2] = px[0]; out[3] = 0xff;
+                break;
+            case ColorFormat::RGB565: {
+                const u16 raw = static_cast<u16>(px[0] | (px[1] << 8));
+                out[0] = static_cast<u8>(((raw >> 11) & 0x1f) * 255 / 31);
+                out[1] = static_cast<u8>(((raw >>  5) & 0x3f) * 255 / 63);
+                out[2] = static_cast<u8>(((raw >>  0) & 0x1f) * 255 / 31);
+                out[3] = 0xff;
+                break;
+            }
+            case ColorFormat::RGB5A1: {
+                const u16 raw = static_cast<u16>(px[0] | (px[1] << 8));
+                out[0] = static_cast<u8>(((raw >> 11) & 0x1f) * 255 / 31);
+                out[1] = static_cast<u8>(((raw >>  6) & 0x1f) * 255 / 31);
+                out[2] = static_cast<u8>(((raw >>  1) & 0x1f) * 255 / 31);
+                out[3] = static_cast<u8>((raw & 0x1) * 255);
+                break;
+            }
+            case ColorFormat::RGBA4: {
+                const u16 raw = static_cast<u16>(px[0] | (px[1] << 8));
+                out[0] = static_cast<u8>(((raw >> 12) & 0xf) * 17);
+                out[1] = static_cast<u8>(((raw >>  8) & 0xf) * 17);
+                out[2] = static_cast<u8>(((raw >>  4) & 0xf) * 17);
+                out[3] = static_cast<u8>(((raw >>  0) & 0xf) * 17);
+                break;
+            }
+            default:
+                std::memset(out, 0, 4);
+                break;
+            }
+        }
+    }
+
+    // Create a temporary upload command buffer.
+    constexpr u32 UploadCmdSize = 4 * 1024;
+    DkMemBlockMaker cmd_mem_maker;
+    dkMemBlockMakerDefaults(&cmd_mem_maker, device, UploadCmdSize);
+    cmd_mem_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+    DkMemBlock cmd_mem = dkMemBlockCreate(&cmd_mem_maker);
+    if (!cmd_mem) {
+        return false;
+    }
+
+    DkCmdBufMaker cmd_buf_maker;
+    dkCmdBufMakerDefaults(&cmd_buf_maker, device);
+    DkCmdBuf cmd_buf = dkCmdBufCreate(&cmd_buf_maker);
+    if (!cmd_buf) {
+        dkMemBlockDestroy(cmd_mem);
+        return false;
+    }
+    dkCmdBufAddMemory(cmd_buf, cmd_mem, 0, UploadCmdSize);
+
+    // The screen_data_buffer is a CPU-uncached/GPU-cached block; get its GPU address.
+    // We need it for the copy. Re-use the existing upload_gpu_addr if wired, otherwise
+    // we need the block's GPU addr — but screen_data_buffer comes from screen_tex_mem_block
+    // which is an Image block and may not have a CPU-linear GPU address usable for
+    // CopyBufferToImage. Fall back to a dedicated linear staging block.
+    DkMemBlockMaker staging_maker;
+    dkMemBlockMakerDefaults(&staging_maker, device,
+                            AlignUp(static_cast<u64>(rgba8_bytes), DK_MEMBLOCK_ALIGNMENT));
+    staging_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+    DkMemBlock staging_mem = dkMemBlockCreate(&staging_maker);
+    if (!staging_mem) {
+        dkCmdBufDestroy(cmd_buf);
+        dkMemBlockDestroy(cmd_mem);
+        return false;
+    }
+    void* staging_cpu = dkMemBlockGetCpuAddr(staging_mem);
+    DkGpuAddr staging_gpu = dkMemBlockGetGpuAddr(staging_mem);
+    if (!staging_cpu || staging_gpu == 0) {
+        dkMemBlockDestroy(staging_mem);
+        dkCmdBufDestroy(cmd_buf);
+        dkMemBlockDestroy(cmd_mem);
+        return false;
+    }
+    std::memcpy(staging_cpu, dst, rgba8_bytes);
+
+    DkCopyBuf copy_buf{};
+    copy_buf.addr = staging_gpu;
+    copy_buf.rowLength = 0;
+    copy_buf.imageHeight = 0;
+
+    DkImageView target_view{};
+    dkImageViewDefaults(&target_view, &target.image);
+
+    DkImageRect dst_rect{};
+    dst_rect.x = 0; dst_rect.y = 0; dst_rect.z = 0;
+    dst_rect.width = width; dst_rect.height = height; dst_rect.depth = 1;
+
+    dkCmdBufCopyBufferToImage(cmd_buf, &copy_buf, &target_view, &dst_rect, 0);
+    const DkCmdList cmd_list = dkCmdBufFinishList(cmd_buf);
+
+    bool success = false;
+    if (cmd_list) {
+        dkQueueFlush(queue);
+        dkQueueSubmitCommands(queue, cmd_list);
+        dkQueueWaitIdle(queue);
+        success = !dkQueueIsInErrorState(queue);
+    }
+
+    dkMemBlockDestroy(staging_mem);
+    dkCmdBufDestroy(cmd_buf);
+    dkMemBlockDestroy(cmd_mem);
+
+    if (success) {
+        target.cpu_dirty = false;
+        target.gpu_dirty = false;
+        target.needs_clear = false;
+        LOG_DEBUG(Render, "UploadRenderTargetFromGuest: uploaded {}x{} fmt={} to GPU",
+                  width, height, target.key.format);
+    }
+    return success;
+#else
+    (void)target; (void)guest_pixels; (void)guest_stride_bytes;
+    return false;
+#endif
 }
 
 void State::UploadScreenTextures() {
