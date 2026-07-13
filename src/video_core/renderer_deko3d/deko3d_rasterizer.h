@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <deque>
 #include <optional>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
@@ -188,6 +189,9 @@ private:
     static constexpr u32 VertexBufferSize = 3 * 1024 * 1024;
     static constexpr u32 UniformBufferSize = 512 * 1024;
     static constexpr u32 DescriptorBufferSize = 128 * 1024;
+    static constexpr u32 ResolveSlotCount = 4;
+    static constexpr u32 DrawSubmissionSlotCount = 4;
+    static constexpr u32 DrawListsPerSubmission = 8;
 
     struct FrameSlice {
         DkCmdBuf command_buffer{};
@@ -198,9 +202,27 @@ private:
         u32 vertex_size = 0;
         u32 uniform_offset = 0;
         u32 uniform_size = 0;
+        u32 descriptor_offset = 0;
+        u32 descriptor_size = 0;
         DkFence fence{};
         AsyncRaster::DeferredFencePending fence_pending{};
         std::size_t pending_vertices = 0;
+    };
+
+    struct ResolveSlot {
+        DkMemBlock staging_mem{};
+        DkMemBlock command_mem{};
+        DkCmdBuf command_buffer{};
+        DkFence fence{};
+        u32 staging_size = 0;
+        bool fence_pending = false;
+    };
+
+    struct DrawSubmissionSlot {
+        DkMemBlock command_mem{};
+        DkCmdBuf command_buffer{};
+        DkFence fence{};
+        bool fence_pending = false;
     };
 
     struct HardwareEligibility {
@@ -255,6 +277,10 @@ private:
     void ShutdownGpuResources();
     FrameSlice& CurrentFrameSlice();
     bool WaitForFrameSlice(FrameSlice& slice);
+    bool SubmitPendingDrawLists();
+    bool DrainRasterQueue();
+    void DrawCurrentBatch();
+    void FlushPendingGeometry();
     HardwareEligibility EvaluateTransformedBatchEligibility() const;
     HardwareEligibility EvaluateDirectBatchEligibility(bool is_indexed) const;
     bool TryDrawHardwareBatch(std::size_t& submitted_vertices);
@@ -292,6 +318,16 @@ private:
     std::deque<DepthTarget> depth_targets;
     DepthTarget* active_depth_target = nullptr;
     std::array<FrameSlice, FrameSliceCount> frame_slices{};
+    std::array<ResolveSlot, ResolveSlotCount> resolve_slots{};
+    std::array<DrawSubmissionSlot, DrawSubmissionSlotCount> draw_submission_slots{};
+    std::array<DkCmdList, DrawListsPerSubmission> pending_draw_lists{};
+    std::vector<HardwareVertex> pending_vertex_batch;
+    std::vector<Pica::OutputVertex> pending_fallback_vertex_batch;
+    std::optional<Pica::RegsInternal> pending_batch_regs;
+    u32 pending_draw_list_count = 0;
+    bool raster_work_pending = false;
+    u32 current_draw_submission_slot = 0;
+    u32 current_resolve_slot = 0;
     u32 current_frame_slice = 0;
     mutable AsyncRaster::DiagnosticsSet<std::size_t> observed_state_signatures;
     AsyncRaster::DiagnosticsSet<std::size_t> blend_signatures;

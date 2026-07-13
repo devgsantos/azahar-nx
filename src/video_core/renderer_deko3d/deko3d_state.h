@@ -115,6 +115,7 @@ public:
         DkImage image{};
         DkImageView view{};
         u64 allocation_bytes = 0;
+        u64 guest_memory_bytes = 0;
         SurfaceOwner owner = SurfaceOwner::Clean;
         u64 guest_memory_generation = 0;
         u64 deko_generation = 0;
@@ -206,6 +207,15 @@ private:
     std::array<bool, FramebufferCount> swapchain_background_initialized{};
     DkFence present_fence{};
     bool present_fence_pending = false;
+    static constexpr u32 SnapshotCommandSlotCount = 4;
+    struct SnapshotCommandSlot {
+        DkMemBlock command_mem{};
+        DkCmdBuf command_buffer{};
+        DkFence fence{};
+        bool fence_pending = false;
+    };
+    std::array<SnapshotCommandSlot, SnapshotCommandSlotCount> snapshot_command_slots{};
+    u32 current_snapshot_command_slot = 0;
     bool top_screen_gpu_dirty = false;
     std::vector<std::unique_ptr<CachedRenderTarget>> render_targets;
     std::vector<DisplayTransferTarget> display_transfer_targets;

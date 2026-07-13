@@ -9,6 +9,7 @@
 #include <cstring>
 #include <functional>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "common/alignment.h"
@@ -32,6 +33,43 @@ u32 AlignUp(u32 value, u32 alignment) {
 u32 AlignDown(u32 value, u32 alignment) {
     return alignment == 0 ? value : (value / alignment) * alignment;
 }
+
+struct CompactColorVertex {
+    float position[4];
+    float color[4];
+};
+
+struct CompactTexturedVertex {
+    float position[4];
+    float color[4];
+    float tex_coord0[2];
+    float tex_coord1[2];
+    float tex_coord2[2];
+};
+
+static_assert(sizeof(CompactColorVertex) == 32);
+static_assert(sizeof(CompactTexturedVertex) == 56);
+
+template <typename Vertex>
+struct CompactVertexHash {
+    std::size_t operator()(const Vertex& vertex) const noexcept {
+        const auto* bytes = reinterpret_cast<const u8*>(&vertex);
+        std::size_t hash = sizeof(std::size_t) == 8 ? 1469598103934665603ULL : 2166136261U;
+        const std::size_t prime = sizeof(std::size_t) == 8 ? 1099511628211ULL : 16777619U;
+        for (std::size_t index = 0; index < sizeof(Vertex); ++index) {
+            hash ^= bytes[index];
+            hash *= prime;
+        }
+        return hash;
+    }
+};
+
+template <typename Vertex>
+struct CompactVertexEqual {
+    bool operator()(const Vertex& left, const Vertex& right) const noexcept {
+        return std::memcmp(&left, &right, sizeof(Vertex)) == 0;
+    }
+};
 
 template <typename T>
 void HashCombine(std::size_t& seed, T value) {
@@ -279,6 +317,15 @@ std::size_t TransformedStateSignature(const Pica::PicaCore& pica,
     (void)pica;
     return seed;
 }
+
+bool CompatibleRenderState(const Pica::RegsInternal& left, const Pica::RegsInternal& right) {
+    // These are the complete register blocks consumed by the transformed deko3d path. Comparing
+    // the blocks byte-for-byte keeps deferred geometry grouping conservative: any framebuffer,
+    // viewport, scissor, texture/TEV, blend, depth, stencil, or write-mask change closes a group.
+    return std::memcmp(&left.framebuffer, &right.framebuffer, sizeof(left.framebuffer)) == 0 &&
+           std::memcmp(&left.rasterizer, &right.rasterizer, sizeof(left.rasterizer)) == 0 &&
+           std::memcmp(&left.texturing, &right.texturing, sizeof(left.texturing)) == 0;
+}
 #endif
 
 void LogSoftwareBridgeOnce() {
@@ -317,6 +364,7 @@ bool Rasterizer::Initialize() {
 
 void Rasterizer::Shutdown() {
 #ifdef __SWITCH__
+    FlushPendingGeometry();
     ShutdownGpuResources();
 #endif
     initialized = false;
@@ -384,6 +432,8 @@ bool Rasterizer::InitializeGpuResources() {
     const u32 vertex_slice_size =
         AlignDown(VertexBufferSize / FrameSliceCount, static_cast<u32>(sizeof(HardwareVertex)));
     const u32 uniform_slice_size = AlignDown(UniformBufferSize / FrameSliceCount, 256u);
+    const u32 descriptor_slice_size =
+        AlignDown(DescriptorBufferSize / FrameSliceCount, DK_IMAGE_DESCRIPTOR_ALIGNMENT);
     for (u32 index = 0; index < FrameSliceCount; ++index) {
         auto& slice = frame_slices[index];
         slice.command_offset = 0;
@@ -396,6 +446,10 @@ bool Rasterizer::InitializeGpuResources() {
         slice.uniform_size =
             index == FrameSliceCount - 1 ? UniformBufferSize - slice.uniform_offset
                                          : uniform_slice_size;
+        slice.descriptor_offset = index * descriptor_slice_size;
+        slice.descriptor_size =
+            index == FrameSliceCount - 1 ? DescriptorBufferSize - slice.descriptor_offset
+                                         : descriptor_slice_size;
         slice.fence = {};
         slice.fence_pending = false;
 
@@ -446,6 +500,7 @@ bool Rasterizer::InitializeGpuResources() {
 }
 
 void Rasterizer::ShutdownGpuResources() {
+    DrainRasterQueue();
     if (device || queue || vertex_mem_block ||
         uniform_mem_block || descriptor_mem_block) {
         state.WaitIdle();
@@ -460,6 +515,27 @@ void Rasterizer::ShutdownGpuResources() {
             dkMemBlockDestroy(slice.command_mem_block);
             slice.command_mem_block = nullptr;
         }
+    }
+    for (auto& slot : resolve_slots) {
+        if (slot.command_buffer) {
+            dkCmdBufDestroy(slot.command_buffer);
+        }
+        if (slot.command_mem) {
+            dkMemBlockDestroy(slot.command_mem);
+        }
+        if (slot.staging_mem) {
+            dkMemBlockDestroy(slot.staging_mem);
+        }
+        slot = {};
+    }
+    for (auto& slot : draw_submission_slots) {
+        if (slot.command_buffer) {
+            dkCmdBufDestroy(slot.command_buffer);
+        }
+        if (slot.command_mem) {
+            dkMemBlockDestroy(slot.command_mem);
+        }
+        slot = {};
     }
     if (vertex_mem_block) {
         dkMemBlockDestroy(vertex_mem_block);
@@ -491,6 +567,16 @@ void Rasterizer::ShutdownGpuResources() {
 
     frame_slices = {};
     current_frame_slice = 0;
+    resolve_slots = {};
+    current_resolve_slot = 0;
+    draw_submission_slots = {};
+    pending_draw_lists = {};
+    pending_vertex_batch.clear();
+    pending_fallback_vertex_batch.clear();
+    pending_batch_regs.reset();
+    pending_draw_list_count = 0;
+    raster_work_pending = false;
+    current_draw_submission_slot = 0;
     device = {};
     queue = {};
 }
@@ -510,7 +596,6 @@ bool Rasterizer::WaitForFrameSlice(FrameSlice& slice) {
         return false;
     }
 
-    FlushQueue();
     RecordRasterFencePoll();
     const DkResult poll_result = dkFenceWait(&slice.fence, 0);
     if (poll_result == DkResult_Success) {
@@ -526,6 +611,9 @@ bool Rasterizer::WaitForFrameSlice(FrameSlice& slice) {
     RecordRingWait();
     RecordFenceWait();
     RecordRasterFenceWait();
+    // Submission may still be buffered on the host. Flush only after the nonblocking poll proves
+    // that this slice is not already available; completed sibling fences need no extra flush.
+    FlushQueue();
     constexpr s64 FenceWaitTimeoutNs = 1'000'000'000LL;
     const auto wait_start = std::chrono::steady_clock::now();
     const DkResult result = dkFenceWait(&slice.fence, FenceWaitTimeoutNs);
@@ -548,6 +636,86 @@ bool Rasterizer::WaitForFrameSlice(FrameSlice& slice) {
     RecordTransformedBatchCompleted(slice.pending_vertices);
     slice.fence_pending = false;
     slice.pending_vertices = 0;
+    return true;
+}
+
+bool Rasterizer::SubmitPendingDrawLists() {
+    if (pending_draw_list_count == 0) {
+        return true;
+    }
+
+    auto& submission = draw_submission_slots[current_draw_submission_slot];
+    current_draw_submission_slot =
+        (current_draw_submission_slot + 1) % DrawSubmissionSlotCount;
+    if (submission.fence_pending) {
+        FlushQueue();
+        DkResult result = dkFenceWait(&submission.fence, 0);
+        if (result != DkResult_Success) {
+            result = dkFenceWait(&submission.fence, 1'000'000'000LL);
+        }
+        if (result != DkResult_Success || QueueHasError("draw submission slot wait")) {
+            return false;
+        }
+        submission.fence_pending = false;
+    }
+
+    if (!submission.command_mem) {
+        constexpr u32 SubmissionCommandBytes = 16 * 1024;
+        DkMemBlockMaker mem_maker;
+        dkMemBlockMakerDefaults(&mem_maker, device,
+                                AlignUp(SubmissionCommandBytes, DK_MEMBLOCK_ALIGNMENT));
+        mem_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+        submission.command_mem = dkMemBlockCreate(&mem_maker);
+        if (!submission.command_mem) {
+            return false;
+        }
+        DkCmdBufMaker buffer_maker;
+        dkCmdBufMakerDefaults(&buffer_maker, device);
+        submission.command_buffer = dkCmdBufCreate(&buffer_maker);
+        if (!submission.command_buffer) {
+            dkMemBlockDestroy(submission.command_mem);
+            submission.command_mem = nullptr;
+            return false;
+        }
+    }
+
+    constexpr u32 SubmissionCommandBytes = 16 * 1024;
+    dkCmdBufClear(submission.command_buffer);
+    dkCmdBufAddMemory(submission.command_buffer, submission.command_mem, 0,
+                      SubmissionCommandBytes);
+    for (u32 index = 0; index < pending_draw_list_count; ++index) {
+        dkCmdBufCallList(submission.command_buffer, pending_draw_lists[index]);
+    }
+    dkCmdBufSignalFence(submission.command_buffer, &submission.fence, true);
+    const DkCmdList grouped_list = dkCmdBufFinishList(submission.command_buffer);
+    if (!grouped_list) {
+        return false;
+    }
+    dkQueueSubmitCommands(queue, grouped_list);
+    RecordRasterQueueSubmit();
+    pending_draw_lists.fill(0);
+    pending_draw_list_count = 0;
+    submission.fence_pending = true;
+    raster_work_pending = true;
+    return !QueueHasError("after grouped draw submit");
+}
+
+bool Rasterizer::DrainRasterQueue() {
+    if (!queue) {
+        return true;
+    }
+    if (pending_draw_list_count == 0 && !raster_work_pending) {
+        return true;
+    }
+    if (!SubmitPendingDrawLists()) {
+        return false;
+    }
+    FlushQueue();
+    dkQueueWaitIdle(queue);
+    if (QueueHasError("after raster drain")) {
+        return false;
+    }
+    raster_work_pending = false;
     return true;
 }
 
@@ -803,8 +971,14 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
         return false;
     }
     if (color_target->cpu_dirty) {
-        LOG_INFO(Render, "Deko3D HW reject: color RT is CPU-dirty addr=0x{:08x} size={}x{}",
-                 color_key.color_address, color_key.width, color_key.height);
+        static auto last_cpu_dirty_reject_log = std::chrono::steady_clock::time_point{};
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_cpu_dirty_reject_log >= std::chrono::seconds(1)) {
+            last_cpu_dirty_reject_log = now;
+            LOG_INFO(Render,
+                     "Deko3D HW reject: color RT remains CPU-dirty addr=0x{:08x} size={}x{}",
+                     color_key.color_address, color_key.width, color_key.height);
+        }
         RecordTransformedBlocker(WrongRenderTarget);
         RecordFallbackReason(FallbackReason::WrongRenderTarget);
         return false;
@@ -824,7 +998,7 @@ bool Rasterizer::TryDrawHardwareBatch(std::size_t& submitted_vertices) {
 
     const std::size_t vertices_per_slice =
         3 * (static_cast<std::size_t>(frame_slices[0].vertex_size) /
-             (3 * sizeof(HardwareVertex)));
+             (3 * sizeof(CompactTexturedVertex)));
     if (vertices_per_slice < 3) {
         return false;
     }
@@ -933,15 +1107,133 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
                                      u32 texture_mask) {
 
 
-    const std::size_t vertex_bytes = vertex_count * sizeof(HardwareVertex);
-    if (vertex_bytes > slice.vertex_size) {
+    const bool use_textures = texture_mask != 0;
+    const std::size_t vertex_stride =
+        use_textures ? sizeof(CompactTexturedVertex) : sizeof(CompactColorVertex);
+    const std::size_t unindexed_vertex_bytes = vertex_count * vertex_stride;
+    if (unindexed_vertex_bytes > slice.vertex_size) {
         LOG_INFO(Render, "Deko3D SubmitHardwareChunk: vertex bytes exceed slice size");
         return false;
     }
 
-    std::memcpy(static_cast<u8*>(vertex_cpu_buffer) + slice.vertex_offset,
-                vertex_batch.data() + base_vertex, vertex_bytes);
+    auto* const vertex_destination = static_cast<u8*>(vertex_cpu_buffer) + slice.vertex_offset;
+    std::vector<u16> vertex_indices;
+    std::size_t uploaded_vertex_bytes = unindexed_vertex_bytes;
+    std::size_t index_offset = 0;
+    bool use_indexed_draw = false;
 
+    auto make_color_vertex = [](const HardwareVertex& source) {
+        CompactColorVertex destination{};
+        destination.position[0] = source.position.x;
+        destination.position[1] = source.position.y;
+        destination.position[2] = source.position.z;
+        destination.position[3] = source.position.w;
+        destination.color[0] = source.color.x;
+        destination.color[1] = source.color.y;
+        destination.color[2] = source.color.z;
+        destination.color[3] = source.color.w;
+        return destination;
+    };
+    auto make_textured_vertex = [&](const HardwareVertex& source) {
+        CompactTexturedVertex destination{};
+        const CompactColorVertex base = make_color_vertex(source);
+        std::memcpy(destination.position, base.position, sizeof(base.position));
+        std::memcpy(destination.color, base.color, sizeof(base.color));
+        destination.tex_coord0[0] = source.tex_coord0.x;
+        destination.tex_coord0[1] = source.tex_coord0.y;
+        destination.tex_coord1[0] = source.tex_coord1.x;
+        destination.tex_coord1[1] = source.tex_coord1.y;
+        destination.tex_coord2[0] = source.tex_coord2.x;
+        destination.tex_coord2[1] = source.tex_coord2.y;
+        return destination;
+    };
+
+    if (use_textures) {
+        std::vector<CompactTexturedVertex> compact_vertices;
+        compact_vertices.reserve(vertex_count);
+        vertex_indices.reserve(vertex_count);
+        std::unordered_map<CompactTexturedVertex, u32, CompactVertexHash<CompactTexturedVertex>,
+                           CompactVertexEqual<CompactTexturedVertex>>
+            unique_vertices;
+        unique_vertices.reserve(vertex_count);
+        for (std::size_t index = 0; index < vertex_count; ++index) {
+            const CompactTexturedVertex vertex =
+                make_textured_vertex(vertex_batch[base_vertex + index]);
+            const auto [entry, inserted] =
+                unique_vertices.emplace(vertex, static_cast<u32>(compact_vertices.size()));
+            if (inserted) {
+                compact_vertices.push_back(vertex);
+            }
+            vertex_indices.push_back(static_cast<u16>(entry->second));
+        }
+        index_offset = AlignUp(static_cast<u32>(compact_vertices.size() * vertex_stride), 4);
+        const std::size_t indexed_bytes = index_offset + vertex_indices.size() * sizeof(u16);
+        use_indexed_draw = compact_vertices.size() < vertex_count &&
+                           indexed_bytes < unindexed_vertex_bytes &&
+                           indexed_bytes <= slice.vertex_size;
+        if (use_indexed_draw) {
+            uploaded_vertex_bytes = compact_vertices.size() * vertex_stride;
+            std::memcpy(vertex_destination, compact_vertices.data(), uploaded_vertex_bytes);
+        } else {
+            for (std::size_t index = 0; index < vertex_count; ++index) {
+                reinterpret_cast<CompactTexturedVertex*>(vertex_destination)[index] =
+                    make_textured_vertex(vertex_batch[base_vertex + index]);
+            }
+        }
+    } else {
+        std::vector<CompactColorVertex> compact_vertices;
+        compact_vertices.reserve(vertex_count);
+        vertex_indices.reserve(vertex_count);
+        std::unordered_map<CompactColorVertex, u32, CompactVertexHash<CompactColorVertex>,
+                           CompactVertexEqual<CompactColorVertex>>
+            unique_vertices;
+        unique_vertices.reserve(vertex_count);
+        for (std::size_t index = 0; index < vertex_count; ++index) {
+            const CompactColorVertex vertex = make_color_vertex(vertex_batch[base_vertex + index]);
+            const auto [entry, inserted] =
+                unique_vertices.emplace(vertex, static_cast<u32>(compact_vertices.size()));
+            if (inserted) {
+                compact_vertices.push_back(vertex);
+            }
+            vertex_indices.push_back(static_cast<u16>(entry->second));
+        }
+        index_offset = AlignUp(static_cast<u32>(compact_vertices.size() * vertex_stride), 4);
+        const std::size_t indexed_bytes = index_offset + vertex_indices.size() * sizeof(u16);
+        use_indexed_draw = compact_vertices.size() < vertex_count &&
+                           indexed_bytes < unindexed_vertex_bytes &&
+                           indexed_bytes <= slice.vertex_size;
+        if (use_indexed_draw) {
+            uploaded_vertex_bytes = compact_vertices.size() * vertex_stride;
+            std::memcpy(vertex_destination, compact_vertices.data(), uploaded_vertex_bytes);
+        } else {
+            for (std::size_t index = 0; index < vertex_count; ++index) {
+                reinterpret_cast<CompactColorVertex*>(vertex_destination)[index] =
+                    make_color_vertex(vertex_batch[base_vertex + index]);
+            }
+        }
+    }
+    if (use_indexed_draw) {
+        std::memcpy(vertex_destination + index_offset, vertex_indices.data(),
+                    vertex_indices.size() * sizeof(u16));
+        static std::uint64_t indexed_draws = 0;
+        static std::uint64_t source_bytes = 0;
+        static std::uint64_t uploaded_bytes = 0;
+        static auto last_index_log = std::chrono::steady_clock::time_point{};
+        ++indexed_draws;
+        source_bytes += unindexed_vertex_bytes;
+        uploaded_bytes += uploaded_vertex_bytes + vertex_indices.size() * sizeof(u16);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_index_log >= std::chrono::seconds(1)) {
+            LOG_INFO(Render,
+                     "Deko3D indexed reuse: draws={} source_bytes={} uploaded_bytes={} saved={}%",
+                     indexed_draws, source_bytes, uploaded_bytes,
+                     source_bytes == 0 ? 0 : 100 - (uploaded_bytes * 100 / source_bytes));
+            indexed_draws = 0;
+            source_bytes = 0;
+            uploaded_bytes = 0;
+            last_index_log = now;
+        }
+    }
     {
         static bool s_logged_first_verts = false;
         if (!s_logged_first_verts && vertex_count >= 3) {
@@ -959,7 +1251,6 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         }
     }
 
-    const bool use_textures = texture_mask != 0;
     const DkShader* const shaders[] = {
         use_textures ? shader_cache.GetTexVertexShader() : shader_cache.GetColorVertexShader(),
         use_textures ? shader_cache.GetTexFragmentShader() : shader_cache.GetColorFragmentShader()};
@@ -967,21 +1258,14 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
         return false;
     }
 
-    static const DkVtxAttribState attribs[] = {
-        {0, 0, offsetof(HardwareVertex, position), DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
-        {0, 0, offsetof(HardwareVertex, color), DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
-        {0, 0, offsetof(HardwareVertex, tex_coord0), DkVtxAttribSize_2x32, DkVtxAttribType_Float,
-         0},
-        {0, 0, offsetof(HardwareVertex, tex_coord1), DkVtxAttribSize_2x32, DkVtxAttribType_Float,
-         0},
-        {0, 0, offsetof(HardwareVertex, tex_coord2), DkVtxAttribSize_2x32, DkVtxAttribType_Float,
-         0},
-        {0, 0, offsetof(HardwareVertex, tex_coord0_w), DkVtxAttribSize_1x32,
-         DkVtxAttribType_Float, 0},
-        {0, 0, offsetof(HardwareVertex, normquat), DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
-        {0, 0, offsetof(HardwareVertex, view), DkVtxAttribSize_3x32, DkVtxAttribType_Float, 0},
+    const DkVtxAttribState attribs[] = {
+        {0, 0, 0, DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
+        {0, 0, 16, DkVtxAttribSize_4x32, DkVtxAttribType_Float, 0},
+        {0, 0, 32, DkVtxAttribSize_2x32, DkVtxAttribType_Float, 0},
+        {0, 0, 40, DkVtxAttribSize_2x32, DkVtxAttribType_Float, 0},
+        {0, 0, 48, DkVtxAttribSize_2x32, DkVtxAttribType_Float, 0},
     };
-    static const DkVtxBufferState vtx_buffer_state[] = {{sizeof(HardwareVertex), 0}};
+    const DkVtxBufferState vtx_buffer_state[] = {{static_cast<u32>(vertex_stride), 0}};
 
     DkRasterizerState& rasterizer_state = hw_rasterizer_state;
     DkMultisampleState& multisample_state = hw_multisample_state;
@@ -1188,12 +1472,17 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
             return false;
         }
 
-        const std::size_t image_offset = 0;
+        const std::size_t image_offset = slice.descriptor_offset;
         constexpr std::size_t texture_count = 3;
         const std::size_t image_bytes = texture_count * sizeof(DkImageDescriptor);
         const std::size_t sampler_offset =
             Common::AlignUp(image_offset + image_bytes,
                             static_cast<std::size_t>(DK_IMAGE_DESCRIPTOR_ALIGNMENT));
+        const std::size_t descriptor_end =
+            sampler_offset + texture_count * sizeof(DkSamplerDescriptor);
+        if (descriptor_end > slice.descriptor_offset + slice.descriptor_size) {
+            return false;
+        }
         for (std::size_t index = 0; index < texture_count; ++index) {
             const CachedTexture* texture = textures[index] ? textures[index] : fallback_texture;
             DkImageDescriptor image_descriptor{};
@@ -1236,30 +1525,35 @@ bool Rasterizer::SubmitHardwareChunk(FrameSlice& slice, State::CachedRenderTarge
     dkCmdBufBindVtxBufferState(command_buffer, vtx_buffer_state,
                                sizeof(vtx_buffer_state) / sizeof(vtx_buffer_state[0]));
     dkCmdBufBindVtxBuffer(command_buffer, 0, vertex_gpu_addr + slice.vertex_offset,
-                          static_cast<u32>(vertex_bytes));
-    dkCmdBufDraw(command_buffer, DkPrimitive_Triangles, static_cast<u32>(vertex_count), 1, 0, 0);
-    dkCmdBufSignalFence(command_buffer, &slice.fence, true);
+                          static_cast<u32>(uploaded_vertex_bytes));
+    if (use_indexed_draw) {
+        dkCmdBufBindIdxBuffer(command_buffer, DkIdxFormat_Uint16,
+                              vertex_gpu_addr + slice.vertex_offset + index_offset);
+        dkCmdBufDrawIndexed(command_buffer, DkPrimitive_Triangles,
+                            static_cast<u32>(vertex_indices.size()), 1, 0, 0, 0);
+    } else {
+        dkCmdBufDraw(command_buffer, DkPrimitive_Triangles, static_cast<u32>(vertex_count), 1, 0,
+                     0);
+    }
+    // The grouped parent list performs the cache flush once after all child draws. This child
+    // fence only protects command/vertex slice reuse, matching deko3d's dynamic command ring.
+    dkCmdBufSignalFence(command_buffer, &slice.fence, false);
 
     const DkCmdList draw_cmd = dkCmdBufFinishList(command_buffer);
     if (!draw_cmd) {
         LOG_INFO(Render, "HWdraw F: cmdlist null");
         return false;
     }
-    dkQueueSubmitCommands(queue, draw_cmd);
-    RecordRasterQueueSubmit();
-    if (QueueHasError("after draw submit")) {
+    pending_draw_lists[pending_draw_list_count++] = draw_cmd;
+    if (pending_draw_list_count == DrawListsPerSubmission && !SubmitPendingDrawLists()) {
         return false;
     }
-    FlushQueue();
-    const DkResult fence_result = dkFenceWait(&slice.fence, -1);
-    if (fence_result != DkResult_Success || QueueHasError("after slice fence wait")) {
-        LOG_ERROR(Render, "HWdraw GPU completion failed result={}", static_cast<int>(fence_result));
-        return false;
-    }
-    RecordHardwareDrawCompleted(vertex_count / 3);
-    RecordTransformedBatchCompleted(vertex_count);
-    slice.fence_pending = false;
-    slice.pending_vertices = 0;
+    // Keep CPU and GPU work overlapped. The frame-slice ring owns this command and vertex memory
+    // until its fence completes. Do not flush every tiny PICA batch: WaitForFrameSlice flushes the
+    // queued group before polling/waiting, while display-transfer and present boundaries also
+    // flush naturally.
+    slice.fence_pending = true;
+    slice.pending_vertices = vertex_count;
     state.MarkRenderTargetGpuDirty(color_target);
     RecordHardwareRasterFrame();
     RecordHardwareDrawSubmitted(vertex_count / 3);
@@ -1295,6 +1589,87 @@ void Rasterizer::AddTriangle(const Pica::OutputVertex& v0, const Pica::OutputVer
 }
 
 void Rasterizer::DrawTriangles() {
+    if (vertex_batch.empty()) {
+        return;
+    }
+
+#ifdef __SWITCH__
+    const bool valid_transformed_batch =
+        vertex_batch.size() >= 3 && (vertex_batch.size() % 3) == 0 &&
+        fallback_vertex_batch.size() == vertex_batch.size();
+    if (!valid_transformed_batch) {
+        auto invalid_vertex_batch = std::move(vertex_batch);
+        auto invalid_fallback_vertex_batch = std::move(fallback_vertex_batch);
+        vertex_batch.clear();
+        fallback_vertex_batch.clear();
+        FlushPendingGeometry();
+        vertex_batch = std::move(invalid_vertex_batch);
+        fallback_vertex_batch = std::move(invalid_fallback_vertex_batch);
+        DrawCurrentBatch();
+        return;
+    }
+
+    if (pending_batch_regs && CompatibleRenderState(*pending_batch_regs, regs)) {
+        static std::uint64_t merged_draws = 0;
+        static std::uint64_t merged_vertices = 0;
+        static auto last_merge_log = std::chrono::steady_clock::time_point{};
+        ++merged_draws;
+        merged_vertices += vertex_batch.size();
+        pending_vertex_batch.insert(pending_vertex_batch.end(),
+                                    std::make_move_iterator(vertex_batch.begin()),
+                                    std::make_move_iterator(vertex_batch.end()));
+        pending_fallback_vertex_batch.insert(
+            pending_fallback_vertex_batch.end(),
+            std::make_move_iterator(fallback_vertex_batch.begin()),
+            std::make_move_iterator(fallback_vertex_batch.end()));
+        vertex_batch.clear();
+        fallback_vertex_batch.clear();
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_merge_log >= std::chrono::seconds(1)) {
+            LOG_INFO(Render,
+                     "Deko3D adjacent batching: merged_draws={} merged_vertices={} "
+                     "pending_vertices={}",
+                     merged_draws, merged_vertices, pending_vertex_batch.size());
+            merged_draws = 0;
+            merged_vertices = 0;
+            last_merge_log = now;
+        }
+        return;
+    }
+
+    // Preserve the newly emitted draw while the previous compatible group is submitted under its
+    // saved registers. FlushPendingGeometry uses vertex_batch as its execution scratch buffer.
+    auto next_vertex_batch = std::move(vertex_batch);
+    auto next_fallback_vertex_batch = std::move(fallback_vertex_batch);
+    vertex_batch.clear();
+    fallback_vertex_batch.clear();
+    FlushPendingGeometry();
+    pending_batch_regs.emplace(regs);
+    pending_vertex_batch = std::move(next_vertex_batch);
+    pending_fallback_vertex_batch = std::move(next_fallback_vertex_batch);
+    return;
+#else
+    DrawCurrentBatch();
+#endif
+}
+
+void Rasterizer::FlushPendingGeometry() {
+#ifdef __SWITCH__
+    if (!pending_batch_regs) {
+        return;
+    }
+
+    Pica::RegsInternal live_regs = regs;
+    regs = *pending_batch_regs;
+    pending_batch_regs.reset();
+    vertex_batch.swap(pending_vertex_batch);
+    fallback_vertex_batch.swap(pending_fallback_vertex_batch);
+    DrawCurrentBatch();
+    regs = std::move(live_regs);
+#endif
+}
+
+void Rasterizer::DrawCurrentBatch() {
     if (vertex_batch.empty()) {
         return;
     }
@@ -1364,11 +1739,17 @@ void Rasterizer::DrawSoftwareFallback(std::size_t first_vertex) {
 }
 
 void Rasterizer::FlushAll() {
+#ifdef __SWITCH__
+    FlushPendingGeometry();
+    SubmitPendingDrawLists();
+    FlushQueue();
+#endif
     software_fallback.FlushAll();
 }
 
 void Rasterizer::FlushRegion(PAddr addr, u32 size) {
 #ifdef __SWITCH__
+    FlushPendingGeometry();
     state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
     texture_cache.FlushRegion(addr, size);
 #endif
@@ -1377,6 +1758,7 @@ void Rasterizer::FlushRegion(PAddr addr, u32 size) {
 
 void Rasterizer::InvalidateRegion(PAddr addr, u32 size) {
 #ifdef __SWITCH__
+    FlushPendingGeometry();
     state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
     texture_cache.InvalidateRegion(addr, size);
 #endif
@@ -1385,6 +1767,7 @@ void Rasterizer::InvalidateRegion(PAddr addr, u32 size) {
 
 void Rasterizer::FlushAndInvalidateRegion(PAddr addr, u32 size) {
 #ifdef __SWITCH__
+    FlushPendingGeometry();
     state.InvalidateRenderTargetsOverlapping(addr, size, State::SurfaceOwner::CpuMemory);
     texture_cache.FlushAndInvalidateRegion(addr, size);
 #endif
@@ -1392,6 +1775,10 @@ void Rasterizer::FlushAndInvalidateRegion(PAddr addr, u32 size) {
 }
 
 void Rasterizer::ClearAll(bool flush) {
+#ifdef __SWITCH__
+    FlushPendingGeometry();
+    DrainRasterQueue();
+#endif
     vertex_batch.clear();
     fallback_vertex_batch.clear();
     software_fallback.ClearAll(flush);
@@ -1399,6 +1786,10 @@ void Rasterizer::ClearAll(bool flush) {
 
 bool Rasterizer::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
 #ifdef __SWITCH__
+    FlushPendingGeometry();
+    if (!DrainRasterQueue()) {
+        return false;
+    }
     return state.RecordDisplayTransfer(config.GetPhysicalInputAddress(),
                                        config.GetPhysicalOutputAddress(),
                                        config.input_width.Value(), config.input_height.Value(),

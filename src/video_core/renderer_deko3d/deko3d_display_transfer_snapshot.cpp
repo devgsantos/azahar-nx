@@ -63,9 +63,23 @@ bool State::RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32
     using PixelFormat = Pica::PixelFormat;
     using ScalingMode = Pica::DisplayTransferConfig::ScalingMode;
 
+    const auto reject = [&](const char* reason) {
+        static auto last_reject_log = std::chrono::steady_clock::time_point{};
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_reject_log >= std::chrono::seconds(1)) {
+            last_reject_log = now;
+            LOG_INFO(Render,
+                     "Deko3D display snapshot reject reason={} src=0x{:08x} dst=0x{:08x} "
+                     "in={}x{} out={}x{} flags=0x{:08x}",
+                     reason, input_address, output_address, input_width, input_height,
+                     output_width, output_height, flags);
+        }
+        return false;
+    };
+
     if (!initialized || !device || !queue || input_address == 0 || output_address == 0 ||
         input_width == 0 || input_height == 0 || output_width == 0 || output_height == 0) {
-        return false;
+        return reject("invalid-state-or-dimensions");
     }
 
     const bool flip_vertically = (flags & (1U << 0)) != 0;
@@ -80,17 +94,34 @@ bool State::RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32
     if (flip_vertically || block_32 || scaling != ScalingMode::NoScale ||
         input_format != PixelFormat::RGBA8 ||
         (output_format != PixelFormat::RGBA8 && output_format != PixelFormat::RGB8)) {
-        return false;
+        return reject("unsupported-transform-or-format");
     }
 
     CachedRenderTarget* exact_candidate = nullptr;
+    u32 source_y = 0;
     for (auto& candidate : render_targets) {
-        if (!candidate || candidate->key.color_address != input_address ||
-            candidate->key.width != input_width || candidate->key.height != input_height ||
+        if (!candidate || candidate->key.width != input_width ||
+            candidate->key.height != input_height ||
             candidate->key.format != static_cast<u32>(ColorFormat::RGBA8)) {
             continue;
         }
+        const u64 candidate_begin = candidate->key.color_address;
+        const u64 candidate_end = candidate_begin + candidate->guest_memory_bytes;
+        if (input_address < candidate_begin || input_address >= candidate_end) {
+            continue;
+        }
+        const u64 byte_offset = static_cast<u64>(input_address) - candidate_begin;
+        const u64 row_bytes = static_cast<u64>(input_width) * 4;
+        if (row_bytes == 0 || byte_offset % row_bytes != 0) {
+            continue;
+        }
+        const u64 candidate_source_y = byte_offset / row_bytes;
+        if (candidate_source_y > std::numeric_limits<u32>::max() ||
+            candidate_source_y + output_height > candidate->key.height) {
+            continue;
+        }
         exact_candidate = candidate.get();
+        source_y = static_cast<u32>(candidate_source_y);
         break;
     }
 
@@ -103,7 +134,8 @@ bool State::RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32
         // presentation can use the source after ResolveCpuDirtyRenderTarget promotes it to Deko3D.
         // Crops, scaling and format conversions are deliberately excluded from this deferred path.
         if (!exact_candidate || output_width != input_width || output_height != input_height) {
-            return false;
+            return reject(exact_candidate ? "cpu-owned-nonidentity-transfer"
+                                          : "missing-exact-source-target");
         }
 
         auto existing =
@@ -149,95 +181,113 @@ bool State::RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32
 
     // No-scale transfers may crop the source. They must never read beyond the live GPU image.
     if (output_width > source->key.width || output_height > source->key.height) {
-        return false;
+        return reject("output-exceeds-source");
     }
 
+    const ColorFormat destination_guest_format =
+        output_format == PixelFormat::RGB8 ? ColorFormat::RGB8 : ColorFormat::RGBA8;
     const RenderTargetKey destination_key{
         .color_address = output_address,
         .width = output_width,
         .height = output_height,
         .format = static_cast<u32>(ColorFormat::RGBA8),
     };
-    const u64 destination_bytes = SurfaceBytes(destination_key);
+    RenderTargetKey destination_guest_key = destination_key;
+    destination_guest_key.format = static_cast<u32>(destination_guest_format);
+    const u64 destination_bytes = SurfaceBytes(destination_guest_key);
     if (destination_bytes == 0 ||
         RangesOverlapSnapshot(input_address, SurfaceBytes(source->key), output_address,
                               destination_bytes)) {
-        return false;
+        return reject(destination_bytes == 0 ? "zero-destination-footprint"
+                                             : "source-destination-overlap");
     }
 
     CachedRenderTarget* destination = GetOrCreateRenderTarget(destination_key);
     if (!destination || destination == source) {
-        return false;
+        return reject(destination ? "destination-is-source" : "destination-create-failed");
     }
+    // Guest memory may be RGB8 even though deko3d requires RGBA8 image storage. Keep the stable
+    // storage/cache identity and track the guest range independently for overlap invalidation.
+    destination->guest_memory_bytes = destination_bytes;
 
-    DkMemBlock command_mem{};
-    DkCmdBuf command_buffer{};
-    const auto destroy_resources = [&] {
-        if (command_buffer) {
-            dkCmdBufDestroy(command_buffer);
-            command_buffer = nullptr;
+    auto& command_slot = snapshot_command_slots[current_snapshot_command_slot];
+    current_snapshot_command_slot =
+        (current_snapshot_command_slot + 1) % SnapshotCommandSlotCount;
+
+    if (command_slot.fence_pending) {
+        dkQueueFlush(queue);
+        DkResult wait_result = dkFenceWait(&command_slot.fence, 0);
+        if (wait_result != DkResult_Success) {
+            wait_result = dkFenceWait(&command_slot.fence, SnapshotFenceTimeoutNs);
         }
-        if (command_mem) {
-            dkMemBlockDestroy(command_mem);
-            command_mem = nullptr;
+        const bool queue_ok = !dkQueueIsInErrorState(queue);
+        if (wait_result != DkResult_Success || !queue_ok) {
+            LOG_ERROR(Render,
+                      "Deko3D display-transfer snapshot slot wait failed src=0x{:08x} "
+                      "dst=0x{:08x} size={}x{} result={} queue_ok={}",
+                      input_address, output_address, output_width, output_height,
+                      static_cast<int>(wait_result), queue_ok);
+            return false;
         }
-    };
-
-    DkMemBlockMaker command_maker;
-    dkMemBlockMakerDefaults(&command_maker, device,
-                            AlignUpSnapshot(SnapshotCommandBytes, DK_MEMBLOCK_ALIGNMENT));
-    command_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
-    command_mem = dkMemBlockCreate(&command_maker);
-    if (!command_mem) {
-        return false;
+        command_slot.fence_pending = false;
     }
 
-    DkCmdBufMaker command_buffer_maker;
-    dkCmdBufMakerDefaults(&command_buffer_maker, device);
-    command_buffer = dkCmdBufCreate(&command_buffer_maker);
-    if (!command_buffer) {
-        destroy_resources();
-        return false;
-    }
-    dkCmdBufAddMemory(command_buffer, command_mem, 0, SnapshotCommandBytes);
+    if (!command_slot.command_mem) {
+        DkMemBlockMaker command_maker;
+        dkMemBlockMakerDefaults(&command_maker, device,
+                                AlignUpSnapshot(SnapshotCommandBytes, DK_MEMBLOCK_ALIGNMENT));
+        command_maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+        command_slot.command_mem = dkMemBlockCreate(&command_maker);
+        if (!command_slot.command_mem) {
+            return false;
+        }
 
-    DkImageRect source_rect{0, 0, 0, output_width, output_height, 1};
+        DkCmdBufMaker command_buffer_maker;
+        dkCmdBufMakerDefaults(&command_buffer_maker, device);
+        command_slot.command_buffer = dkCmdBufCreate(&command_buffer_maker);
+        if (!command_slot.command_buffer) {
+            dkMemBlockDestroy(command_slot.command_mem);
+            command_slot.command_mem = nullptr;
+            return false;
+        }
+    }
+
+    dkCmdBufClear(command_slot.command_buffer);
+    dkCmdBufAddMemory(command_slot.command_buffer, command_slot.command_mem, 0,
+                      SnapshotCommandBytes);
+
+    DkImageRect source_rect{0, static_cast<s32>(source_y), 0, output_width, output_height, 1};
     DkImageRect destination_rect{0, 0, 0, output_width, output_height, 1};
-    dkCmdBufBarrier(command_buffer, DkBarrier_Fragments, DkInvalidateFlags_Image);
-    dkCmdBufBlitImage(command_buffer, &source->view, &source_rect, &destination->view,
+    dkCmdBufBarrier(command_slot.command_buffer, DkBarrier_Fragments, DkInvalidateFlags_Image);
+    dkCmdBufBlitImage(command_slot.command_buffer, &source->view, &source_rect, &destination->view,
                       &destination_rect,
                       DkBlitFlag_FilterNearest | DkBlitFlag_ModeBlit, 0);
 
-    DkFence completion_fence{};
-    dkCmdBufSignalFence(command_buffer, &completion_fence, true);
-    const DkCmdList command_list = dkCmdBufFinishList(command_buffer);
+    dkCmdBufSignalFence(command_slot.command_buffer, &command_slot.fence, true);
+    const DkCmdList command_list = dkCmdBufFinishList(command_slot.command_buffer);
     if (!command_list) {
-        destroy_resources();
         return false;
     }
 
     dkQueueSubmitCommands(queue, command_list);
     dkQueueFlush(queue);
-    const DkResult wait_result = dkFenceWait(&completion_fence, SnapshotFenceTimeoutNs);
     const bool queue_ok = !dkQueueIsInErrorState(queue);
-    if (wait_result != DkResult_Success || !queue_ok) {
+    if (!queue_ok) {
         LOG_ERROR(Render,
                   "Deko3D display-transfer snapshot failed src=0x{:08x} dst=0x{:08x} "
-                  "size={}x{} result={} queue_ok={}",
-                  input_address, output_address, output_width, output_height,
-                  static_cast<int>(wait_result), queue_ok);
-        dkQueueWaitIdle(queue);
-        destroy_resources();
+                  "size={}x{} queue_ok={}",
+                  input_address, output_address, output_width, output_height, queue_ok);
         return false;
     }
-    destroy_resources();
+    command_slot.fence_pending = true;
 
     // Any older cached interpretation of the destination guest range is now stale. Keep the newly
     // written snapshot authoritative and leave unrelated render targets untouched.
     for (auto& candidate : render_targets) {
         if (!candidate || candidate.get() == destination || !candidate->gpu_dirty ||
             !RangesOverlapSnapshot(output_address, destination_bytes,
-                                   candidate->key.color_address, SurfaceBytes(candidate->key))) {
+                                   candidate->key.color_address,
+                                   candidate->guest_memory_bytes)) {
             continue;
         }
         candidate->gpu_dirty = false;
@@ -288,9 +338,9 @@ bool State::RecordDisplayTransfer(PAddr input_address, PAddr output_address, u32
         last_snapshot_log = now;
         LOG_INFO(Render,
                  "Deko3D display-transfer snapshot dst=0x{:08x} src=0x{:08x} "
-                 "in={}x{} out={}x{} flags=0x{:08x} gen={}",
+                 "in={}x{} out={}x{} source_y={} flags=0x{:08x} gen={}",
                  output_address, input_address, input_width, input_height, output_width,
-                 output_height, flags, snapshot_generation);
+                 output_height, source_y, flags, snapshot_generation);
     }
     return true;
 }

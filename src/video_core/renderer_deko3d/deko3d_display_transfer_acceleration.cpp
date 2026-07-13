@@ -32,11 +32,28 @@ bool IsExactLowerRgba8Transfer(const Pica::DisplayTransferConfig& config) {
            config.output_width.Value() == 240 && config.output_height.Value() == 320;
 }
 
+bool IsPackedTopRgba8Crop(const Pica::DisplayTransferConfig& config) {
+    using PixelFormat = Pica::PixelFormat;
+    using ScalingMode = Pica::DisplayTransferConfig::ScalingMode;
+
+    return !config.flip_vertically && config.crop_input_lines && !config.block_32 &&
+           config.scaling == ScalingMode::NoScale &&
+           config.input_format == PixelFormat::RGBA8 &&
+           (config.output_format == PixelFormat::RGBA8 ||
+            config.output_format == PixelFormat::RGB8) &&
+           config.input_width == 240 && config.input_height == 800 &&
+           config.output_width == 240 && config.output_height == 400;
+}
+
 } // namespace
 #endif
 
 bool Rasterizer::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
 #ifdef __SWITCH__
+    FlushPendingGeometry();
+    if (!DrainRasterQueue()) {
+        return false;
+    }
     const PAddr input_address = config.GetPhysicalInputAddress();
     const PAddr output_address = config.GetPhysicalOutputAddress();
     const u32 input_width = config.input_width.Value();
@@ -44,6 +61,25 @@ bool Rasterizer::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& co
     const u32 output_width = config.output_width.Value();
     const u32 output_height = config.output_height.Value();
     const u32 flags = config.flags;
+
+    if (IsPackedTopRgba8Crop(config)) {
+        const auto& framebuffer = regs.framebuffer.framebuffer;
+        const State::RenderTargetKey packed_key{
+            .color_address = framebuffer.GetColorBufferPhysicalAddress(),
+            .width = framebuffer.GetWidth(),
+            .height = framebuffer.GetHeight(),
+            .format = static_cast<u32>(Pica::FramebufferRegs::ColorFormat::RGBA8),
+        };
+        State::CachedRenderTarget* packed = state.GetOrCreateRenderTarget(packed_key);
+        const u64 packed_begin = packed_key.color_address;
+        const u64 packed_end = packed_begin + static_cast<u64>(packed_key.width) *
+                                                  packed_key.height * 4;
+        if (packed && input_address >= packed_begin && input_address < packed_end &&
+            (!packed->cpu_dirty || ResolveCpuDirtyRenderTarget(*packed))) {
+            return state.RecordDisplayTransfer(input_address, output_address, input_width,
+                                               input_height, output_width, output_height, flags);
+        }
+    }
 
     // Keep the generic GPU-only path for transfer classes whose guest-memory coherence has already
     // been established. The exact DKCR lower transfer needs a stricter sequence because presentation

@@ -4,12 +4,13 @@
 
 Move from the current correct software-dominant title path to a selective hybrid path:
 
-- the packed `240x800` top-screen render target remains software-owned
-- independently presentable targets such as the `240x320` lower screen may transition to Deko3D
+- the packed `240x800` top-screen render target transitions to Deko3D
+- its two `240x400` eye crops become independent destination snapshots
+- the `240x320` lower screen transitions through a guest mirror plus Deko3D snapshot
 - supported display transfers become point-in-time destination snapshots instead of aliases to mutable source render targets
 - software fallback remains active for every unsupported or unsafe target
 
-The acceptance condition is not zero fallbacks. It is correct output with both hardware draws and software fallbacks in the same scene.
+The validated title-scene acceptance condition is correct output with zero software fallback, while unsupported targets retain the fallback path.
 
 ## Restored baseline checkpoint
 
@@ -25,7 +26,7 @@ A display transfer must preserve the image at transfer time. The new path create
 
 The snapshot path accepts only:
 
-- exact GPU-owned source address and dimensions
+- GPU-owned source allocation, including a row-aligned address inside a packed target
 - RGBA8 source render targets
 - RGBA8 or RGB8 display output
 - no scaling
@@ -35,7 +36,7 @@ The snapshot path accepts only:
 
 Unsupported transfers return to the existing software blitter.
 
-The CPU-dirty resolver still rejects packed top-screen targets wider in storage than a single presented eye, including DKCR's observed `240x800` source. This intentionally keeps the upper screen on software during the first hybrid test.
+The CPU-dirty resolver accepts DKCR's packed `240x800` source. Display-transfer snapshots map its base to rows 0-399 and its 384,000-byte eye offset to rows 400-799.
 
 ## Stable build
 
@@ -48,7 +49,7 @@ Expected configuration:
 
 ```text
 Switch Deko3D display-transfer snapshots enabled
-Switch Deko3D CPU-dirty render-target resolve disabled (stable)
+Switch Deko3D CPU-dirty render-target resolve enabled
 Switch Dynarmic consolidated publication enabled
 ```
 
@@ -71,15 +72,15 @@ JIT_CONSOLIDATED_PUBLISH=ON \
 Expected log markers include:
 
 ```text
-Deko3D CPU-dirty resolve rejected packed top-screen target size=240x800
-Deko3D display-transfer snapshot ... out=240x320 ...
+Deko3D display-transfer snapshot ... out=240x400 source_y=400 ...
+Deko3D display-transfer snapshot ... out=240x320 source_y=0 ...
 ```
 
 The desired title-scene counters are:
 
 ```text
 HW draws > 0
-SW fallback > 0
+SW fallback = 0
 raster_qerr = 0
 raster_to = 0
 present_qerr = 0
@@ -112,4 +113,4 @@ DEKO3D_CPU_DIRTY_RESOLVE=OFF \
 
 ## Follow-up after validation
 
-If the lower-screen hybrid path is correct, replace the temporary synchronous snapshot command allocation with a small fence-protected transfer ring. The packed top target must remain software-owned until its `240x800` to `240x400` eye/crop semantics and presentation generation tracking are explicitly validated.
+The packed top target, both eye crops, alternating destination addresses, and lower snapshot path are hardware validated. The next optimization is replacing temporary synchronous resolve/snapshot allocations with small fence-protected transfer rings.

@@ -26,10 +26,10 @@ SWITCH_TRACE_ENABLED="${SWITCH_TRACE_ENABLED:-OFF}"
 # mutable source render targets. This is safe to compile in the stable profile and becomes observable
 # when a source target is already GPU-owned.
 DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS="${DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS:-ON}"
-# The CPU-dirty handoff is experimental. DKCR testing showed black/white screens when every
-# transformed batch was forced onto hardware, so stable builds explicitly override cached CMake
-# state and keep the known-correct software fallback enabled.
-DEKO3D_CPU_DIRTY_RESOLVE="${DEKO3D_CPU_DIRTY_RESOLVE:-OFF}"
+# Hardware validation now covers the packed 240x800 upper target, both 240x400 eye crops, and the
+# RGB8 240x320 lower snapshot. Keep the validated handoff enabled in normal performance builds;
+# unsupported targets still fall back through the existing rasterizer path.
+DEKO3D_CPU_DIRTY_RESOLVE="${DEKO3D_CPU_DIRTY_RESOLVE:-ON}"
 # Partial CodeMemory publication is experimental. DKCR exited as newly published Dynarmic blocks
 # began executing with this mode enabled, so stable builds retain the full libnx executable
 # transition. Enable it only for isolated hardware diagnostics.

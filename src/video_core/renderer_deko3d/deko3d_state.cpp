@@ -273,6 +273,16 @@ void State::Shutdown() {
         dkMemBlockDestroy(cmdbuf_mem_block);
         cmdbuf_mem_block = nullptr;
     }
+    for (auto& slot : snapshot_command_slots) {
+        if (slot.command_buffer) {
+            dkCmdBufDestroy(slot.command_buffer);
+        }
+        if (slot.command_mem) {
+            dkMemBlockDestroy(slot.command_mem);
+        }
+        slot = {};
+    }
+    current_snapshot_command_slot = 0;
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy command buffers leave");
     SWITCH_TRACE_EVENT("Deko3D", "State::Shutdown", "destroy upload staging enter");
     if (upload_mem_block) {
@@ -914,6 +924,7 @@ State::CachedRenderTarget* State::GetOrCreateRenderTarget(const RenderTargetKey&
     target->key = key;
     target->mem_block = mem_block;
     target->allocation_bytes = AlignUp(image_size, image_alignment);
+    target->guest_memory_bytes = RenderTargetBytes(key);
     dkImageInitialize(&target->image, &layout, target->mem_block, 0);
     dkImageViewDefaults(&target->view, &target->image);
     CachedRenderTarget* result = target.get();
@@ -1089,7 +1100,8 @@ void State::InvalidateRenderTargetsOverlapping(PAddr address, u32 bytes, Surface
         return;
     }
     for (auto& target : render_targets) {
-        if (!RangesOverlap(address, bytes, target->key.color_address, RenderTargetBytes(target->key))) {
+        if (!RangesOverlap(address, bytes, target->key.color_address,
+                           target->guest_memory_bytes)) {
             continue;
         }
         target->owner = owner;
