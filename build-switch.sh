@@ -16,6 +16,29 @@ BUILD_DIR="build-switch"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 
+# Performance builds keep validation and high-volume telemetry disabled by default. They can still
+# be re-enabled explicitly for a diagnostic build without editing this script.
+DEKO3D_VALIDATION="${DEKO3D_VALIDATION:-OFF}"
+DEKO3D_VERBOSE_TELEMETRY="${DEKO3D_VERBOSE_TELEMETRY:-OFF}"
+SWITCH_PERF_DIAGNOSTICS="${SWITCH_PERF_DIAGNOSTICS:-OFF}"
+SWITCH_TRACE_ENABLED="${SWITCH_TRACE_ENABLED:-OFF}"
+# Supported GPU display transfers are materialized into destination snapshots instead of aliases to
+# mutable source render targets. This is safe to compile in the stable profile and becomes observable
+# when a source target is already GPU-owned.
+DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS="${DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS:-ON}"
+# Hardware validation now covers the packed 240x800 upper target, both 240x400 eye crops, and the
+# RGB8 240x320 lower snapshot. Keep the validated handoff enabled in normal performance builds;
+# unsupported targets still fall back through the existing rasterizer path.
+DEKO3D_CPU_DIRTY_RESOLVE="${DEKO3D_CPU_DIRTY_RESOLVE:-ON}"
+# Partial CodeMemory publication is experimental. DKCR exited as newly published Dynarmic blocks
+# began executing with this mode enabled, so stable builds retain the full libnx executable
+# transition. Enable it only for isolated hardware diagnostics.
+JIT_PARTIAL_PUBLISH="${JIT_PARTIAL_PUBLISH:-OFF}"
+# Each full libnx CodeMemory publication flushes the complete 8 MiB JIT allocation. Dynarmic's
+# consolidated mode combines block emission and block-link updates into one safe publication,
+# reducing duplicate full-cache maintenance while preserving the known-good full publish path.
+JIT_CONSOLIDATED_PUBLISH="${JIT_CONSOLIDATED_PUBLISH:-ON}"
+
 cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
@@ -27,7 +50,14 @@ cmake -S . -B "$BUILD_DIR" -U CMAKE_PROJECT_INCLUDE \
     -DENABLE_SCRIPTING=OFF \
     -DENABLE_GDBSTUB=OFF \
     -DENABLE_TESTS=OFF \
-    -DAZAHAR_DEKO3D_VALIDATION=ON \
+    -DAZAHAR_DEKO3D_VALIDATION="$DEKO3D_VALIDATION" \
+    -DAZAHAR_DEKO3D_VERBOSE_TELEMETRY="$DEKO3D_VERBOSE_TELEMETRY" \
+    -DAZAHAR_SWITCH_PERF_DIAGNOSTICS="$SWITCH_PERF_DIAGNOSTICS" \
+    -DAZAHAR_SWITCH_TRACE_ENABLED="$SWITCH_TRACE_ENABLED" \
+    -DAZAHAR_SWITCH_DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS="$DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS" \
+    -DAZAHAR_SWITCH_DEKO3D_CPU_DIRTY_RESOLVE="$DEKO3D_CPU_DIRTY_RESOLVE" \
+    -DAZAHAR_SWITCH_JIT_PARTIAL_PUBLISH="$JIT_PARTIAL_PUBLISH" \
+    -DAZAHAR_SWITCH_JIT_CONSOLIDATED_PUBLISH="$JIT_CONSOLIDATED_PUBLISH" \
     "$@"
 
 cmake --build "$BUILD_DIR" --target azahar_switch -- -j"$JOBS"

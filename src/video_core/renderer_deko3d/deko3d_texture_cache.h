@@ -34,6 +34,10 @@ struct CachedTexture {
     DkImageView view{};
     DkMemBlock mem_block{};
     DkSampler sampler{};
+    u64 allocation_bytes = 0;
+    u64 last_used_generation = 0;
+    u32 upload_slot = 0xFFFFFFFFu;
+    u64 upload_serial = 0;
 };
 #endif
 
@@ -61,10 +65,27 @@ public:
 
 private:
 #ifdef __SWITCH__
+    static constexpr u32 UploadSlotCount = 2;
+    static constexpr u32 UploadStagingSliceSize = 4 * 1024 * 1024;
+    static constexpr u32 UploadCommandSize = 16 * 1024;
+    static constexpr u64 TextureCacheBudgetBytes = 96ULL * 1024 * 1024;
+
+    struct UploadSlot {
+        DkMemBlock command_mem_block{};
+        DkCmdBuf command_buffer{};
+        DkFence fence{};
+        u32 staging_offset = 0;
+        u64 serial = 0;
+        bool fence_pending = false;
+    };
+
     bool AllocateTexture(CachedTexture& cached, u32 width, u32 height,
-                          Pica::TexturingRegs::TextureFormat format);
+                         Pica::TexturingRegs::TextureFormat format);
     bool UploadTexture(CachedTexture& cached, const Pica::TexturingRegs::TextureConfig& config,
                        Pica::TexturingRegs::TextureFormat format);
+    bool WaitForUploadSlot(UploadSlot& slot);
+    bool WaitForTextureUpload(CachedTexture& cached);
+    bool EvictForAllocation(u64 required_bytes);
     void DestroyTexture(CachedTexture& cached);
     DkSampler CreateSampler(const Pica::TexturingRegs::TextureConfig& config) const;
     std::optional<DkImageFormat> MapTextureFormat(Pica::TexturingRegs::TextureFormat format) const;
@@ -76,11 +97,22 @@ private:
     DkMemBlock staging_mem_block{};
     DkGpuAddr staging_gpu_addr = 0;
     void* staging_cpu_addr = nullptr;
-    DkMemBlock upload_command_mem_block{};
-    DkCmdBuf upload_command_buffer{};
+    std::array<UploadSlot, UploadSlotCount> upload_slots{};
+    u32 current_upload_slot = 0;
+    u64 next_upload_serial = 0;
+    u64 cache_generation = 0;
+    u64 cache_allocation_bytes = 0;
     std::unordered_map<u64, std::unique_ptr<CachedTexture>> cache;
 #endif
     bool initialized = false;
 };
 
 } // namespace VideoCore::Deko3D
+
+// This header is included by deko3d_rasterizer.cpp after the Rasterizer class is complete. Rewrite
+// only that file's CPU-dirty guard into a guarded member resolve attempt. If color and depth restore
+// successfully, the expression becomes false and the existing hardware path continues; otherwise
+// the original software fallback remains unchanged.
+#if defined(__SWITCH__) && defined(AZAHAR_DEKO3D_CPU_DIRTY_HANDOFF)
+#define cpu_dirty cpu_dirty && !ResolveCpuDirtyRenderTarget(*color_target)
+#endif

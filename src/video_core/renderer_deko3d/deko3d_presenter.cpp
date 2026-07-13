@@ -25,41 +25,6 @@ constexpr u32 BottomScreenWidth = 320;
 constexpr u32 BottomScreenHeight = 240;
 constexpr u32 BytesPerPixel = 4;
 
-bool HasAnyVisiblePixel(const u8* rgba, u32 width, u32 height) {
-    if (!rgba || width == 0 || height == 0) {
-        return false;
-    }
-
-    constexpr u32 step = 8;
-    for (u32 y = 0; y < height; y += step) {
-        for (u32 x = 0; x < width; x += step) {
-            const u8* const px = rgba + ((y * width + x) * 4);
-            if (px[0] != 0 || px[1] != 0 || px[2] != 0) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-bool HasAnyNonZeroSourceByte(const u8* src, u32 width, u32 height, u32 stride, u32 bpp) {
-    if (!src || width == 0 || height == 0 || stride == 0) {
-        return false;
-    }
-
-    const u32 rows = std::min(height, 64u);
-    const u32 bytes_per_row = std::min({stride, width * bpp, 2048u});
-    for (u32 y = 0; y < rows; y += 4) {
-        const u8* const row = src + static_cast<std::size_t>(y) * stride;
-        for (u32 x = 0; x < bytes_per_row; ++x) {
-            if (row[x] != 0) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 void DecodePixelToRgba(const u8* src, Pica::PixelFormat format, u8* dst) {
     Common::Vec4<u8> color;
     switch (format) {
@@ -108,7 +73,7 @@ void ConvertRotateToRgba8888(const u8* src, u8* dst, u32 src_width, u32 src_heig
                 src + static_cast<std::size_t>(y * pixel_stride + pixel_stride - x - 1) * bpp;
             const u32 dx = y;
             const u32 dy = x;
-            u8* const dst_px = dst + ((dy * dst_width + dx) * 4);
+            u8* const dst_px = dst + ((dy * dst_width + dx) * BytesPerPixel);
             DecodePixelToRgba(src_px, format, dst_px);
         }
     }
@@ -131,126 +96,80 @@ bool Presenter::PresentFrame() {
     bool top_changed = false;
     bool bottom_changed = false;
     bool frame_changed = false;
-    bool top_source_nonzero = false;
-    bool bottom_source_nonzero = false;
-    u32 top_width_dbg = 0;
-    u32 top_height_dbg = 0;
-    u32 top_stride_dbg = 0;
-    u32 top_bpp_dbg = 0;
-    u32 bottom_width_dbg = 0;
-    u32 bottom_height_dbg = 0;
-    u32 bottom_stride_dbg = 0;
-    u32 bottom_bpp_dbg = 0;
     PresentSource source = PresentSource::Unknown;
+
     try {
         auto& pica_core = system.GPU().PicaCore();
-        auto& memory = system.Memory();
         const auto& framebuffer_config = pica_core.regs.framebuffer_config;
 
-        // Get active framebuffer addresses for top and bottom screens
         fb0_addr = framebuffer_config[0].active_fb == 0 ? framebuffer_config[0].address_left1
                                                         : framebuffer_config[0].address_left2;
         fb1_addr = framebuffer_config[1].active_fb == 0 ? framebuffer_config[1].address_left1
                                                         : framebuffer_config[1].address_left2;
         top_changed = !have_last_addrs || last_top_addr != fb0_addr;
         bottom_changed = !have_last_addrs || last_bottom_addr != fb1_addr;
+
         state.SelectPresentRenderTargets(fb0_addr, fb1_addr);
-        const auto* const cached_target = state.GetSelectedPresentRenderTarget();
-        const auto* const cached_bottom_target = state.GetSelectedBottomPresentRenderTarget();
-        frame_changed = top_changed || bottom_changed || cached_target != nullptr ||
-                        cached_bottom_target != nullptr || state.IsTopScreenGpuDirty();
-        if (cached_target) {
+        const auto* const cached_top = state.GetSelectedPresentRenderTarget();
+        const auto* const cached_bottom = state.GetSelectedBottomPresentRenderTarget();
+        const bool top_gpu = cached_top != nullptr;
+        const bool bottom_gpu = cached_bottom != nullptr;
+
+        frame_changed = top_changed || bottom_changed || top_gpu || bottom_gpu ||
+                        state.IsTopScreenGpuDirty();
+        if (top_gpu || bottom_gpu) {
             source = PresentSource::CachedRenderTargetBlit;
+        } else if (state.IsTopScreenGpuDirty()) {
+            source = PresentSource::DekoRenderTarget;
         } else {
-            source = state.IsTopScreenGpuDirty()
-                         ? PresentSource::DekoRenderTarget
-                         : (frame_changed ? PresentSource::CpuFramebufferUpload
-                                          : PresentSource::RepeatedPreviousFrame);
+            source = frame_changed ? PresentSource::CpuFramebufferUpload
+                                   : PresentSource::RepeatedPreviousFrame;
         }
 
-        // Skip CPU readback when the GPU already has dirty cached render targets,
-        // because PresentScreenTexturesFrame will blit them directly.
-        const bool top_use_gpu_blit = cached_target != nullptr;
-        const bool bottom_use_gpu_blit = cached_bottom_target != nullptr;
-
-        auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
-        if (!screen_buffer ||
-            state.GetScreenDataSize() <
-                ((TopScreenWidth * TopScreenHeight + BottomScreenWidth * BottomScreenHeight) *
-                 BytesPerPixel)) {
-            LOG_WARNING(Render, "Deko3D screen buffer unavailable or too small");
-            return false;
-        }
-
-        // Copy top screen (400x240 RGB565 or RGBA8) only when no GPU blit path exists.
-        if (!top_use_gpu_blit) {
-            const auto& fb0 = framebuffer_config[0];
-            const u32 width = fb0.width.Value();
-            const u32 height = fb0.height.Value();
-            const u32 stride = fb0.stride;
-
-            top_width_dbg = width;
-            top_height_dbg = height;
-            top_stride_dbg = stride;
-            top_bpp_dbg = Pica::BytesPerPixel(fb0.color_format);
-            u8* fb0_ptr = memory.GetPhysicalPointer(fb0_addr);
-            top_source_nonzero = HasAnyNonZeroSourceByte(fb0_ptr, width, height, stride, top_bpp_dbg);
-            if (fb0_ptr && width > 0 && height > 0 && stride > 0) {
-                ConvertRotateToRgba8888(fb0_ptr, screen_buffer, width, height, stride,
-                                        fb0.color_format, TopScreenWidth, TopScreenHeight);
-            } else {
-                ClearRgba8888(screen_buffer, TopScreenWidth, TopScreenHeight);
+        // A fully hardware-rendered frame never touches guest framebuffer memory or performs the
+        // CPU pixel scans that were previously executed for diagnostics on every presentation.
+        if (!top_gpu || !bottom_gpu) {
+            auto* const screen_buffer = static_cast<u8*>(state.GetScreenDataBuffer());
+            constexpr u32 top_size = TopScreenWidth * TopScreenHeight * BytesPerPixel;
+            constexpr u32 required_size =
+                (TopScreenWidth * TopScreenHeight + BottomScreenWidth * BottomScreenHeight) *
+                BytesPerPixel;
+            if (!screen_buffer || state.GetScreenDataSize() < required_size) {
+                LOG_WARNING(Render, "Deko3D screen buffer unavailable or too small");
+                return false;
             }
-        }
 
-        // Copy bottom screen (320x240 RGB565 or RGBA8) when no GPU blit path exists.
-        if (!bottom_use_gpu_blit) {
-            const auto& fb1 = framebuffer_config[1];
-            const u32 width = fb1.width.Value();
-            const u32 height = fb1.height.Value();
-            const u32 stride = fb1.stride;
+            auto& memory = system.Memory();
+            if (!top_gpu) {
+                const auto& fb0 = framebuffer_config[0];
+                const u32 width = fb0.width.Value();
+                const u32 height = fb0.height.Value();
+                const u32 stride = fb0.stride;
+                const u8* const fb0_ptr = memory.GetPhysicalPointer(fb0_addr);
+                if (fb0_ptr && width > 0 && height > 0 && stride > 0) {
+                    ConvertRotateToRgba8888(fb0_ptr, screen_buffer, width, height, stride,
+                                            fb0.color_format, TopScreenWidth, TopScreenHeight);
+                } else {
+                    ClearRgba8888(screen_buffer, TopScreenWidth, TopScreenHeight);
+                }
+            }
 
-            bottom_width_dbg = width;
-            bottom_height_dbg = height;
-            bottom_stride_dbg = stride;
-            bottom_bpp_dbg = Pica::BytesPerPixel(fb1.color_format);
-            u8* fb1_ptr = memory.GetPhysicalPointer(fb1_addr);
-            bottom_source_nonzero =
-                HasAnyNonZeroSourceByte(fb1_ptr, width, height, stride, bottom_bpp_dbg);
-            const u32 top_size = TopScreenWidth * TopScreenHeight * BytesPerPixel;
-            if (fb1_ptr && width > 0 && height > 0 && stride > 0) {
+            if (!bottom_gpu) {
+                const auto& fb1 = framebuffer_config[1];
+                const u32 width = fb1.width.Value();
+                const u32 height = fb1.height.Value();
+                const u32 stride = fb1.stride;
+                const u8* const fb1_ptr = memory.GetPhysicalPointer(fb1_addr);
                 u8* const bottom_buffer = screen_buffer + top_size;
-                ConvertRotateToRgba8888(fb1_ptr, bottom_buffer, width, height, stride,
-                                        fb1.color_format, BottomScreenWidth, BottomScreenHeight);
-            } else {
-                ClearRgba8888(screen_buffer + top_size, BottomScreenWidth, BottomScreenHeight);
+                if (fb1_ptr && width > 0 && height > 0 && stride > 0) {
+                    ConvertRotateToRgba8888(fb1_ptr, bottom_buffer, width, height, stride,
+                                            fb1.color_format, BottomScreenWidth,
+                                            BottomScreenHeight);
+                } else {
+                    ClearRgba8888(bottom_buffer, BottomScreenWidth, BottomScreenHeight);
+                }
             }
         }
-
-        ++frame_counter;
-        const u8* const top_rgba = screen_buffer;
-        const u8* const bottom_rgba = screen_buffer + (TopScreenWidth * TopScreenHeight * BytesPerPixel);
-        const bool top_has_pixels = HasAnyVisiblePixel(top_rgba, TopScreenWidth, TopScreenHeight);
-        const bool bottom_has_pixels = HasAnyVisiblePixel(bottom_rgba, BottomScreenWidth, BottomScreenHeight);
-        if (!top_has_pixels) {
-            ++blank_top_frames;
-        }
-        if (!bottom_has_pixels) {
-            ++blank_bottom_frames;
-        }
-
-        if ((frame_counter % 60) == 0 || (!top_has_pixels && !bottom_has_pixels && frame_counter <= 10)) {
-            LOG_INFO(Render,
-                     "Deko3D source diagnostics: frames={} blank_top={} blank_bottom={} "
-                     "fb0=0x{:08x} {}x{} stride={} bpp={} src_nonzero={} rgba_visible={} "
-                     "fb1=0x{:08x} {}x{} stride={} bpp={} src_nonzero={} rgba_visible={}",
-                     frame_counter, blank_top_frames, blank_bottom_frames, fb0_addr,
-                     top_width_dbg, top_height_dbg, top_stride_dbg, top_bpp_dbg,
-                     top_source_nonzero, top_has_pixels, fb1_addr, bottom_width_dbg,
-                     bottom_height_dbg, bottom_stride_dbg, bottom_bpp_dbg, bottom_source_nonzero,
-                     bottom_has_pixels);
-        }
-
     } catch (const std::exception& e) {
         LOG_WARNING(Render, "Deko3D Presenter framebuffer access error: {}", e.what());
     }

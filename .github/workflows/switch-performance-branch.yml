@@ -1,0 +1,127 @@
+name: Switch performance branch build
+
+on:
+  push:
+    branches:
+      - feat/gpt-performance-improvements-v1
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: switch-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-switch:
+    name: build-switch (${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: stable
+            diagnostics: OFF
+            verbose_telemetry: OFF
+            cpu_dirty_resolve: OFF
+            binary_artifact: azahar-switch-performance-v1
+          - profile: hybrid
+            diagnostics: ON
+            verbose_telemetry: ON
+            cpu_dirty_resolve: ON
+            binary_artifact: azahar-switch-dkcr-hybrid
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Trust container workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Checkout pinned submodules
+        id: submodules
+        continue-on-error: true
+        run: |
+          set +e
+          git submodule sync > /tmp/submodules-${{ matrix.profile }}.log 2>&1
+          git -c protocol.version=2 submodule update --init --jobs 4 \
+            >> /tmp/submodules-${{ matrix.profile }}.log 2>&1
+          status=$?
+
+          # Azahar already pins the compatible top-level Oaknut checkout. Dynarmic's nested Oaknut
+          # gitlink is intentionally not followed; only its additional required dependencies are
+          # initialized. This keeps the build tied to exact Azahar gitlinks instead of floating main.
+          if [ "$status" -eq 0 ]; then
+            git -C externals/dynarmic submodule sync \
+              >> /tmp/submodules-${{ matrix.profile }}.log 2>&1
+            git -C externals/dynarmic -c protocol.version=2 submodule update --init \
+              externals/mcl externals/robin-map \
+              >> /tmp/submodules-${{ matrix.profile }}.log 2>&1
+            status=$?
+          fi
+
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: Upload submodule checkout log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: switch-${{ matrix.profile }}-submodule-checkout-log
+          path: /tmp/submodules-${{ matrix.profile }}.log
+          if-no-files-found: warn
+
+      - name: Stop on submodule checkout failure
+        if: steps.submodules.outcome == 'failure'
+        run: exit 1
+
+      - name: Configure and build ${{ matrix.profile }} NRO
+        id: build
+        continue-on-error: true
+        shell: bash
+        env:
+          DEVKITPRO: /opt/devkitpro
+          BUILD_TYPE: Release
+          JOBS: 2
+          DEKO3D_VALIDATION: OFF
+          DEKO3D_VERBOSE_TELEMETRY: ${{ matrix.verbose_telemetry }}
+          SWITCH_PERF_DIAGNOSTICS: ${{ matrix.diagnostics }}
+          SWITCH_TRACE_ENABLED: OFF
+          DEKO3D_DISPLAY_TRANSFER_SNAPSHOTS: ON
+          DEKO3D_CPU_DIRTY_RESOLVE: ${{ matrix.cpu_dirty_resolve }}
+          JIT_PARTIAL_PUBLISH: OFF
+          JIT_CONSOLIDATED_PUBLISH: ON
+        run: |
+          set -o pipefail
+          rm -rf build-switch
+          ./build-switch.sh 2>&1 | tee /tmp/switch-${{ matrix.profile }}-build.log
+
+      - name: Upload ${{ matrix.profile }} build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: switch-${{ matrix.profile }}-build-log
+          path: /tmp/switch-${{ matrix.profile }}-build.log
+          if-no-files-found: warn
+
+      - name: Stop on build failure
+        if: steps.build.outcome == 'failure'
+        run: exit 1
+
+      - name: Upload ${{ matrix.profile }} binaries
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary_artifact }}
+          path: |
+            build-switch/bin/Release/azahar.nro
+            build-switch/bin/Release/azahar_switch.elf
+          if-no-files-found: error

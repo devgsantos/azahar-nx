@@ -447,7 +447,8 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     Frontend,
                     "Switch graphics summary: interval_batch_checks={} valid={} eligible={} "
                     "submitted={} completed={} hw_tris={} rt_creations={} blend_supported={} "
-                    "present_cached={} present_repeated={} raster_qerr={} raster_to={} "
+                    "present_cached={} present_repeated={} raster_submit={} raster_flush={} "
+                    "raster_qerr={} raster_to={} "
                     "present_qerr={} present_to={} total_batch_checks={} valid={} eligible={} "
                     "submitted={} completed={} hw_tris={} out_tris={} disp_xfers={} "
                     "presents={} changed={} repeated={} blocker_invalid={} "
@@ -458,7 +459,8 @@ int SwitchApp::LaunchGame(const std::string& path) {
                     deko_stats.render_target_cache_creations,
                     deko_stats.deko_blend_state_supported,
                     deko_stats.present_source_cached_render_target,
-                    deko_stats.present_source_repeated_frame, deko_stats.raster_queue_errors,
+                    deko_stats.present_source_repeated_frame, deko_stats.raster_queue_submits,
+                    deko_stats.raster_queue_flushes, deko_stats.raster_queue_errors,
                     deko_stats.raster_fence_timeouts, deko_stats.present_queue_errors,
                     deko_stats.present_fence_timeouts, deko_total_stats.transformed_batch_checks,
                     deko_total_stats.transformed_batch_valid,
